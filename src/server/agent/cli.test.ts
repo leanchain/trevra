@@ -332,8 +332,8 @@ describe('childEnv', () => {
     // list named the first and not the second, which is the whole argument.
     TREVRA_SECRETS_KEY_PREVIOUS: 'dGVzdC1vbmx5LXByZXZpb3VzLXNlY3JldHMta2V5LTMyIQ==',
     TREVRA_AGENT_TOKEN_PEPPER: 'test-only-agent-token-pepper-over-32-characters',
-    STRIPE_SECRET_KEY: 'sk_test_only',
-    STRIPE_WEBHOOK_SECRET: 'whsec_test_only',
+    EXAMPLE_DEPLOYMENT_SECRET: 'test-only-secret-that-must-not-reach-the-child',
+    ANOTHER_PRIVATE_DEPLOYMENT_SECRET: 'test-only-second-secret',
     TREVRA_SANDBOX_GATEWAY_TOKEN: 'test-only-sandbox-gateway-token',
     NANGO_API_KEY: 'test-only-nango-key',
     NANGO_WEBHOOK_SIGNING_KEY: 'test-only-nango-signing-key',

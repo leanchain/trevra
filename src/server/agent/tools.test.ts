@@ -45,6 +45,11 @@ async function skillRunCount(): Promise<number> {
  */
 const EXPECTED_BUILT_INS: ReadonlyArray<readonly [string, AgentScope | null]> = [
   ['trevra_list_skills', null],
+  ['trevra_list_people', 'workspace:read'],
+  ['trevra_list_accounts', 'workspace:read'],
+  ['trevra_list_opportunities', 'workspace:read'],
+  ['trevra_list_conversations', 'workspace:read'],
+  ['trevra_list_deliveries', 'workspace:read'],
   ['trevra_list_playbooks', 'playbooks:read'],
   ['trevra_start_playbook', 'playbooks:run'],
   ['trevra_list_playbook_runs', 'workflows:read'],
@@ -55,7 +60,7 @@ const EXPECTED_BUILT_INS: ReadonlyArray<readonly [string, AgentScope | null]> = 
 ];
 
 describe('the built-in tool surface', () => {
-  it('is exactly the non-finance built-in tool surface', () => {
+  it('is exactly the GTM-only built-in tool surface', () => {
     expect(BUILT_IN_AGENT_TOOLS.map((tool) => [tool.name, tool.scope])).toEqual(
       EXPECTED_BUILT_INS.map(([name, scope]) => [name, scope])
     );
@@ -165,7 +170,7 @@ describe('the invariant (app-spec section 11)', () => {
     expect(tools.length).toBeGreaterThan(EXPECTED_BUILT_INS.length);
     const forbidden = tools.filter((tool) => /approve|execute|send/i.test(tool.name));
     expect(forbidden.map((tool) => tool.name)).toEqual([]);
-    // Finance/recommendation preparation is no longer part of the product surface either.
+    // Recommendation preparation is not an agent escape hatch around the action approval boundary.
     expect(tools.some((tool) => tool.name === 'trevra_prepare_recommendation')).toBe(false);
   });
 

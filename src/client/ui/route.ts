@@ -48,7 +48,9 @@ const SUB_ROUTES: Record<Section, readonly string[]> = {
     'new',
     'campaign',
     'workflow',
+    'inbound',
     'inbox',
+    'opportunities',
     'posts',
     'settings',
     'accounts',
@@ -63,6 +65,7 @@ const SUB_ROUTES: Record<Section, readonly string[]> = {
   setup: [
     '',
     'workspace',
+    'capture',
     'agent',
     'data',
     'reddit',

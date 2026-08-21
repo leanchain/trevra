@@ -314,7 +314,7 @@ describe('LinkedIn manager HTTP surface', () => {
     const body = JSON.stringify({
       workspaceId: A,
       externalRef: 'provider-message-42',
-      eventKind: 'replied',
+      eventKind: 'reply',
       providerEventId: 'provider-event-42',
       occurredAt: NOW.toISOString()
     });
@@ -322,7 +322,6 @@ describe('LinkedIn manager HTTP surface', () => {
       await request(app)
         .post('/api/webhooks/linkedin-campaign-email')
         .set('Content-Type', 'application/json')
-        .set('x-trevra-signature', 'sha256=deadbeef')
         .send(body)
         .expect(401);
       const signature = createHmac('sha256', 'provider-test-secret').update(body).digest('hex');

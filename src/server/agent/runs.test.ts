@@ -61,13 +61,13 @@ describe('the run lifecycle', () => {
       workspaceId: WORKSPACE_ID,
       kind: 'model',
       input: { messages: 1 },
-      output: { toolCall: 'trevra_revenue_brief' }
+      output: { toolCall: 'trevra_gtm_brief' }
     });
     const second = await appendAgentRunStep(db, {
       runId: run.id,
       workspaceId: WORKSPACE_ID,
       kind: 'tool',
-      toolName: 'trevra_revenue_brief',
+      toolName: 'trevra_gtm_brief',
       input: {},
       output: { recommendations: [] }
     });
@@ -83,7 +83,7 @@ describe('the run lifecycle', () => {
     expect(loaded?.finishedAt).toMatch(ISO_8601);
     expect(loaded?.steps.map((step) => [step.seq, step.kind, step.toolName])).toEqual([
       [1, 'model', null],
-      [2, 'tool', 'trevra_revenue_brief']
+      [2, 'tool', 'trevra_gtm_brief']
     ]);
     expect(loaded?.steps[1].input).toEqual({});
     expect(loaded?.steps[1].output).toEqual({ recommendations: [] });

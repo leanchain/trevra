@@ -1052,6 +1052,82 @@ describe('managed campaign runner', () => {
     expect(await campaignStatus(campaignId)).toBe('completed');
   });
 
+  it('never silently reassigns an admitted lead when its assigned sender becomes unavailable', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE,
+      {
+        label: 'Secondary',
+        timezone: 'UTC',
+        workingDays: [1, 2, 3, 4, 5],
+        workStartMinute: 480,
+        workEndMinute: 1080
+      },
+      NOW,
+      'secondary'
+    );
+    const listId = await seededList('Pinned sender', [
+      { first: 'Pinned', last: 'Lead', company: 'Acme', slug: 'pinned-lead' }
+    ]);
+    const workflow = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Pinned sender flow',
+        steps: [
+          {
+            id: 'view',
+            action: 'profile_view',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          }
+        ]
+      },
+      NOW
+    );
+    const made = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Pinned sender',
+        leadListId: listId,
+        workflowId: workflow.id,
+        senderKeys: ['owner', 'secondary']
+      },
+      NOW
+    );
+    await startManagedCampaign(db, WORKSPACE, made.campaign.id, NOW);
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    const member = (await listCampaignMembers(db, WORKSPACE, made.campaign.id))[0]!;
+    await db
+      .prepare(
+        `UPDATE linkedin_campaign_members
+         SET assigned_seat_key='owner',status='waiting',step_index=0,current_step_id='view',next_eligible_at=?::timestamptz
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(NOW.toISOString(), WORKSPACE, member.id);
+    await db
+      .prepare(
+        `UPDATE linkedin_actions SET status='skipped',recorded_at=NULL,claimed_at=NULL
+         WHERE workspace_id=? AND campaign_member_id=?`
+      )
+      .run(WORKSPACE, member.id);
+    await db
+      .prepare(`DELETE FROM linkedin_seats WHERE workspace_id=? AND seat_key='owner'`)
+      .run(WORKSPACE);
+
+    const tick = await runManagedCampaigns(db, WORKSPACE, at(HOUR));
+    expect(tick.actionsPlanned).toBe(0);
+    const refreshed = (await listCampaignMembers(db, WORKSPACE, made.campaign.id))[0]!;
+    expect(refreshed.assignedSeatKey).toBe('owner');
+    expect(refreshed.currentStepId).toBe('view');
+    expect(refreshed.status).toBe('waiting');
+    expect(refreshed.branchState['blocked:view']).toMatchObject({
+      assignedSeatKey: 'owner'
+    });
+    expect((await actions()).filter((row) => row.status === 'planned')).toHaveLength(0);
+  });
+
   it('keeps an A/B assignment stable across re-runs and records it on the ledger row', async () => {
     // The steady dm band is 12/day, so the campaign's day-one 20% ramp would
     // otherwise be 2 and this test would be measuring the ramp rather than the

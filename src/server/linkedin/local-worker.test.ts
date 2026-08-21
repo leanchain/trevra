@@ -178,6 +178,9 @@ function fakeStore(
   options: {
     posture?: SeatPosture | null;
     branch?: (action: DueLinkedInAction, now: Date) => Promise<BranchGateDecision | null>;
+    executionState?: (
+      action: DueLinkedInAction
+    ) => Promise<'execute' | 'defer' | 'retire'> | 'execute' | 'defer' | 'retire';
     seatKey?: string;
     /** What the ledger says about a pending invite to the action's target. */
     unacceptedInvite?: boolean;
@@ -243,6 +246,8 @@ function fakeStore(
         const row = byId.get(id);
         if (row) queue.unshift(row);
       },
+      actionExecutionState: async (entry) =>
+        options.executionState ? await options.executionState(entry) : 'execute',
       hasUnacceptedInvite: async () => options.unacceptedInvite === true,
       settleSent: async (id) => {
         harness.sent.push(id);
@@ -859,6 +864,34 @@ describe('the safety gate runs per action', () => {
     expect(calls).toHaveLength(3);
     expect(result.executed).toBe(3);
     expect(harness.sent).toEqual(['lact_1', 'lact_2', 'lact_3']);
+  });
+
+  it('re-checks campaign/member state after the safety gate and retires a stale claim before the driver', async () => {
+    const harness = fakeStore(threeActions, {
+      executionState: async (candidate) => (candidate.id === 'lact_1' ? 'retire' : 'execute')
+    });
+    const { driver, calls } = fakeDriver();
+    const evaluated: string[] = [];
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async (candidate) => {
+        evaluated.push(candidate.id);
+        return verdict();
+      }
+    });
+
+    expect(evaluated).toEqual(['lact_1', 'lact_2', 'lact_3']);
+    expect(calls.map((entry) => entry.target)).toEqual([
+      'https://www.linkedin.com/in/b/',
+      'https://www.linkedin.com/in/c/'
+    ]);
+    expect(harness.branchSkipped.map((entry) => entry.id)).toEqual(['lact_1']);
+    expect(result.branchSkipped).toBe(1);
+    expect(result.executed).toBe(2);
   });
 
   it('releases a refused action without letting it reach the driver', async () => {

@@ -2,9 +2,9 @@
 
 **Date:** 2026-08-20
 **Status:** Proposed canonical product architecture
-**Scope:** Trevra product boundary, actors, core GTM objects, channels, CRM boundary, inbound/outbound flows, and migration direction.
+**Scope:** Trevra product boundary, actors, core GTM objects, channels, CRM boundary, inbound/outbound flows, and implementation direction.
 
-**Related:** `AGENTS.md`, `docs/system-of-record.md`, `docs/growth-gap-closure-proposal.md`, `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`.
+**Related:** `AGENTS.md`, `docs/system-of-record.md`, `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`.
 
 ---
 
@@ -829,23 +829,23 @@ The target is an evolution, not a rewrite.
 ### Partial / needs convergence
 
 - [~] Agent identity: tokens/runs exist, but durable user-facing Agent principals/team model is incomplete.
-- [~] People: `clients`, contact identities, LinkedIn people, and imported contact evidence exist in different shapes; no clean canonical shared Person spine yet.
-- [~] Conversations: LinkedIn inbox is mature; channel-neutral conversation model is not.
-- [~] Email: Gmail/Microsoft execution pieces exist; GTM-safe delivery/suppression/idempotency/reply lifecycle is incomplete.
+- [~] People: canonical `contacts`/People is now the human identity spine for inbound, account-import evidence, LinkedIn lead contacts, connected messages/opportunities, and CRM activity attribution. Legacy `clients`/`contact_identities` remain only as compatibility bridges pending removal.
+- [~] Conversations: shared Person-centric Conversation/Message projection now unifies stored LinkedIn and connected-email transcripts, with authenticated read APIs and a unified Messages operator surface. Channel-specific delivery/safety engines remain authoritative underneath, and shared Delivery normalization is still incomplete.
+- [~] Email: Gmail/Microsoft execution, threading, provider reply/bounce observation, verified inbound reply-body capture, tracking, idempotency, execution-boundary suppression, shared transcript projection, and exact-payload conversation reply preparation/approval now exist. Unsubscribe/OOO/unverified-reply classification plus fully shared Delivery semantics remain incomplete.
 - [~] CRM: safe adapter philosophy exists; product docs/data model still contain older revenue/delivery ownership assumptions.
 - [~] Opportunity: existing schema exists, but target should be minimal GTM state rather than expanding CRM/revenue management.
 
 ### Missing
 
-- [ ] Canonical Person persistence shared by inbound, sourcing, LinkedIn, and email.
-- [ ] Optional canonical Account-Person association.
-- [ ] Durable Capture Sources and Inbound Submissions.
-- [ ] Website/landing intake API and founder setup flow.
-- [ ] Global multichannel suppression/consent enforcement.
-- [ ] GTM-specific email delivery state and verified inbound reply ingestion.
-- [ ] Shared conversation/operator view across LinkedIn and email.
+- [x] Canonical Person persistence and deterministic channel convergence exist for inbound/import, LinkedIn leads, connected messages/opportunities, and CRM activity. Legacy client rows are bridged with `person_id` until final removal.
+- [x] Optional canonical Account-Person association.
+- [x] Durable Capture Sources and Inbound Submissions.
+- [x] Website/landing intake API and founder setup flow.
+- [~] Global suppression authority exists and is enforced for email + LinkedIn, including manual suppressions, LinkedIn DNC sync, campaign admission, execution-time checks, and hard-bounce suppression. Consent normalization, unsubscribe/OOO semantics, and any future channel-specific enforcement remain.
+- [~] GTM-specific email delivery state and verified inbound reply ingestion. Campaign email actions already have durable planned/claimed/sent/failed/unknown state and provider-verified reply/bounce ingestion with reply content projected into the shared transcript; a channel-neutral Delivery object is still pending.
+- [x] Shared conversation/operator view across LinkedIn and email, including one Person-centric transcript and exact-payload email reply preparation/approval from the Messages surface.
 - [ ] Durable Agent principal/team product model.
-- [ ] A unified daily operator surface centered on changes, exceptions, approvals, and replies.
+- [~] Intent-first operator layer: deterministic `Today`, first-run GTM job choices, and narrow retry-safe outreach preparation are implemented; bounded general intent compilation remains.
 - [ ] Growth-service state migration and complete retirement.
 
 ---
@@ -856,75 +856,86 @@ This order maximizes usefulness to the GTM operator while reducing architectural
 
 ### Phase 1 — Person spine
 
-- [ ] Add canonical `contacts`/People persistence.
-- [ ] Add deterministic identities and dedupe.
-- [ ] Add optional `account_contacts` association.
-- [ ] Preserve provenance/conflicts rather than silently overwrite canonical fields.
-- [ ] Connect current account-import contact evidence to People.
-- [ ] Define adapters/mappings from existing LinkedIn/contact/client identities without duplicating People.
+- [x] Add canonical `contacts`/People persistence.
+- [x] Add deterministic identities and dedupe.
+- [x] Add optional `account_contacts` association.
+- [x] Preserve provenance/conflicts rather than silently overwrite canonical fields.
+- [x] Connect current account-import contact evidence to People.
+- [x] Converge LinkedIn/contact/client identities onto canonical People without duplicating People. LinkedIn lead contacts now carry durable `person_id` + explicit resolution status; existing rows backfill deterministically; connected messages/opportunities, CRM activity, and temporary legacy client identity all bridge to canonical People.
 
 Exit criterion: one real human can be referenced consistently across account sourcing, imported evidence, and channel state.
 
+### Completed foundation — Person convergence
+
+Implemented before shared Conversations so every channel can project onto one human identity:
+
+1. [x] Add a canonical Person reference to LinkedIn lead contacts without replacing LinkedIn-specific campaign state.
+2. [x] Backfill existing LinkedIn leads to canonical People using deterministic email, canonical LinkedIn profile URL, or explicit E.164 phone; never fuzzy-name matching. Identity-poor rows stay `insufficient_identity`, and conflicting deterministic identities stay `conflict`.
+3. [x] Make new CSV, sourced, signal, and discovered LinkedIn leads resolve/create canonical People whenever deterministic identity exists; preserve explicit resolution state otherwise.
+4. [x] Preserve LinkedIn-specific names/company/custom fields as channel evidence; fill empty canonical Person fields but never silently overwrite conflicting non-empty canonical values.
+5. [x] Map connected email/message/opportunity ingestion, CRM activity, and legacy `clients`/`contact_identities` onto the same Person spine via temporary compatibility links.
+
+Exit criterion: a person discovered on LinkedIn, imported by email, or arriving inbound resolves to one canonical Person ID while channel-specific evidence remains intact.
+
+### Phase 1.5 — ruthless-simplicity operator layer
+
+This phase adopts `2026-08-21-ruthless-simplicity-intent-compiler-design.md` without changing the GTM domain model. The founder sees jobs and outcomes; Trevra continues to compile them into the durable primitives defined by this spec.
+
+- [x] Add deterministic `GET /api/today` projection for safety blocks, verified replies, unknown deliveries, approvals, inbound submissions, high-priority accounts, and capacity blockers. Qualification-decision projection can be added when that durable state exists.
+- [x] Replace first-run implementation-object checklists with founder jobs: Find prospects, Prepare outreach, Watch accounts, Capture inbound.
+- [x] Add narrow `POST /api/outreach/prepare` composition before a general intent compiler: validate sender -> import/reuse canonical People -> create/reuse lead list -> choose versioned safe default workflow -> create draft campaign -> return preview. The endpoint is retry-safe and never starts the campaign.
+- [x] Ship a versioned blessed LinkedIn outreach workflow for ordinary first campaigns; `/outreach/new` now uses the simple CSV-to-draft path by default and keeps the existing list/workflow builder under Advanced.
+- [~] Bounded typed `GtmIntent -> GtmPlan -> prepare` compilation is now implemented without a universal Job table: `POST /api/gtm/plan` deterministically plans all five bounded GTM objectives, Today exposes an inspectable Goal -> Plan surface, and `POST /api/gtm/prepare` currently composes only safe `prepare_outreach` plans through the existing draft-campaign preparation boundary with stale-plan hashing and idempotency. Other objectives remain inspectable/direct-surface plans until their composition primitives are deliberately added. Natural language may later populate the same typed intent but may never directly create arbitrary executable workflows.
+- [~] Keep progressive disclosure strict: the ordinary `/outreach/new` path now hides list/workflow construction under Advanced; extend the same rule to later intent/compiler surfaces.
+
+Exit criterion: a founder can state a GTM job, inspect what Trevra will prepare, and reach a useful result without learning lead-list/workflow/playbook internals; safety and exact state semantics remain unchanged.
+
 ### Phase 2 — inbound GTM
 
-- [ ] Add Capture Sources.
-- [ ] Add immutable Inbound Submissions.
-- [ ] Add signed/idempotent intake endpoint.
-- [ ] Add `Setup -> Lead capture` with integration snippets and request diagnostics.
-- [ ] Cut Beseam `ecom-clean-lp /api/lead` over through the existing Cloudflare Worker.
-- [ ] Remove SendPulse/local website lead state as canonical GTM state after verification.
+- [x] Add Capture Sources.
+- [x] Add immutable Inbound Submissions.
+- [x] Add signed/idempotent intake endpoint.
+- [x] Add `Setup -> Lead capture` with integration snippets and request diagnostics.
+- [~] Adapt Beseam `ecom-clean-lp /api/lead` through the existing Cloudflare Worker; code path, end-to-end retry idempotency, Worker tests and production build are ready, while live Capture Source provisioning/verification is pending.
+- [ ] Remove SendPulse/local website lead state as canonical GTM state after live verification.
 
 Exit criterion: a founder's landing page can create/match a Person and preserve each submission in that founder's Trevra workspace.
 
 ### Phase 3 — shared conversations + GTM email
 
-- [ ] Add/normalize shared Conversation, Message, Delivery, and Suppression persistence.
-- [ ] Map LinkedIn conversation state into the shared operator model without weakening LinkedIn-specific safety.
-- [ ] Add dedicated GTM email prepared action.
-- [ ] Add suppression, caps, provider checks, durable delivery claims, and `uncertain` semantics.
-- [ ] Add Gmail/Microsoft inbound normalization and verified reply handling.
-- [ ] Separate reply, unsubscribe, bounce, OOO, and unverified sender-only outcomes.
+- [x] Add/normalize shared Conversation, Message, Delivery, and Suppression persistence. Person-led conversations/messages span LinkedIn + email, workspace suppressions are shared across send paths, and `gtm_deliveries` is the canonical exact-payload email delivery claim across campaign/playbook/Agent execution.
+- [x] Map LinkedIn conversation state into the shared operator model without weakening LinkedIn-specific safety. LinkedIn threads/messages project idempotently while the LinkedIn cache, ledger, pacing, and worker remain authoritative.
+- [x] Add dedicated GTM email prepared action (`email.send`) through the deterministic prepared-action boundary.
+- [x] Add suppression, provider checks, durable delivery claims, and `uncertain` semantics. The shared delivery boundary atomically claims an approved payload, persists provider identity, disables blind POST retries, replays confirmed sends without resending, makes ambiguous provider outcomes terminal for automatic resend, and enforces the mailbox outreach cap across campaign/playbook/Agent email. Conversation replies are explicitly exempt from cold-outreach capacity.
+- [x] Add Gmail/Microsoft inbound normalization and verified reply handling. Provider conversation rereads capture verified reply bodies/subjects/senders and project them into the canonical Person transcript before consequential reply outcomes are recorded.
+- [x] Add a Person-centric unified Messages read surface and exact-payload email reply preparation. `POST /api/conversations/:id/replies/prepare` creates a retry-safe `gtm.conversation-email-reply` approval-backed playbook; approval resumes the existing `email.send` executor and projects the confirmed outbound message back into the same transcript.
+- [~] Separate reply, unsubscribe, hard bounce, delivery failure, OOO, automatic reply, unknown, and unverified sender-only outcomes. Provider-thread verified outcomes are now typed; unsubscribe/hard bounce create durable suppression, human reply/unsubscribe stop future campaign work, and OOO/automatic/unknown do not masquerade as a human response. A sender-only unverified presentation path remains intentionally non-authoritative work.
 
 Exit criterion: the GTM operator can work email and LinkedIn around shared People and consistent outcome semantics.
 
 ### Phase 4 — agent principals + operator surface
 
-- [ ] Add durable Agent principal records.
-- [ ] Bind existing agent tokens/runs/schedules to Agent principals.
-- [ ] Add capability grants/policy display.
-- [ ] Add GTM team UI for human + agent actors.
-- [ ] Add unified `Today`/work queue showing replies, approvals, high-priority accounts, inbound submissions, blockers, and agent activity.
+- [x] Add durable Agent principal records.
+- [x] Bind existing agent tokens/runs/schedules to Agent principals.
+- [x] Add capability grants/policy display. Agent credentials grant explicit scopes while provider credentials remain connection-owned; the Team surface shows the granted capabilities.
+- [x] Add GTM team UI for human + agent actors.
+- [ ] Extend the earlier `Today` projection with attributable agent activity, agent blockers, delegated work, and per-agent drill-down.
 
 Exit criterion: agents feel like delegated GTM workers whose work is visible, attributable, and governable.
 
 ### Phase 5 — minimal opportunity + CRM boundary cleanup
 
-- [ ] Reduce product dependence on `clients`/revenue-era semantics.
-- [ ] Expose minimal Opportunity-lite for CRM-less founders.
-- [ ] Preserve CRM activity write-back as safe default.
-- [ ] Keep CRM-specific deal/contact fields externally authoritative when a CRM is connected.
-- [ ] Remove revenue/accounting/project language from GTM surfaces and architecture.
+- [x] Remove runtime dependence on the legacy `clients` compatibility object; canonical People/Person identities now own human GTM identity.
+- [x] Expose minimal Opportunity-lite for CRM-less founders with six fixed stages, Person/Account association, owner, and next action—no amount/forecast/custom CRM object model.
+- [x] Preserve CRM activity write-back as safe default.
+- [x] Keep CRM-specific deal/contact fields externally authoritative when a CRM is connected.
+- [x] Remove customer revenue/accounting/project primitives from the GTM runtime and primary product surfaces.
 
 Exit criterion: Trevra works standalone for early GTM without becoming a CRM, and cleanly overlays an external CRM when one exists.
 
-### Phase 6 — old Growth cutover and deletion
-
-- [ ] Migrate useful old Growth People/contact state.
-- [ ] Migrate suppressions.
-- [ ] Migrate sent-message/provider identifiers and unambiguous thread state.
-- [ ] Import old approved messages only as drafts requiring new Trevra approval.
-- [ ] Pause old sender/reply/discovery processes.
-- [ ] Run a controlled Trevra-only cohort.
-- [ ] Verify no production dependency remains.
-- [ ] Delete `services/growth` and related e-commerce UI/proxy/config/Temporal wiring.
-
-Never run two active outbound systems during cutover.
-
----
-
 ## 20. What not to build on the way
 
-The migration must not be used as an excuse to add:
+Implementation must not be used as an excuse to add:
 
 - a second `Lead` persistence model;
 - a full CRM object/custom-field system;

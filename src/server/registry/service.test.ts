@@ -12,11 +12,6 @@ import {
 import { runSkill } from '../skills/runner.js';
 import { runCommunityModule } from '../sandbox/community-runtime.js';
 import {
-  listCommercialProjections,
-  rebuildCommercialProjections,
-  runCommercialProjectionCycle
-} from '../projections/commercial.js';
-import {
   createModulePublisher,
   getInstalledCommunityModule,
   installModuleRelease,
@@ -289,87 +284,6 @@ describe('hosted module registry', () => {
       ).not.toBeNull();
     } finally {
       await database.prepare('DELETE FROM workspaces WHERE id=?').run(intruderWorkspace);
-    }
-  });
-});
-
-describe('commercial projections', () => {
-  it('rebuilds current commercial state from append-only entity events', async () => {
-    const database = await openRegistryDb();
-    expect(await runCommercialProjectionCycle(database, 5000)).toBeGreaterThan(0);
-    const initial = (
-      await listCommercialProjections(database, DEMO_WORKSPACE_ID, { entityType: 'clients' })
-    ).find((item) => item.entityId === 'cl_acme');
-    expect(initial?.state.name).toBe('Acme Labs');
-    await database
-      .prepare('UPDATE clients SET name=? WHERE id=?')
-      .run('Acme Labs Updated', 'cl_acme');
-    await runCommercialProjectionCycle(database, 5000);
-    const updated = (
-      await listCommercialProjections(database, DEMO_WORKSPACE_ID, { entityType: 'clients' })
-    ).find((item) => item.entityId === 'cl_acme');
-    expect(updated?.state.name).toBe('Acme Labs Updated');
-    expect(updated!.entityVersion).toBeGreaterThan(initial!.entityVersion);
-  });
-
-  // The rebuild route has no role check and every workspace member can reach it.
-  // Before this, one press deleted every tenant's projections.
-  it('rebuilds one tenant without touching another tenant projections', async () => {
-    const database = await openRegistryDb();
-    const otherWorkspace = id('ws');
-    const otherClient = id('cl');
-    const now = new Date().toISOString();
-    await database
-      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
-      .run(otherWorkspace, 'Neighbour', now);
-    try {
-      await database
-        .prepare(
-          'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
-        )
-        .run(
-          otherClient,
-          otherWorkspace,
-          'Neighbour Co',
-          'Pat',
-          'pat@neighbour.test',
-          'active',
-          now,
-          now
-        );
-      await runCommercialProjectionCycle(database, 5000);
-      expect(
-        (await listCommercialProjections(database, otherWorkspace, { entityType: 'clients' }))
-          .length
-      ).toBe(1);
-      const demoBefore = await listCommercialProjections(database, DEMO_WORKSPACE_ID, {
-        entityType: 'clients'
-      });
-      expect(demoBefore.length).toBeGreaterThan(0);
-
-      const replayed = await rebuildCommercialProjections(database, DEMO_WORKSPACE_ID);
-      expect(replayed).toBeGreaterThan(0);
-
-      const neighbour = await listCommercialProjections(database, otherWorkspace, {
-        entityType: 'clients'
-      });
-      expect(neighbour.length).toBe(1);
-      expect(neighbour[0]!.state.name).toBe('Neighbour Co');
-      const demoAfter = await listCommercialProjections(database, DEMO_WORKSPACE_ID, {
-        entityType: 'clients'
-      });
-      expect(demoAfter.map((row) => row.entityId).sort()).toEqual(
-        demoBefore.map((row) => row.entityId).sort()
-      );
-
-      // The rebuild replayed only one tenant, so the shared cycle checkpoint is
-      // untouched and every other tenant keeps streaming from where it was.
-      const checkpoint = await database
-        .prepare('SELECT last_position FROM projection_checkpoints WHERE projection_name=?')
-        .get<{ last_position: number }>('commercial-entity-v1');
-      expect(Number(checkpoint?.last_position ?? 0)).toBeGreaterThan(0);
-    } finally {
-      await database.prepare('DELETE FROM workspaces WHERE id=?').run(otherWorkspace);
     }
   });
 });

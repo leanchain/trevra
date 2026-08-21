@@ -3,6 +3,7 @@ import { MockLanguageModelV4 } from 'ai/test';
 import type { LanguageModelV4, LanguageModelV4GenerateResult } from '@ai-sdk/provider';
 import { openDatabase, type Db } from '../db.js';
 import { setAgentBudget } from './budget.js';
+import { ensureDefaultAgent } from '../agents.js';
 import { STALE_RUN_ERROR, STALE_RUN_MINUTES, listAgentRuns, reapStaleAgentRuns } from './runs.js';
 import {
   DEFAULT_INTERVAL_MINUTES,
@@ -66,13 +67,18 @@ function answer(text: string): LanguageModelV4GenerateResult {
 }
 
 function installModel(workspaceId: string, text: string): void {
-  installed.models.set(workspaceId, new MockLanguageModelV4({ modelId: MODEL_ID, doGenerate: [answer(text)] }));
+  installed.models.set(
+    workspaceId,
+    new MockLanguageModelV4({ modelId: MODEL_ID, doGenerate: [answer(text)] })
+  );
 }
 
 /** Move a schedule's window into the past, so the next sweep is deterministic. */
 async function makeDue(workspaceId: string): Promise<void> {
   await db
-    .prepare("UPDATE workspace_agent_schedule SET next_run_at = now() - INTERVAL '1 minute' WHERE workspace_id=?")
+    .prepare(
+      "UPDATE workspace_agent_schedule SET next_run_at = now() - INTERVAL '1 minute' WHERE workspace_id=?"
+    )
     .run(workspaceId);
 }
 
@@ -91,11 +97,15 @@ beforeEach(async () => {
     // so every test starts from nothing regardless of order.
     await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
     await db
-      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+      .prepare(
+        'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+      )
       .run(workspaceId, `Schedule test ${workspaceId}`, new Date().toISOString());
   }
   await db
-    .prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING')
+    .prepare(
+      'INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(USER_ID, WS_OK, 'schedule@test.example', 'Schedule Tester', new Date().toISOString());
 
   // runDueAgentSchedules is deliberately GLOBAL -- it sweeps every workspace on
@@ -103,7 +113,9 @@ beforeEach(async () => {
   // so park anything that is not ours; otherwise this file's counts would
   // describe somebody else's fixtures.
   await db
-    .prepare('UPDATE workspace_agent_schedule SET enabled=FALSE WHERE workspace_id NOT IN (?,?,?,?)')
+    .prepare(
+      'UPDATE workspace_agent_schedule SET enabled=FALSE WHERE workspace_id NOT IN (?,?,?,?)'
+    )
     .run(...WORKSPACES);
 });
 
@@ -125,7 +137,12 @@ describe('setAgentSchedule', () => {
     await makeDue(WS_OK);
     expect(await claimDueAgentSchedules(db)).toEqual([]);
 
-    await setAgentSchedule(db, WS_OK, { intervalMinutes: 60, goal: 'Look at the overdue invoices' }, USER_ID);
+    await setAgentSchedule(
+      db,
+      WS_OK,
+      { intervalMinutes: 60, goal: 'Look at the overdue invoices' },
+      USER_ID
+    );
     const on = await setAgentSchedule(db, WS_OK, { enabled: true }, USER_ID);
     expect(on.enabled).toBe(true);
     expect(on.intervalMinutes).toBe(60);
@@ -133,17 +150,21 @@ describe('setAgentSchedule', () => {
   });
 
   it('refuses a cadence outside the window, and writes nothing when it does', async () => {
-    await expect(setAgentSchedule(db, WS_OK, { intervalMinutes: MIN_INTERVAL_MINUTES - 1 }))
-      .rejects.toThrow(/between 15 and 10080/);
-    await expect(setAgentSchedule(db, WS_OK, { intervalMinutes: MAX_INTERVAL_MINUTES + 1 }))
-      .rejects.toThrow(/between 15 and 10080/);
+    await expect(
+      setAgentSchedule(db, WS_OK, { intervalMinutes: MIN_INTERVAL_MINUTES - 1 })
+    ).rejects.toThrow(/between 15 and 10080/);
+    await expect(
+      setAgentSchedule(db, WS_OK, { intervalMinutes: MAX_INTERVAL_MINUTES + 1 })
+    ).rejects.toThrow(/between 15 and 10080/);
     await expect(setAgentSchedule(db, WS_OK, { intervalMinutes: 90.5 })).rejects.toThrow();
     expect(await getAgentSchedule(db, WS_OK)).toBeNull();
 
-    await expect(setAgentSchedule(db, WS_OK, { intervalMinutes: MIN_INTERVAL_MINUTES }))
-      .resolves.toMatchObject({ intervalMinutes: MIN_INTERVAL_MINUTES });
-    await expect(setAgentSchedule(db, WS_OK, { intervalMinutes: MAX_INTERVAL_MINUTES }))
-      .resolves.toMatchObject({ intervalMinutes: MAX_INTERVAL_MINUTES });
+    await expect(
+      setAgentSchedule(db, WS_OK, { intervalMinutes: MIN_INTERVAL_MINUTES })
+    ).resolves.toMatchObject({ intervalMinutes: MIN_INTERVAL_MINUTES });
+    await expect(
+      setAgentSchedule(db, WS_OK, { intervalMinutes: MAX_INTERVAL_MINUTES })
+    ).resolves.toMatchObject({ intervalMinutes: MAX_INTERVAL_MINUTES });
   });
 
   it('records the change so turning unattended spending on is findable afterwards', async () => {
@@ -157,7 +178,10 @@ describe('setAgentSchedule', () => {
     expect(row?.entity_id).toBe(WS_OK);
     expect(row?.actor_type).toBe('user');
     expect(row?.actor_id).toBe(USER_ID);
-    expect(JSON.parse(row?.metadata_json ?? '{}')).toMatchObject({ enabled: true, intervalMinutes: 720 });
+    expect(JSON.parse(row?.metadata_json ?? '{}')).toMatchObject({
+      enabled: true,
+      intervalMinutes: 720
+    });
   });
 });
 
@@ -166,7 +190,10 @@ describe('claimDueAgentSchedules', () => {
     // Two worker replicas starting a cycle at the same instant is the normal
     // case, not the exotic one. Both must not run the same workspace.
     for (const workspaceId of WORKSPACES) {
-      await setAgentSchedule(db, workspaceId, { enabled: true, intervalMinutes: MIN_INTERVAL_MINUTES });
+      await setAgentSchedule(db, workspaceId, {
+        enabled: true,
+        intervalMinutes: MIN_INTERVAL_MINUTES
+      });
       await makeDue(workspaceId);
     }
 
@@ -187,7 +214,9 @@ describe('claimDueAgentSchedules', () => {
   it('leaves a schedule alone until its window, and never claims a disabled one', async () => {
     await setAgentSchedule(db, WS_OK, { enabled: true, intervalMinutes: 60 });
     await db
-      .prepare("UPDATE workspace_agent_schedule SET next_run_at = now() + INTERVAL '1 hour' WHERE workspace_id=?")
+      .prepare(
+        "UPDATE workspace_agent_schedule SET next_run_at = now() + INTERVAL '1 hour' WHERE workspace_id=?"
+      )
       .run(WS_OK);
 
     await setAgentSchedule(db, WS_CAPPED, { enabled: false, intervalMinutes: 60 });
@@ -207,10 +236,14 @@ describe('claimDueAgentSchedules', () => {
     // identical unattended runs at the operator's key.
     await setAgentSchedule(db, WS_OK, { enabled: true, intervalMinutes: 1440 });
     await db
-      .prepare("UPDATE workspace_agent_schedule SET next_run_at = now() - INTERVAL '7 days' WHERE workspace_id=?")
+      .prepare(
+        "UPDATE workspace_agent_schedule SET next_run_at = now() - INTERVAL '7 days' WHERE workspace_id=?"
+      )
       .run(WS_OK);
 
-    expect((await claimDueAgentSchedules(db)).map((schedule) => schedule.workspaceId)).toEqual([WS_OK]);
+    expect((await claimDueAgentSchedules(db)).map((schedule) => schedule.workspaceId)).toEqual([
+      WS_OK
+    ]);
     expect(await claimDueAgentSchedules(db)).toEqual([]);
 
     const after = await getAgentSchedule(db, WS_OK);
@@ -227,7 +260,10 @@ describe('runDueAgentSchedules', () => {
     // WS_CAPPED keeps the default budget -- off -- which is the refusal path.
 
     for (const workspaceId of [WS_CAPPED, WS_BROKEN, WS_OK]) {
-      await setAgentSchedule(db, workspaceId, { enabled: true, goal: `Nightly review for ${workspaceId}` });
+      await setAgentSchedule(db, workspaceId, {
+        enabled: true,
+        goal: `Nightly review for ${workspaceId}`
+      });
       await makeDue(workspaceId);
     }
 
@@ -260,10 +296,24 @@ describe('runDueAgentSchedules', () => {
   it('skips a workspace whose previous run is still going', async () => {
     installModel(WS_BUSY, 'This must never run.');
     await setAgentBudget(db, WS_BUSY, { enabled: true });
-    await db.prepare(`
-      INSERT INTO agent_runs (id, workspace_id, trigger, status, goal, step_count, max_steps)
-      VALUES (?,?,?,?,?,?,?)
-    `).run('arun_schedule_busy', WS_BUSY, 'schedule', 'running', 'the previous cadence', 0, 12);
+    const agent = await ensureDefaultAgent(db, WS_BUSY);
+    await db
+      .prepare(
+        `
+      INSERT INTO agent_runs (id, workspace_id, agent_id, trigger, status, goal, step_count, max_steps)
+      VALUES (?,?,?,?,?,?,?,?)
+    `
+      )
+      .run(
+        'arun_schedule_busy',
+        WS_BUSY,
+        agent.id,
+        'schedule',
+        'running',
+        'the previous cadence',
+        0,
+        12
+      );
 
     await setAgentSchedule(db, WS_BUSY, { enabled: true, goal: 'the next cadence' });
     await makeDue(WS_BUSY);
@@ -294,13 +344,25 @@ describe('a run nothing is advancing any more', () => {
   it('wedges the schedule until it is reaped, and never again after', async () => {
     installModel(WS_BUSY, 'Read the brief. Nothing needs a human today.');
     await setAgentBudget(db, WS_BUSY, { enabled: true });
-    await db.prepare(`
-      INSERT INTO agent_runs (id, workspace_id, trigger, status, goal, step_count, max_steps, started_at)
-      VALUES (?,?,?,?,?,?,?, now() - make_interval(mins => ?::int))
-    `).run(
-      'arun_schedule_wedged', WS_BUSY, 'schedule', 'running',
-      'the run the worker was killed in the middle of', 3, 12, STALE_RUN_MINUTES + 30
-    );
+    const agent = await ensureDefaultAgent(db, WS_BUSY);
+    await db
+      .prepare(
+        `
+      INSERT INTO agent_runs (id, workspace_id, agent_id, trigger, status, goal, step_count, max_steps, started_at)
+      VALUES (?,?,?,?,?,?,?,?, now() - make_interval(mins => ?::int))
+    `
+      )
+      .run(
+        'arun_schedule_wedged',
+        WS_BUSY,
+        agent.id,
+        'schedule',
+        'running',
+        'the run the worker was killed in the middle of',
+        3,
+        12,
+        STALE_RUN_MINUTES + 30
+      );
 
     await setAgentSchedule(db, WS_BUSY, { enabled: true, goal: 'the next cadence' });
 
@@ -321,7 +383,11 @@ describe('a run nothing is advancing any more', () => {
 
     const runs = await listAgentRuns(db, WS_BUSY, {});
     expect(runs).toHaveLength(2);
-    expect(runs[0]).toMatchObject({ goal: 'the next cadence', status: 'completed', trigger: 'schedule' });
+    expect(runs[0]).toMatchObject({
+      goal: 'the next cadence',
+      status: 'completed',
+      trigger: 'schedule'
+    });
 
     // The abandoned run is not quietly deleted or relabelled 'completed'. It
     // stays in the ledger saying what actually happened to it.

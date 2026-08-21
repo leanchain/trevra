@@ -1,7 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MockLanguageModelV4 } from 'ai/test';
-import type { LanguageModelV4, LanguageModelV4CallOptions, LanguageModelV4GenerateResult } from '@ai-sdk/provider';
+import type {
+  LanguageModelV4,
+  LanguageModelV4CallOptions,
+  LanguageModelV4GenerateResult
+} from '@ai-sdk/provider';
 import { AGENT_SCOPES } from '../agent-access.js';
 import { openDatabase, type Db } from '../db.js';
 import { setAgentBudget, unreportedUsageFloorCents } from './budget.js';
@@ -29,7 +33,8 @@ vi.mock('./provider.js', async (importOriginal) => {
     resolveWorkspaceModel: async (db: never, workspaceId: string) => {
       const resolved = await actual.resolveWorkspaceModel(db, workspaceId);
       if (!resolved) return null;
-      if (!installed.model) throw new Error('This test resolved a model but installed no test double');
+      if (!installed.model)
+        throw new Error('This test resolved a model but installed no test double');
       return { ...resolved, model: installed.model };
     }
   };
@@ -79,7 +84,10 @@ vi.mock('./cli.js', async (importOriginal) => {
     ...actual,
     resolveWorkspaceCliBackend: vi.fn(async () => workspaceCli.backend),
     runHostedAgentViaCli: vi.fn(async () => {
-      if (!workspaceCli.runResult) throw new Error('This test resolved a workspace CLI backend but installed no run-result double');
+      if (!workspaceCli.runResult)
+        throw new Error(
+          'This test resolved a workspace CLI backend but installed no run-result double'
+        );
       return workspaceCli.runResult;
     })
   };
@@ -107,7 +115,12 @@ function usage(inputTokens: number, outputTokens: number): LanguageModelV4Genera
  */
 function noUsage(): LanguageModelV4GenerateResult['usage'] {
   return {
-    inputTokens: { total: undefined, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+    inputTokens: {
+      total: undefined,
+      noCache: undefined,
+      cacheRead: undefined,
+      cacheWrite: undefined
+    },
     outputTokens: { total: undefined, text: undefined, reasoning: undefined }
   };
 }
@@ -127,11 +140,19 @@ function unmeteredAnswer(text: string): LanguageModelV4GenerateResult {
 }
 
 /** The same tool call, from a provider that reports nothing about what it cost. */
-function unmeteredToolCall(toolName: string, input: unknown, toolCallId = 'call_1'): LanguageModelV4GenerateResult {
+function unmeteredToolCall(
+  toolName: string,
+  input: unknown,
+  toolCallId = 'call_1'
+): LanguageModelV4GenerateResult {
   return { ...toolCall(toolName, input, toolCallId), usage: noUsage() };
 }
 
-function toolCall(toolName: string, input: unknown, toolCallId = 'call_1'): LanguageModelV4GenerateResult {
+function toolCall(
+  toolName: string,
+  input: unknown,
+  toolCallId = 'call_1'
+): LanguageModelV4GenerateResult {
   return {
     content: [{ type: 'tool-call', toolCallId, toolName, input: JSON.stringify(input) }],
     finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
@@ -142,7 +163,9 @@ function toolCall(toolName: string, input: unknown, toolCallId = 'call_1'): Lang
 
 /** Installs a double that replays the given results, one per model call. */
 function installModel(
-  doGenerate: LanguageModelV4GenerateResult[] | ((options: LanguageModelV4CallOptions) => Promise<LanguageModelV4GenerateResult>)
+  doGenerate:
+    | LanguageModelV4GenerateResult[]
+    | ((options: LanguageModelV4CallOptions) => Promise<LanguageModelV4GenerateResult>)
 ): MockLanguageModelV4 {
   const model = new MockLanguageModelV4({ modelId: MODEL_ID, doGenerate });
   installed.model = model;
@@ -150,8 +173,16 @@ function installModel(
 }
 
 async function configureByok(): Promise<void> {
-  await putWorkspaceAgentConfig(db, { workspaceId: WORKSPACE_ID, baseUrl: BASE_URL, model: MODEL_ID });
-  await putWorkspaceSecret(db, { workspaceId: WORKSPACE_ID, kind: 'model_api_key', plaintext: API_KEY });
+  await putWorkspaceAgentConfig(db, {
+    workspaceId: WORKSPACE_ID,
+    baseUrl: BASE_URL,
+    model: MODEL_ID
+  });
+  await putWorkspaceSecret(db, {
+    workspaceId: WORKSPACE_ID,
+    kind: 'model_api_key',
+    plaintext: API_KEY
+  });
 }
 
 async function runRowCount(): Promise<number> {
@@ -161,9 +192,22 @@ async function runRowCount(): Promise<number> {
   return row?.total ?? 0;
 }
 
-async function stepsOf(runId: string): Promise<Array<{ seq: number; kind: string; tool_name: string | null; input_json: string | null; output_json: string | null; error: string | null }>> {
+async function stepsOf(
+  runId: string
+): Promise<
+  Array<{
+    seq: number;
+    kind: string;
+    tool_name: string | null;
+    input_json: string | null;
+    output_json: string | null;
+    error: string | null;
+  }>
+> {
   return db
-    .prepare('SELECT seq, kind, tool_name, input_json, output_json, error FROM agent_run_steps WHERE run_id=? ORDER BY seq ASC')
+    .prepare(
+      'SELECT seq, kind, tool_name, input_json, output_json, error FROM agent_run_steps WHERE run_id=? ORDER BY seq ASC'
+    )
     .all(runId);
 }
 
@@ -189,7 +233,9 @@ beforeEach(async () => {
   await db.prepare('DELETE FROM workspace_agent_budget WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM agent_model_calls WHERE workspace_id=?').run(WORKSPACE_ID);
   await db
-    .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE_ID, 'Agent loop test', new Date().toISOString());
 });
 
@@ -212,8 +258,9 @@ describe('refusing before a run exists', () => {
     await configureByok();
     installModel([answer('never reached')]);
 
-    await expect(runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' }))
-      .rejects.toThrow('Agent spending is off. Turn it on in Setup.');
+    await expect(
+      runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' })
+    ).rejects.toThrow('Agent spending is off. Turn it on in Setup.');
 
     // A refused call must not leave a run row: the budget check is pre-flight.
     expect(await runRowCount()).toBe(0);
@@ -222,28 +269,39 @@ describe('refusing before a run exists', () => {
   it('refuses once the cap is spent', async () => {
     await configureByok();
     await setAgentBudget(db, WORKSPACE_ID, { enabled: true, monthlyCapCents: 100 });
-    await db.prepare('UPDATE workspace_agent_budget SET spent_cents=? WHERE workspace_id=?').run(100, WORKSPACE_ID);
+    await db
+      .prepare('UPDATE workspace_agent_budget SET spent_cents=? WHERE workspace_id=?')
+      .run(100, WORKSPACE_ID);
     installModel([answer('never reached')]);
 
-    await expect(runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' }))
-      .rejects.toThrow("This month's $1.00 agent budget is spent.");
+    await expect(
+      runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' })
+    ).rejects.toThrow("This month's $1.00 agent budget is spent.");
     expect(await runRowCount()).toBe(0);
   });
 
   it('names the endpoint, the model and the key when BYOK was never set up', async () => {
     await setAgentBudget(db, WORKSPACE_ID, { enabled: true });
 
-    await expect(runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' }))
-      .rejects.toThrow('The hosted agent is not set up: add a model endpoint, a model name and a model API key in Setup.');
+    await expect(
+      runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' })
+    ).rejects.toThrow(
+      'The hosted agent is not set up: add a model endpoint, a model name and a model API key in Setup.'
+    );
     expect(await runRowCount()).toBe(0);
   });
 
   it('names only the key when the endpoint is configured but no key is stored', async () => {
     await setAgentBudget(db, WORKSPACE_ID, { enabled: true });
-    await putWorkspaceAgentConfig(db, { workspaceId: WORKSPACE_ID, baseUrl: BASE_URL, model: MODEL_ID });
+    await putWorkspaceAgentConfig(db, {
+      workspaceId: WORKSPACE_ID,
+      baseUrl: BASE_URL,
+      model: MODEL_ID
+    });
 
-    await expect(runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' }))
-      .rejects.toThrow('The hosted agent is not set up: add a model API key in Setup.');
+    await expect(
+      runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' })
+    ).rejects.toThrow('The hosted agent is not set up: add a model API key in Setup.');
     expect(await runRowCount()).toBe(0);
   });
 });
@@ -280,22 +338,37 @@ describe('the workspace CLI backend', () => {
     // would throw "The hosted agent is not set up" instead of returning.
     workspaceCli.backend = FAKE_BACKEND;
     const fakeRecord = {
-      id: 'run_fake_workspace_cli', workspaceId: WORKSPACE_ID, status: 'completed' as const,
-      trigger: 'manual' as const, goal: 'anything', summary: 'done via the workspace subscription',
-      error: null, maxSteps: 12, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString()
+      id: 'run_fake_workspace_cli',
+      workspaceId: WORKSPACE_ID,
+      status: 'completed' as const,
+      trigger: 'manual' as const,
+      goal: 'anything',
+      summary: 'done via the workspace subscription',
+      error: null,
+      maxSteps: 12,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString()
     };
     workspaceCli.runResult = fakeRecord;
 
-    const result = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' });
+    const result = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'anything',
+      trigger: 'manual'
+    });
 
     expect(result).toEqual(fakeRecord);
     expect(resolveWorkspaceCliBackend).toHaveBeenCalledWith(db, WORKSPACE_ID);
-    expect(runHostedAgentViaCli).toHaveBeenCalledWith(db, FAKE_BACKEND, expect.objectContaining({
-      workspaceId: WORKSPACE_ID,
-      goal: 'anything',
-      trigger: 'manual',
-      scopes: HOSTED_AGENT_SCOPES
-    }));
+    expect(runHostedAgentViaCli).toHaveBeenCalledWith(
+      db,
+      FAKE_BACKEND,
+      expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
+        goal: 'anything',
+        trigger: 'manual',
+        scopes: HOSTED_AGENT_SCOPES
+      })
+    );
     // No SDK loop ran, so no run row and no model call landed for this path --
     // `runHostedAgentViaCli` (mocked here) owns that ledger, exactly as it does
     // for the global env path.
@@ -308,7 +381,11 @@ describe('the workspace CLI backend', () => {
     await configureByok();
     installModel([answer('handled by BYOK, as always')]);
 
-    const result = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'anything', trigger: 'manual' });
+    const result = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'anything',
+      trigger: 'manual'
+    });
 
     expect(result.status).toBe('completed');
     expect(resolveWorkspaceCliBackend).toHaveBeenCalledWith(db, WORKSPACE_ID);
@@ -354,10 +431,16 @@ describe('a run that calls one tool and then answers', () => {
   it('charges the usage of every step to the budget', async () => {
     installModel([toolCall('trevra_list_skills', {}), answer('done')]);
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'read', trigger: 'schedule' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'read',
+      trigger: 'schedule'
+    });
 
     const calls = await db
-      .prepare('SELECT run_id, model, prompt_tokens, completion_tokens, cost_cents FROM agent_model_calls WHERE workspace_id=? ORDER BY created_at')
+      .prepare(
+        'SELECT run_id, model, prompt_tokens, completion_tokens, cost_cents FROM agent_model_calls WHERE workspace_id=? ORDER BY created_at'
+      )
       .all<Record<string, unknown>>(WORKSPACE_ID);
 
     // One row per model call, each carrying that step's own token counts.
@@ -381,7 +464,11 @@ describe('a run that calls one tool and then answers', () => {
       answer('That playbook run does not exist, so there is nothing to report.')
     ]);
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'check a run', trigger: 'manual' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'check a run',
+      trigger: 'manual'
+    });
 
     // A tool failure is the model's problem to recover from, not a dead run.
     expect(run.status).toBe('completed');
@@ -397,7 +484,11 @@ describe('a run that calls one tool and then answers', () => {
       throw new Error('provider exploded');
     });
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'break', trigger: 'manual' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'break',
+      trigger: 'manual'
+    });
 
     expect(run.status).toBe('failed');
     expect(run.error).toContain('provider exploded');
@@ -495,7 +586,11 @@ describe('how long each step took', () => {
       return calls === 1 ? toolCall('trevra_list_skills', {}) : answer('I read the catalog.');
     });
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'time me', trigger: 'manual' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'time me',
+      trigger: 'manual'
+    });
     expect(run.status).toBe('completed');
 
     const steps = (await getAgentRun(db, WORKSPACE_ID, run.id))?.steps ?? [];
@@ -525,9 +620,15 @@ describe('how long each step took', () => {
       answer('There is nothing to report.')
     ]);
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'check a run', trigger: 'manual' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'check a run',
+      trigger: 'manual'
+    });
 
-    const toolStep = (await getAgentRun(db, WORKSPACE_ID, run.id))?.steps.find((step) => step.kind === 'tool');
+    const toolStep = (await getAgentRun(db, WORKSPACE_ID, run.id))?.steps.find(
+      (step) => step.kind === 'tool'
+    );
     expect(toolStep?.error).toBe('Playbook run not found');
     expect(toolStep?.durationMs).not.toBeNull();
     expect(toolStep?.durationMs as number).toBeGreaterThanOrEqual(0);
@@ -548,7 +649,11 @@ describe('the budget between steps', () => {
       return toolCall('trevra_list_skills', {}, `call_${calls}`);
     });
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'keep going', trigger: 'schedule' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'keep going',
+      trigger: 'schedule'
+    });
 
     expect(model.doGenerateCalls).toHaveLength(1);
     expect(run.status).toBe('failed');
@@ -567,7 +672,9 @@ describe('the tool surface handed to the model', () => {
     const model = installModel([answer('nothing to do')]);
     await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'look around', trigger: 'manual' });
 
-    const offered = (model.doGenerateCalls[0].tools ?? []).map((tool) => (tool as { name: string }).name);
+    const offered = (model.doGenerateCalls[0].tools ?? []).map(
+      (tool) => (tool as { name: string }).name
+    );
     const expected = (await listAgentTools(db, WORKSPACE_ID)).map((definition) => definition.name);
 
     // app-spec.md section 11: no agent approves its own work. The list itself is
@@ -610,16 +717,25 @@ describe('a provider that reports no usage', () => {
 
   it('still grows the workspace spend, and marks the calls as estimated', async () => {
     await setAgentBudget(db, WORKSPACE_ID, { enabled: true });
-    installModel([unmeteredToolCall('trevra_list_skills', {}), unmeteredAnswer('Nothing is waiting for you.')]);
+    installModel([
+      unmeteredToolCall('trevra_list_skills', {}),
+      unmeteredAnswer('Nothing is waiting for you.')
+    ]);
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'read', trigger: 'manual' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'read',
+      trigger: 'manual'
+    });
     expect(run.status).toBe('completed');
 
     const floor = unreportedUsageFloorCents(MODEL_ID);
     expect(await spentCents()).toBe(floor * 2);
 
     const calls = await db
-      .prepare('SELECT prompt_tokens, completion_tokens, cost_cents, usage_reported FROM agent_model_calls WHERE workspace_id=?')
+      .prepare(
+        'SELECT prompt_tokens, completion_tokens, cost_cents, usage_reported FROM agent_model_calls WHERE workspace_id=?'
+      )
       .all<Record<string, unknown>>(WORKSPACE_ID);
     expect(calls).toHaveLength(2);
     for (const call of calls) {
@@ -635,7 +751,10 @@ describe('a provider that reports no usage', () => {
     // calls buys exactly three, not the twelve the step ceiling would allow.
     const floor = unreportedUsageFloorCents(MODEL_ID);
     const CALLS_THE_CAP_BUYS = 3;
-    await setAgentBudget(db, WORKSPACE_ID, { enabled: true, monthlyCapCents: floor * CALLS_THE_CAP_BUYS });
+    await setAgentBudget(db, WORKSPACE_ID, {
+      enabled: true,
+      monthlyCapCents: floor * CALLS_THE_CAP_BUYS
+    });
 
     let calls = 0;
     const model = installModel(async () => {
@@ -643,7 +762,11 @@ describe('a provider that reports no usage', () => {
       return unmeteredToolCall('trevra_list_skills', {}, `call_${calls}`);
     });
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'loop on a free endpoint', trigger: 'schedule' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'loop on a free endpoint',
+      trigger: 'schedule'
+    });
 
     expect(model.doGenerateCalls).toHaveLength(CALLS_THE_CAP_BUYS);
     expect(run.status).toBe('failed');
@@ -652,8 +775,9 @@ describe('a provider that reports no usage', () => {
 
     // And the next run does not start at all: the pre-flight is now the refusal.
     installModel([unmeteredAnswer('never reached')]);
-    await expect(runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'again', trigger: 'manual' }))
-      .rejects.toThrow('agent budget is spent');
+    await expect(
+      runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'again', trigger: 'manual' })
+    ).rejects.toThrow('agent budget is spent');
   });
 });
 
@@ -683,7 +807,11 @@ describe('a step whose persistence fails', () => {
       return calls === 1 ? toolCall('trevra_list_skills', {}, 'call_1') : answer('all done');
     });
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'write a step', trigger: 'manual' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'write a step',
+      trigger: 'manual'
+    });
 
     expect(run.status).toBe('failed');
     expect(run.error).toContain(OUTAGE);
@@ -704,7 +832,11 @@ describe('a step whose persistence fails', () => {
     stepWrite.failWith = new Error(OUTAGE);
     const model = installModel([answer('Nothing needs a human right now.')]);
 
-    const run = await runHostedAgent(db, { workspaceId: WORKSPACE_ID, goal: 'just answer', trigger: 'manual' });
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      goal: 'just answer',
+      trigger: 'manual'
+    });
 
     expect(model.doGenerateCalls).toHaveLength(1);
     expect(run.status).toBe('failed');
@@ -726,7 +858,7 @@ describe('the model key', () => {
     await configureByok();
     await setAgentBudget(db, WORKSPACE_ID, { enabled: true });
     installModel([
-      toolCall('trevra_revenue_brief', {}),
+      toolCall('trevra_gtm_brief', {}),
       answer('Here is the brief. Nothing is waiting for approval.')
     ]);
 
@@ -738,7 +870,9 @@ describe('the model key', () => {
     expect(run.status).toBe('completed');
 
     const stepRows = await db
-      .prepare('SELECT input_json, output_json, error, tool_name FROM agent_run_steps WHERE workspace_id=?')
+      .prepare(
+        'SELECT input_json, output_json, error, tool_name FROM agent_run_steps WHERE workspace_id=?'
+      )
       .all<Record<string, unknown>>(WORKSPACE_ID);
     expect(stepRows.length).toBeGreaterThan(0);
 

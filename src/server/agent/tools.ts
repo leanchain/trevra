@@ -37,6 +37,12 @@ import {
   startPlaybookRun
 } from '../playbooks/engine.js';
 import { listDomainEvents } from '../control-plane/events.js';
+import { listContacts } from '../lead-capture/people.js';
+import { listRankedAccounts } from '../accounts/store.js';
+import type { AccountTier } from '../accounts/types.js';
+import { listOpportunities, OPPORTUNITY_STAGES, type OpportunityStage } from '../opportunities.js';
+import { listConversations } from '../conversations.js';
+import { listEmailDeliveries } from '../email-deliveries.js';
 import {
   executeWorkspaceSkill,
   getWorkspaceSkillRun,
@@ -48,7 +54,7 @@ import {
 export interface AgentToolContext {
   db: Db;
   workspaceId: string;
-  /** Whoever the run is attributed to: an agent token id, or the hosted run id. */
+  /** Durable Agent principal id. Credentials and run ids are never actors. */
   actorId: string;
 }
 
@@ -83,6 +89,120 @@ export const BUILT_IN_AGENT_TOOLS: readonly AgentToolDefinition[] = [
     idempotent: true,
     openWorld: false,
     run: (ctx) => listWorkspaceSkills(ctx.db, ctx.workspaceId)
+  },
+  {
+    name: 'trevra_list_people',
+    title: 'List GTM People',
+    description: 'List canonical People in this workspace. People may exist without an Account.',
+    scope: 'workspace:read',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+      additionalProperties: false
+    },
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: false,
+    run: (ctx, args) =>
+      listContacts(ctx.db, ctx.workspaceId, optionalInteger(asObject(args).limit) ?? 100)
+  },
+  {
+    name: 'trevra_list_accounts',
+    title: 'List target Accounts',
+    description: 'List ranked GTM Accounts with current score and recent evidence signals.',
+    scope: 'workspace:read',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tier: { type: 'string', enum: ['hot', 'warm', 'cold'] },
+        limit: { type: 'integer', minimum: 1, maximum: 500, default: 50 }
+      },
+      additionalProperties: false
+    },
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: false,
+    run: (ctx, args) => {
+      const input = asObject(args);
+      const tier =
+        input.tier === 'hot' || input.tier === 'warm' || input.tier === 'cold'
+          ? (input.tier as AccountTier)
+          : undefined;
+      return listRankedAccounts(ctx.db, ctx.workspaceId, {
+        tier,
+        limit: optionalInteger(input.limit),
+        signalLimit: 5
+      });
+    }
+  },
+  {
+    name: 'trevra_list_opportunities',
+    title: 'List GTM Opportunities',
+    description:
+      'List minimal native GTM opportunity state. Trevra stores stages and next actions, never revenue.',
+    scope: 'workspace:read',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        stage: { type: 'string', enum: [...OPPORTUNITY_STAGES] },
+        limit: { type: 'integer', minimum: 1, maximum: 500, default: 100 }
+      },
+      additionalProperties: false
+    },
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: false,
+    run: (ctx, args) => {
+      const input = asObject(args);
+      const stage =
+        typeof input.stage === 'string' &&
+        (OPPORTUNITY_STAGES as readonly string[]).includes(input.stage)
+          ? (input.stage as OpportunityStage)
+          : undefined;
+      return listOpportunities(ctx.db, ctx.workspaceId, {
+        stage,
+        limit: optionalInteger(input.limit)
+      });
+    }
+  },
+  {
+    name: 'trevra_list_conversations',
+    title: 'List GTM Conversations',
+    description:
+      'List Person-led conversations across email and LinkedIn, including whether a human reply is needed.',
+    scope: 'workspace:read',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+      additionalProperties: false
+    },
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: false,
+    run: (ctx, args) =>
+      listConversations(ctx.db, ctx.workspaceId, optionalInteger(asObject(args).limit) ?? 100)
+  },
+  {
+    name: 'trevra_list_deliveries',
+    title: 'List GTM Deliveries',
+    description:
+      'List durable email delivery claims, including sent, failed, and uncertain outcomes that require reconciliation.',
+    scope: 'workspace:read',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+      additionalProperties: false
+    },
+    readOnly: true,
+    destructive: false,
+    idempotent: true,
+    openWorld: false,
+    run: (ctx, args) =>
+      listEmailDeliveries(ctx.db, ctx.workspaceId, optionalInteger(asObject(args).limit) ?? 100)
   },
   {
     name: 'trevra_list_playbooks',

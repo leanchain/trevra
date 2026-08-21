@@ -133,6 +133,8 @@ export interface AccountImportRow {
 }
 
 export interface AccountImportResult {
+  /** Optional Person persistence summary when reviewed contact evidence accompanied the import. */
+  people?: { created: number; matched: number; linked: number; skipped: number };
   /** Rows written. */
   created: number;
   /** Rows that matched an existing account on domain and were left alone. */

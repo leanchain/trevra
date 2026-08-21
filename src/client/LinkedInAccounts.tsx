@@ -745,9 +745,14 @@ function AccountPanel({
     setRemoving(true);
     setRemoveError(null);
     try {
-      await deleteLinkedInSeat(account.seatKey);
+      const result = await deleteLinkedInSeat(account.seatKey);
       setConfirmRemove(false);
-      setToast(`${account.label} removed. Its stored inbox is gone; what it already sent is not.`);
+      const inFlight = result.released.actionsInFlight + result.released.channelActionsInFlight;
+      setToast(
+        result.fullyStopped
+          ? `${account.label} removed. Queued work was cancelled; what it already sent remains in history.`
+          : `${account.label} removed. ${inFlight} action${inFlight === 1 ? '' : 's'} already in flight may still finish; all other queued work was cancelled.`
+      );
       onRemoved();
     } catch (error) {
       setRemoveError(errorMessage(error, 'Unable to remove this account'));

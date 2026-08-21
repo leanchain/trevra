@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { id, openDatabase, type Db } from '../db.js';
+import { createSuppression } from '../suppressions.js';
 import { recordAction } from './actions.js';
 import { createLeadList, importLeadCsv, ingestLeadSignal } from './lead-lists.js';
 import {
@@ -375,6 +376,46 @@ describe('releaseSeatWork', () => {
         'pending',
         NOW.toISOString()
       );
+    await db
+      .prepare(
+        'UPDATE linkedin_campaign_members SET assigned_seat_key=? WHERE workspace_id=? AND id=?'
+      )
+      .run('owner', WORKSPACE, member.id);
+    const channelIds = {
+      planned: id('licha'),
+      failed: id('licha'),
+      claimed: id('licha'),
+      unknown: id('licha')
+    };
+    for (const [position, [status, outcomeKnown]] of [
+      ['planned', true],
+      ['failed', true],
+      ['claimed', true],
+      ['unknown', false]
+    ].entries()) {
+      const key = status as keyof typeof channelIds;
+      await db
+        .prepare(
+          `INSERT INTO linkedin_campaign_channel_actions
+             (id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,idempotency_key,outcome_known,claimed_at,created_at,updated_at)
+           VALUES (?,?,?,?,?,?, 'email', ?, ?::timestamptz, '{}'::jsonb, ?, ?, ?::timestamptz, ?::timestamptz, ?::timestamptz)`
+        )
+        .run(
+          channelIds[key],
+          WORKSPACE,
+          created.campaign.id,
+          member.id,
+          member.contactId,
+          `channel-${position}`,
+          status,
+          NOW.toISOString(),
+          `disconnect-${status}`,
+          outcomeKnown,
+          status === 'claimed' ? NOW.toISOString() : null,
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+    }
 
     const report = await releaseSeatWork(db, WORKSPACE, 'owner', NOW);
 
@@ -382,6 +423,8 @@ describe('releaseSeatWork', () => {
       seatKey: 'owner',
       actionsSkipped: 2,
       tasksCancelled: 1,
+      channelActionsSkipped: 2,
+      channelActionsInFlight: 1,
       actionsInFlight: 1
     });
     expect(await statusOf(planned)).toBe('skipped');
@@ -389,6 +432,16 @@ describe('releaseSeatWork', () => {
     // The two boundaries every other release path in this file also draws.
     expect(await statusOf(inFlight)).toBe('planned');
     expect(await statusOf(otherSeat)).toBe('planned');
+    const channelStatuses = await db
+      .prepare(
+        `SELECT id,status FROM linkedin_campaign_channel_actions WHERE workspace_id=? AND id = ANY(?::text[])`
+      )
+      .all<{ id: string; status: string }>(WORKSPACE, Object.values(channelIds));
+    const byId = Object.fromEntries(channelStatuses.map((row) => [row.id, row.status]));
+    expect(byId[channelIds.planned]).toBe('skipped');
+    expect(byId[channelIds.failed]).toBe('skipped');
+    expect(byId[channelIds.claimed]).toBe('claimed');
+    expect(byId[channelIds.unknown]).toBe('unknown');
   });
 
   it('is idempotent, so a disconnect that retries releases nothing twice', async () => {
@@ -397,6 +450,8 @@ describe('releaseSeatWork', () => {
     expect(await releaseSeatWork(db, WORKSPACE, 'owner', NOW)).toMatchObject({
       actionsSkipped: 0,
       tasksCancelled: 0,
+      channelActionsSkipped: 0,
+      channelActionsInFlight: 0,
       actionsInFlight: 0
     });
   });
@@ -542,6 +597,7 @@ describe('shared campaign exclusion re-evaluation', () => {
           'Duplicate,One,Acme,dup1@ok.test,https://www.linkedin.com/in/duplicate-person/?trk=one',
           'Duplicate,Two,Acme,dup2@ok.test,https://www.linkedin.com/in/other-duplicate/',
           'Connected,Known,Acme,connected@ok.test,https://www.linkedin.com/in/known-connected/',
+          'Workspace,Blocked,Acme,workspace-blocked@ok.test,https://www.linkedin.com/in/workspace-blocked/',
           'Good,Lead,Acme,good@ok.test,https://www.linkedin.com/in/good-lead/'
         ].join('\n')
       },
@@ -562,6 +618,17 @@ describe('shared campaign exclusion re-evaluation', () => {
         targetRef: 'https://www.linkedin.com/in/known-connected/?trk=history',
         status: 'accepted',
         source: 'export'
+      },
+      NOW
+    );
+    await createSuppression(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        channel: 'linkedin',
+        linkedinUrl: 'https://www.linkedin.com/in/workspace-blocked/',
+        reason: 'Manual workspace block',
+        source: 'manual'
       },
       NOW
     );
@@ -594,6 +661,9 @@ describe('shared campaign exclusion re-evaluation', () => {
     ).toHaveLength(1);
     expect(byProfile.get('https://www.linkedin.com/in/known-connected/')?.exclusionReason).toBe(
       'Known LinkedIn connection excluded'
+    );
+    expect(byProfile.get('https://www.linkedin.com/in/workspace-blocked/')?.exclusionReason).toBe(
+      'Workspace suppression'
     );
     expect(byProfile.get('https://www.linkedin.com/in/good-lead/')?.status).toBe('pending');
 

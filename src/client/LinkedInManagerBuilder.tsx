@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight, Users, Workflow as WorkflowIcon } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  LoaderCircle,
+  Upload,
+  Users,
+  Workflow as WorkflowIcon
+} from 'lucide-react';
 import {
   getLinkedInManagerLeadLists,
   getLinkedInManagerSeats,
-  getLinkedInManagerWorkflows
+  getLinkedInManagerWorkflows,
+  prepareOutreach
 } from './api';
 import {
   LinkedInManagerCampaignConfig,
@@ -21,22 +29,21 @@ interface Readiness {
 
 const EMPTY: Readiness = { seats: 0, lists: 0, workflows: 0 };
 
+type Seats = Awaited<ReturnType<typeof getLinkedInManagerSeats>>;
+
+function newPreparationKey(): string {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    `prepare-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
+}
+
 /**
- * `/outreach/new` — construction only.
+ * `/outreach/new` defaults to the founder job, not the implementation objects.
  *
- * This used to gate lead-list and workflow creation behind a three-step
- * checklist, one step visible at a time -- and the moment a step was done,
- * its editor unmounted with no way back short of finishing every other step
- * too. "I made a list, now I can't pick a different one" was a direct,
- * repeated report, not a hypothetical: the campaign form now handles leads
- * and workflows itself (a card picker plus inline upload / inline starter
- * templates), so there is nothing left to gate here except the one real,
- * rarely-repeated prerequisite -- a LinkedIn account exists at all.
- *
- * Full editing (the contacts table, the step-by-step workflow builder, the
- * ceiling detail) still exists. It's the "Manage" links below, loaded only
- * when clicked -- not auto-mounted, and in particular never auto-opening a
- * list's contacts the way the old checklist step did.
+ * The ordinary path is people.csv -> safe Trevra defaults -> DRAFT campaign.
+ * Existing list/workflow construction remains available below under Advanced;
+ * simplification hides machinery, it never deletes the precise state model.
  */
 export function OutreachManagerBuilder({
   setToast,
@@ -46,6 +53,7 @@ export function OutreachManagerBuilder({
   onNavigate: (path: string) => void;
 }) {
   const [readiness, setReadiness] = useState<Readiness>(EMPTY);
+  const [seats, setSeats] = useState<Seats>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [prefill] = useState(() => takeStagedCampaignPrefill());
@@ -54,12 +62,13 @@ export function OutreachManagerBuilder({
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [seats, lists, workflows] = await Promise.all([
+      const [nextSeats, lists, workflows] = await Promise.all([
         getLinkedInManagerSeats(),
         getLinkedInManagerLeadLists(),
         getLinkedInManagerWorkflows()
       ]);
-      setReadiness({ seats: seats.length, lists: lists.length, workflows: workflows.length });
+      setSeats(nextSeats);
+      setReadiness({ seats: nextSeats.length, lists: lists.length, workflows: workflows.length });
       setError('');
     } catch (err) {
       setError(
@@ -88,7 +97,7 @@ export function OutreachManagerBuilder({
 
       {loading && (
         <section className="page-panel">
-          <p className="empty-copy">Reading your campaign building blocks…</p>
+          <p className="empty-copy">Reading your outreach setup…</p>
         </section>
       )}
 
@@ -96,8 +105,8 @@ export function OutreachManagerBuilder({
         <section className="onboarding-card mgr-first-campaign">
           <div className="onboarding-head">
             <div>
-              <h2>Add a LinkedIn account first</h2>
-              <p>A campaign sends from a real account, with its own hours and limits.</p>
+              <h2>One thing is missing</h2>
+              <p>Connect the LinkedIn account you want Trevra to use.</p>
             </div>
           </div>
           <button
@@ -105,59 +114,219 @@ export function OutreachManagerBuilder({
             type="button"
             onClick={() => onNavigate('/outreach/settings')}
           >
-            Add account <ChevronRight size={14} />
+            Connect account <ChevronRight size={14} />
           </button>
         </section>
       )}
 
       {!loading && hasAccount && (
         <>
-          <LinkedInManagerCampaignConfig
-            onChanged={refresh}
+          <SimplePrepareOutreach
+            seats={seats}
             setToast={setToast}
-            onCreated={(campaign) =>
-              onNavigate(`/outreach/campaign/${encodeURIComponent(campaign.id)}`)
-            }
-            prefill={prefill}
+            onPrepared={(href) => onNavigate(href)}
           />
 
-          <section className="page-panel builder-library-panel">
-            <div className="section-heading">
-              <div>
-                <h3 aria-level={2}>Need more control?</h3>
-                <p>
-                  Edit the leads or steps in an existing list or workflow, or manage everything
-                  you've saved.
-                </p>
-              </div>
-            </div>
-            <div className="mgr-actions">
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setManageOpen((current) => (current === 'leads' ? null : 'leads'))}
-              >
-                <Users size={14} /> Manage lead lists ({readiness.lists})
-              </button>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() =>
-                  setManageOpen((current) => (current === 'workflows' ? null : 'workflows'))
+          <details className="page-panel builder-library-panel">
+            <summary>
+              <strong>Advanced campaign builder</strong>
+              <span>Choose saved lead lists, edit workflows, schedules and campaign controls.</span>
+            </summary>
+            <div className="page-stack">
+              <LinkedInManagerCampaignConfig
+                onChanged={refresh}
+                setToast={setToast}
+                onCreated={(campaign) =>
+                  onNavigate(`/outreach/campaign/${encodeURIComponent(campaign.id)}`)
                 }
-              >
-                <WorkflowIcon size={14} /> Manage workflows ({readiness.workflows})
-              </button>
+                prefill={prefill}
+              />
+
+              <section className="page-panel builder-library-panel">
+                <div className="section-heading">
+                  <div>
+                    <h3 aria-level={2}>Saved building blocks</h3>
+                    <p>
+                      Edit existing people lists or workflow steps when the default is not enough.
+                    </p>
+                  </div>
+                </div>
+                <div className="mgr-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() =>
+                      setManageOpen((current) => (current === 'leads' ? null : 'leads'))
+                    }
+                  >
+                    <Users size={14} /> Manage lead lists ({readiness.lists})
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() =>
+                      setManageOpen((current) => (current === 'workflows' ? null : 'workflows'))
+                    }
+                  >
+                    <WorkflowIcon size={14} /> Manage workflows ({readiness.workflows})
+                  </button>
+                </div>
+                {manageOpen === 'leads' && (
+                  <LinkedInManagerLeadConfig onChanged={refresh} setToast={setToast} />
+                )}
+                {manageOpen === 'workflows' && (
+                  <LinkedInManagerWorkflowConfig onChanged={refresh} setToast={setToast} />
+                )}
+              </section>
             </div>
-            {manageOpen === 'leads' && (
-              <LinkedInManagerLeadConfig onChanged={refresh} setToast={setToast} />
-            )}
-            {manageOpen === 'workflows' && (
-              <LinkedInManagerWorkflowConfig onChanged={refresh} setToast={setToast} />
-            )}
-          </section>
+          </details>
         </>
       )}
     </div>
+  );
+}
+
+function SimplePrepareOutreach({
+  seats,
+  setToast,
+  onPrepared
+}: {
+  seats: Seats;
+  setToast: (message: string) => void;
+  onPrepared: (href: string) => void;
+}) {
+  const [name, setName] = useState('Prepared outreach');
+  const [csv, setCsv] = useState('');
+  const [fileName, setFileName] = useState('');
+  const [senderKey, setSenderKey] = useState(seats.length === 1 ? seats[0]!.seatKey : '');
+  const [idempotencyKey, setIdempotencyKey] = useState(newPreparationKey);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState('');
+
+  useEffect(() => {
+    if (seats.length === 1) setSenderKey(seats[0]!.seatKey);
+  }, [seats]);
+
+  const changeIntent = () => setIdempotencyKey(newPreparationKey());
+
+  const readFile = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setCsv(text);
+      setFileName(file.name);
+      changeIntent();
+      setProblem('');
+    } catch (error) {
+      setProblem(errorMessage(error, 'Unable to read this CSV.'));
+    }
+  };
+
+  const prepare = async () => {
+    if (!csv.trim()) {
+      setProblem('Add a CSV of people first.');
+      return;
+    }
+    if (seats.length > 1 && !senderKey) {
+      setProblem('Choose which LinkedIn account should send this outreach.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await prepareOutreach({
+        idempotencyKey,
+        name: name.trim() || 'Prepared outreach',
+        senderKey: senderKey || undefined,
+        uploadedPeopleCsv: csv
+      });
+      setProblem('');
+      setToast(
+        `Campaign ready: ${result.campaign.enrolled} ${result.campaign.enrolled === 1 ? 'person' : 'people'}. Nothing has been sent.`
+      );
+      onPrepared(result.next.href);
+    } catch (error) {
+      // Keep the same idempotency key on failure. If the server prepared the
+      // campaign but the response was lost, Retry must recover it, not duplicate it.
+      setProblem(errorMessage(error, 'Unable to prepare this outreach. Nothing was sent.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="onboarding-card mgr-first-campaign">
+      <div className="onboarding-head">
+        <div>
+          <h2>Prepare outreach</h2>
+          <p>
+            Give Trevra the people. It will prepare a safe default LinkedIn campaign for review.
+          </p>
+        </div>
+      </div>
+
+      <div className="form-grid">
+        <label>
+          Campaign name
+          <input
+            value={name}
+            maxLength={160}
+            onChange={(event) => {
+              setName(event.target.value);
+              changeIntent();
+            }}
+          />
+        </label>
+
+        {seats.length > 1 && (
+          <label>
+            LinkedIn account
+            <select
+              value={senderKey}
+              onChange={(event) => {
+                setSenderKey(event.target.value);
+                changeIntent();
+              }}
+            >
+              <option value="">Choose account</option>
+              {seats.map((seat) => (
+                <option key={seat.seatKey} value={seat.seatKey}>
+                  {seat.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+
+      <label className="import-dropzone">
+        <Upload size={18} />
+        <span>{fileName || 'Drop or choose a people CSV'}</span>
+        <small>Use the same people CSV Trevra already accepts in lead lists.</small>
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          onChange={(event) => void readFile(event.target.files?.[0])}
+        />
+      </label>
+
+      {problem && <div className="error-banner">{problem}</div>}
+
+      <div className="mgr-actions">
+        <button
+          className="primary-button"
+          type="button"
+          disabled={busy || !csv.trim()}
+          onClick={() => void prepare()}
+        >
+          {busy ? <LoaderCircle className="spin" size={15} /> : null}
+          Prepare campaign <ChevronRight size={15} />
+        </button>
+      </div>
+
+      <p className="empty-copy">
+        Trevra uses your configured account limits and a versioned safe default sequence. Nothing is
+        sent until you review and start the draft campaign.
+      </p>
+    </section>
   );
 }

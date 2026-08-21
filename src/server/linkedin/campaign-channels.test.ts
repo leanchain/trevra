@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase, type Db } from '../db.js';
+import { findSuppression } from '../suppressions.js';
 import { createLeadList, importLeadCsv } from './lead-lists.js';
 import {
   campaignMemberTimeline,
@@ -12,8 +13,11 @@ import {
 } from './managed-campaigns.js';
 import {
   recordCampaignEmailEvent,
+  recordCampaignEmailTrackingClick,
+  recordCampaignEmailTrackingOpen,
   resolveCampaignChannelUnknownOutcome,
-  runCampaignChannelActions
+  runCampaignChannelActions,
+  syncCampaignEmailProviderEvents
 } from './campaign-channels.js';
 import { runManagedCampaigns } from './runner.js';
 import { upsertSeat } from './seats.js';
@@ -31,6 +35,7 @@ beforeEach(async () => {
     )
     .run(WORKSPACE, 'Channel tests', NOW.toISOString());
   for (const table of [
+    'gtm_deliveries',
     'linkedin_campaign_email_events',
     'linkedin_campaign_channel_actions',
     'linkedin_actions',
@@ -346,6 +351,53 @@ describe('campaign channel executor', () => {
     }
   });
 
+  it('turns a provider-observed email bounce into a durable email suppression', async () => {
+    const campaignId = await campaignFor(
+      [
+        {
+          id: 'email',
+          action: 'email',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { variants: [{ id: 'a', body: 'Hi', weight: 100 }], subject: 'Hello' }
+        }
+      ],
+      'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Smith,Acme,bounce-me@example.com,https://linkedin.com/in/maya-bounce\n'
+    );
+    const member = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaign_channel_actions
+          (id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,idempotency_key,completed_at,external_ref,provider,created_at,updated_at)
+         VALUES ('licha_bounce',?,?,?,?,?,'email','sent',?::timestamptz,'{}'::jsonb,'idem-bounce',?::timestamptz,'mail-bounce','simulation',?::timestamptz,?::timestamptz)`
+      )
+      .run(
+        WORKSPACE,
+        campaignId,
+        member.id,
+        member.contactId,
+        'email',
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+
+    const event = await recordCampaignEmailEvent(
+      db,
+      WORKSPACE,
+      {
+        channelActionId: 'licha_bounce',
+        eventKind: 'bounce',
+        providerEventId: 'provider-bounce-1'
+      },
+      NOW
+    );
+    expect(event.recorded).toBe(true);
+    expect(
+      await findSuppression(db, WORKSPACE, { channel: 'email', email: 'bounce-me@example.com' })
+    ).toMatchObject({ reason: 'Email delivery hard-bounced', source: 'campaign_email_bounce' });
+  });
+
   it('an email reply stops LinkedIn and channel work for the same member', async () => {
     const campaignId = await campaignFor(
       [
@@ -413,7 +465,7 @@ describe('campaign channel executor', () => {
     const event = await recordCampaignEmailEvent(
       db,
       WORKSPACE,
-      { channelActionId: 'licha_email', eventKind: 'replied', providerEventId: 'evt-reply' },
+      { channelActionId: 'licha_email', eventKind: 'reply', providerEventId: 'evt-reply' },
       NOW
     );
     expect(event.recorded).toBe(true);
@@ -432,5 +484,265 @@ describe('campaign channel executor', () => {
           .get<{ status: string }>()
       )?.status
     ).toBe('skipped');
+  });
+
+  it('never claims a channel action that is no longer the member current workflow node', async () => {
+    const campaignId = await campaignFor(
+      [
+        {
+          id: 'wait',
+          action: 'wait',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { duration: { amount: 1, unit: 'days' } }
+        },
+        {
+          id: 'end',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        }
+      ],
+      'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Smith,Acme,maya@example.com,https://linkedin.com/in/maya-stale-channel\n'
+    );
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    const member = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
+    await db
+      .prepare(
+        `UPDATE linkedin_campaign_members SET status='waiting',current_step_id='end',step_index=1,next_eligible_at=?::timestamptz
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(NOW.toISOString(), WORKSPACE, member.id);
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaign_channel_actions
+         (id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,idempotency_key,created_at,updated_at)
+         VALUES ('licha_stale',?,?,?,?,?,'email','planned',?::timestamptz,?::jsonb,'stale-key',?::timestamptz,?::timestamptz)`
+      )
+      .run(
+        WORKSPACE,
+        campaignId,
+        member.id,
+        member.contactId,
+        'old-email-step',
+        NOW.toISOString(),
+        JSON.stringify({ recipient: 'maya@example.com', subject: 'Old', body: 'Do not send' }),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+
+    expect((await runCampaignChannelActions(db, WORKSPACE, NOW)).claimed).toBe(0);
+    expect(
+      await db
+        .prepare(`SELECT status FROM linkedin_campaign_channel_actions WHERE id='licha_stale'`)
+        .get<{ status: string }>()
+    ).toEqual({ status: 'planned' });
+  });
+
+  it('builds opaque tracking tokens and click mappings before an opted-in email is sent', async () => {
+    const campaignId = await campaignFor(
+      [
+        {
+          id: 'wait',
+          action: 'wait',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { duration: { amount: 1, unit: 'days' } }
+        },
+        {
+          id: 'end',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        }
+      ],
+      'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Smith,Acme,maya@example.com,https://linkedin.com/in/maya-track-send\n'
+    );
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    const member = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
+    await db
+      .prepare(
+        `INSERT INTO connections
+         (id,workspace_id,provider,provider_config_key,external_connection_id,display_name,status,is_demo,created_at,updated_at)
+         VALUES ('conn_demo_track',?,'gmail','trevra-gmail','demo-track','demo@example.com','connected',1,?::timestamptz,?::timestamptz)`
+      )
+      .run(WORKSPACE, NOW.toISOString(), NOW.toISOString());
+    await db
+      .prepare(
+        `UPDATE linkedin_campaign_members SET status='waiting',current_step_id='email-live',step_index=0,next_eligible_at=?::timestamptz
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(NOW.toISOString(), WORKSPACE, member.id);
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaign_channel_actions
+         (id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,idempotency_key,created_at,updated_at)
+         VALUES ('licha_track_send',?,?,?,?,?,'email','planned',?::timestamptz,?::jsonb,'track-send-key',?::timestamptz,?::timestamptz)`
+      )
+      .run(
+        WORKSPACE,
+        campaignId,
+        member.id,
+        member.contactId,
+        'email-live',
+        NOW.toISOString(),
+        JSON.stringify({
+          recipient: 'maya@example.com',
+          subject: 'Tracked email',
+          body: 'See https://example.com/demo for details',
+          tracking: 'opens_clicks',
+          threaded: false
+        }),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+
+    const run = await runCampaignChannelActions(db, WORKSPACE, NOW);
+    expect(run.sent).toBe(1);
+    const action = await db
+      .prepare(
+        `SELECT status,tracking_token,connection_id FROM linkedin_campaign_channel_actions WHERE id='licha_track_send'`
+      )
+      .get<{ status: string; tracking_token: string | null; connection_id: string | null }>();
+    expect(action?.status).toBe('sent');
+    expect(action?.tracking_token).toMatch(/^lietrk_/);
+    expect(action?.connection_id).toBe('conn_demo_track');
+    const link = await db
+      .prepare(
+        `SELECT token,target_url FROM linkedin_campaign_email_tracking_links WHERE workspace_id=? AND channel_action_id='licha_track_send'`
+      )
+      .get<{ token: string; target_url: string }>(WORKSPACE);
+    expect(link?.token).toMatch(/^lietl_/);
+    expect(link?.target_url).toBe('https://example.com/demo');
+  });
+
+  it('records native tracking opens/clicks and resolves click redirects only from opaque token pairs', async () => {
+    const campaignId = await campaignFor(
+      [
+        {
+          id: 'wait',
+          action: 'wait',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { duration: { amount: 1, unit: 'days' } }
+        },
+        {
+          id: 'end',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        }
+      ],
+      'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Smith,Acme,maya@example.com,https://linkedin.com/in/maya-tracked\n'
+    );
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    const member = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaign_channel_actions
+         (id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,idempotency_key,completed_at,external_ref,provider,tracking_token,created_at,updated_at)
+         VALUES ('licha_track',?,?,?,?,?,'email','sent',?::timestamptz,'{}'::jsonb,'track-key',?::timestamptz,'mail-track','gmail','opaque-open-token',?::timestamptz,?::timestamptz)`
+      )
+      .run(
+        WORKSPACE,
+        campaignId,
+        member.id,
+        member.contactId,
+        'email-track-step',
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaign_email_tracking_links
+         (token,workspace_id,channel_action_id,target_url,created_at)
+         VALUES ('opaque-link-token',?,'licha_track','https://example.com/demo',?::timestamptz)`
+      )
+      .run(WORKSPACE, NOW.toISOString());
+
+    expect(await recordCampaignEmailTrackingOpen(db, 'opaque-open-token', NOW)).toBe(true);
+    expect(
+      await recordCampaignEmailTrackingClick(db, 'opaque-open-token', 'opaque-link-token', NOW)
+    ).toBe('https://example.com/demo');
+    expect(
+      await recordCampaignEmailTrackingClick(db, 'wrong-token', 'opaque-link-token', NOW)
+    ).toBeNull();
+    const events = await db
+      .prepare(
+        `SELECT event_kind FROM linkedin_campaign_email_events WHERE workspace_id=? AND channel_action_id='licha_track' ORDER BY event_kind`
+      )
+      .all<{ event_kind: string }>(WORKSPACE);
+    expect(events.map((row) => row.event_kind)).toEqual(['clicked', 'opened']);
+    const refreshed = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
+    expect(refreshed.branchState['external:email_opened']).toBe(true);
+    expect(refreshed.branchState['external:email_clicked']).toBe(true);
+  });
+
+  it('polls mailbox thread telemetry automatically and a detected reply stops queued work', async () => {
+    const campaignId = await campaignFor(
+      [
+        {
+          id: 'wait',
+          action: 'wait',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { duration: { amount: 1, unit: 'days' } }
+        },
+        {
+          id: 'end',
+          action: 'end',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: { outcome: 'completed' }
+        }
+      ],
+      'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Smith,Acme,maya@example.com,https://linkedin.com/in/maya-provider-reply\n'
+    );
+    await runManagedCampaigns(db, WORKSPACE, NOW);
+    const member = (await listCampaignMembers(db, WORKSPACE, campaignId))[0]!;
+    await db
+      .prepare(
+        `INSERT INTO connections
+         (id,workspace_id,provider,provider_config_key,external_connection_id,display_name,status,is_demo,created_at,updated_at)
+         VALUES ('conn_mail',?,'gmail','trevra-gmail','ext-mail','owner@example.com','connected',0,?::timestamptz,?::timestamptz)`
+      )
+      .run(WORKSPACE, NOW.toISOString(), NOW.toISOString());
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaign_channel_actions
+         (id,workspace_id,campaign_id,member_id,contact_id,workflow_step_id,kind,status,planned_for,payload_json,idempotency_key,connection_id,completed_at,external_ref,provider,created_at,updated_at)
+         VALUES ('licha_provider',?,?,?,?,?,'email','sent',?::timestamptz,?::jsonb,'provider-key','conn_mail',?::timestamptz,'gmail-sent','gmail',?::timestamptz,?::timestamptz)`
+      )
+      .run(
+        WORKSPACE,
+        campaignId,
+        member.id,
+        member.contactId,
+        'email-provider-step',
+        NOW.toISOString(),
+        JSON.stringify({ recipient: 'maya@example.com' }),
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `INSERT INTO linkedin_actions
+         (id,workspace_id,seat_key,kind,target_ref,status,planned_for,campaign_id,campaign_member_id,workflow_step_id,source,replay_scope,created_at)
+         VALUES ('lact_after_email_reply',?,'owner','dm','https://linkedin.com/in/maya-provider-reply','planned',?::timestamptz,?,?, 'future-dm','campaign','future-reply',?::timestamptz)`
+      )
+      .run(WORKSPACE, NOW.toISOString(), campaignId, member.id, NOW.toISOString());
+
+    const synced = await syncCampaignEmailProviderEvents(db, WORKSPACE, NOW, 50, async () => [
+      {
+        kind: 'reply',
+        providerEventId: 'gmail:reply-1',
+        occurredAt: '2026-08-20T09:01:00.000Z'
+      }
+    ]);
+    expect(synced).toMatchObject({ checked: 1, replied: 1, bounced: 0, failed: 0 });
+    expect((await listCampaignMembers(db, WORKSPACE, campaignId))[0]?.status).toBe('replied');
+    expect(
+      await db
+        .prepare(`SELECT status FROM linkedin_actions WHERE id='lact_after_email_reply'`)
+        .get<{ status: string }>()
+    ).toEqual({ status: 'skipped' });
   });
 });

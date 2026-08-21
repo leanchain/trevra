@@ -1,5 +1,9 @@
 import type {
   AgentBudget,
+  AgentPrincipal,
+  OpportunityRecord,
+  OpportunityStage,
+  OpportunityOwnerType,
   AgentCliConfig,
   AgentCliSetup,
   AgentKeySummary,
@@ -43,6 +47,10 @@ import type {
   LoopCostSent,
   LoopCostSpent
 } from '../server/loop-cost';
+import type { TodayPayload } from '../server/today';
+import type { PreparedOutreachResult } from '../server/outreach/prepare';
+import type { GtmIntent, GtmPlan, PreparedGtmPlanResult } from '../server/gtm/intent';
+import type { ConversationMessage, ConversationSummary } from '../server/conversations';
 import type { LinkedInActionKind, LinkedInActionStatus } from '../server/linkedin/actions';
 import type { LinkedInPost, LinkedInPostStatus } from '../server/linkedin/posts';
 import type { PostBlock } from '../shared/linkedin-post-format';
@@ -163,6 +171,113 @@ export async function getDashboard(): Promise<DashboardPayload> {
   return request('/api/dashboard');
 }
 
+export async function getToday(): Promise<TodayPayload> {
+  return request('/api/today');
+}
+
+export async function planGtmIntent(intent: GtmIntent): Promise<GtmPlan> {
+  const result = await request<{ plan: GtmPlan }>('/api/gtm/plan', {
+    method: 'POST',
+    body: JSON.stringify({ intent })
+  });
+  return result.plan;
+}
+
+export async function prepareCompiledGtmPlan(
+  plan: GtmPlan,
+  idempotencyKey: string
+): Promise<PreparedGtmPlanResult> {
+  return request('/api/gtm/prepare', {
+    method: 'POST',
+    body: JSON.stringify({ plan, planHash: plan.planHash, idempotencyKey })
+  });
+}
+
+export async function getConversations(limit = 100): Promise<ConversationSummary[]> {
+  const result = await request<{ conversations: ConversationSummary[] }>(
+    `/api/conversations?limit=${encodeURIComponent(String(limit))}`
+  );
+  return result.conversations;
+}
+
+export async function getConversationMessages(
+  conversationId: string,
+  limit = 200
+): Promise<ConversationMessage[]> {
+  const result = await request<{ messages: ConversationMessage[] }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=${encodeURIComponent(String(limit))}`
+  );
+  return result.messages;
+}
+
+export async function prepareConversationEmailReply(
+  conversationId: string,
+  input: { idempotencyKey: string; subject: string; body: string }
+): Promise<PlaybookRun> {
+  const result = await request<{ run: PlaybookRun }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/replies/prepare`,
+    { method: 'POST', body: JSON.stringify(input) }
+  );
+  return result.run;
+}
+
+export async function getOpportunities(stage?: OpportunityStage): Promise<OpportunityRecord[]> {
+  const query = stage ? `?stage=${encodeURIComponent(stage)}` : '';
+  const result = await request<{ opportunities: OpportunityRecord[] }>(
+    `/api/opportunities${query}`
+  );
+  return result.opportunities;
+}
+
+export async function createOpportunity(input: {
+  personId?: string | null;
+  accountId?: string | null;
+  title: string;
+  stage?: OpportunityStage;
+  ownerType?: OpportunityOwnerType | null;
+  ownerId?: string | null;
+  nextAction?: string | null;
+  nextActionAt?: string | null;
+}): Promise<OpportunityRecord> {
+  const result = await request<{ opportunity: OpportunityRecord }>('/api/opportunities', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+  return result.opportunity;
+}
+
+export async function updateOpportunity(
+  id: string,
+  input: Partial<{
+    personId: string | null;
+    accountId: string | null;
+    title: string;
+    stage: OpportunityStage;
+    ownerType: OpportunityOwnerType | null;
+    ownerId: string | null;
+    nextAction: string | null;
+    nextActionAt: string | null;
+  }>
+): Promise<OpportunityRecord> {
+  const result = await request<{ opportunity: OpportunityRecord }>(
+    `/api/opportunities/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: JSON.stringify(input) }
+  );
+  return result.opportunity;
+}
+
+export async function prepareOutreach(input: {
+  idempotencyKey: string;
+  name?: string;
+  senderKey?: string;
+  existingLeadListId?: string;
+  uploadedPeopleCsv?: string;
+}): Promise<PreparedOutreachResult> {
+  return request('/api/outreach/prepare', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+}
 /**
  * Team workspace access (docs/superpowers/specs/2026-08-13-team-workspace-
  * access-design.md -- decision #3 superseded: no email joins instantly
@@ -482,6 +597,7 @@ export async function setAgentCliRiskAccepted(
 }
 
 export async function startAgentRun(input: {
+  agentId?: string;
   goal: string;
   maxSteps?: number;
 }): Promise<AgentRunSummary> {
@@ -568,12 +684,40 @@ interface PublicConfig {
   apiBaseUrl?: string;
 }
 
+export async function getAgents(): Promise<AgentPrincipal[]> {
+  const result = await request<{ agents: AgentPrincipal[] }>('/api/agents');
+  return result.agents;
+}
+
+export async function createAgent(input: {
+  name: string;
+  purpose: string;
+}): Promise<AgentPrincipal> {
+  const result = await request<{ agent: AgentPrincipal }>('/api/agents', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+  return result.agent;
+}
+
+export async function updateAgent(
+  id: string,
+  input: Partial<{ name: string; purpose: string; status: AgentPrincipal['status'] }>
+): Promise<AgentPrincipal> {
+  const result = await request<{ agent: AgentPrincipal }>(`/api/agents/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input)
+  });
+  return result.agent;
+}
+
 export async function getAgentTokens(): Promise<AgentTokenSummary[]> {
   const result = await request<{ tokens: AgentTokenSummary[] }>('/api/agent-tokens');
   return result.tokens;
 }
 
 export async function createAgentToken(input: {
+  agentId?: string;
   name: string;
   scopes?: AgentScope[];
   expiresAt?: string | null;
@@ -667,7 +811,7 @@ export function ledgerExportDownloadPath(id: string): string {
  * NOT the ledger export above, and the difference is worth putting in the UI
  * copy: that one is ten run-and-action tables -- the evidence pack for a client
  * -- and this one is the data-subject export the privacy policy promises,
- * covering clients, messages, invoices, leads, lead lists, campaigns, inbox
+ * covering People, messages, deliveries, leads, lead lists, campaigns, inbox
  * threads, seats, accounts, audit events and settings. Sealed credentials are
  * named in the file's `withheld` list and never included.
  *
@@ -752,6 +896,8 @@ export async function fetchLoopCost(windowDays: number): Promise<LoopCost> {
 export type {
   BandName,
   BranchOn,
+  ConversationMessage,
+  ConversationSummary,
   CampaignStatus,
   ExportFormat,
   LeadSourceKind,
@@ -1177,7 +1323,15 @@ export async function resumeLinkedInSeat(
 export async function deleteLinkedInSeat(seatKey?: string): Promise<{
   deleted: boolean;
   clearedThreads: number;
-  released: unknown;
+  fullyStopped: boolean;
+  released: {
+    seatKey: string;
+    actionsSkipped: number;
+    tasksCancelled: number;
+    channelActionsSkipped: number;
+    channelActionsInFlight: number;
+    actionsInFlight: number;
+  };
 }> {
   return request(`/api/linkedin/seat${seatKey ? `?seatKey=${encodeURIComponent(seatKey)}` : ''}`, {
     method: 'DELETE'
@@ -1688,7 +1842,16 @@ export async function retryLinkedInCampaignChannelAction(id: string): Promise<bo
 export async function recordLinkedInCampaignEmailEvent(
   id: string,
   input: {
-    eventKind: 'opened' | 'clicked' | 'bounced' | 'replied';
+    eventKind:
+      | 'opened'
+      | 'clicked'
+      | 'reply'
+      | 'unsubscribe'
+      | 'bounce'
+      | 'delivery_failure'
+      | 'out_of_office'
+      | 'auto_reply'
+      | 'unknown';
     providerEventId?: string | null;
     metadata?: Record<string, unknown>;
     occurredAt?: string;
@@ -2638,8 +2801,178 @@ export async function importAccounts(input: {
   text: string;
   source?: AccountSource;
   tags?: string[];
+  people?: Array<{
+    accountDomain: string;
+    name?: string;
+    email?: string;
+    phone?: string;
+    role?: string;
+    sourcePath?: string;
+  }>;
 }): Promise<AccountImportResult> {
   return request('/api/accounts/import', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export interface CaptureSourceSummary {
+  id: string;
+  workspaceId: string;
+  name: string;
+  key: string;
+  kind: 'website' | 'form' | 'signup' | 'partner' | 'integration';
+  status: 'active' | 'disabled';
+  lastSeenAt: string | null;
+  acceptedCount: number;
+  rejectedCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InboundPerson {
+  id: string;
+  workspaceId: string;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  role: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SuppressionSummary {
+  id: string;
+  workspaceId: string;
+  personId: string | null;
+  email: string | null;
+  domain: string | null;
+  linkedinUrl: string | null;
+  channel: 'all' | 'email' | 'linkedin' | 'community';
+  reason: string;
+  source: string;
+  sourceRef: string | null;
+  createdAt: string;
+  liftedAt: string | null;
+}
+
+export interface InboundSubmission {
+  id: string;
+  workspaceId: string;
+  captureSourceId: string;
+  contactId: string;
+  accountId: string | null;
+  idempotencyKey: string;
+  sourceEventId: string | null;
+  kind: string;
+  person: {
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+    role: string | null;
+    externalId: string | null;
+  };
+  company: { domain: string; name: string | null } | null;
+  message: string | null;
+  pageUrl: string | null;
+  referrer: string | null;
+  attribution: Record<string, unknown>;
+  consent: Record<string, unknown>;
+  properties: Record<string, unknown>;
+  occurredAt: string | null;
+  receivedAt: string;
+}
+
+export async function getCaptureSources(): Promise<CaptureSourceSummary[]> {
+  const result = await request<{ sources: CaptureSourceSummary[] }>('/api/capture-sources');
+  return result.sources;
+}
+
+export async function createCaptureSource(input: {
+  name: string;
+  kind: CaptureSourceSummary['kind'];
+}): Promise<{ source: CaptureSourceSummary; secret: string }> {
+  return request('/api/capture-sources', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export async function setCaptureSourceStatus(
+  id: string,
+  status: CaptureSourceSummary['status']
+): Promise<CaptureSourceSummary> {
+  const result = await request<{ source: CaptureSourceSummary }>(
+    `/api/capture-sources/${encodeURIComponent(id)}/status`,
+    { method: 'PATCH', body: JSON.stringify({ status }) }
+  );
+  return result.source;
+}
+
+export async function rotateCaptureSourceSecret(
+  id: string
+): Promise<{ source: CaptureSourceSummary; secret: string }> {
+  return request(`/api/capture-sources/${encodeURIComponent(id)}/rotate`, { method: 'POST' });
+}
+
+export interface EmailDeliverySummary {
+  id: string;
+  workspaceId: string;
+  recipient: string;
+  sourceType: string;
+  sourceId: string;
+  idempotencyKey: string;
+  status: 'sending' | 'sent' | 'failed' | 'uncertain';
+  provider: string | null;
+  externalRef: string | null;
+  internetMessageId: string | null;
+  lastError: string | null;
+  attemptCount: number;
+  startedAt: string;
+  sentAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function getEmailDeliveries(limit = 100): Promise<EmailDeliverySummary[]> {
+  const result = await request<{ deliveries: EmailDeliverySummary[] }>(
+    `/api/deliveries?limit=${limit}`
+  );
+  return result.deliveries;
+}
+
+export async function getInboundPeople(limit = 200): Promise<InboundPerson[]> {
+  const result = await request<{ people: InboundPerson[] }>(`/api/inbound/people?limit=${limit}`);
+  return result.people;
+}
+
+export async function getInboundSubmissions(limit = 200): Promise<InboundSubmission[]> {
+  const result = await request<{ submissions: InboundSubmission[] }>(
+    `/api/inbound/submissions?limit=${limit}`
+  );
+  return result.submissions;
+}
+
+export async function getSuppressions(): Promise<SuppressionSummary[]> {
+  const result = await request<{ suppressions: SuppressionSummary[] }>('/api/suppressions');
+  return result.suppressions;
+}
+
+export async function createSuppression(input: {
+  channel?: SuppressionSummary['channel'];
+  personId?: string | null;
+  email?: string | null;
+  domain?: string | null;
+  linkedinUrl?: string | null;
+  reason: string;
+}): Promise<SuppressionSummary> {
+  const result = await request<{ suppression: SuppressionSummary }>('/api/suppressions', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+  return result.suppression;
+}
+
+export async function liftSuppression(id: string): Promise<SuppressionSummary> {
+  const result = await request<{ suppression: SuppressionSummary }>(
+    `/api/suppressions/${encodeURIComponent(id)}`,
+    { method: 'DELETE' }
+  );
+  return result.suppression;
 }
 
 export async function getAccount(id: string): Promise<RankedAccount> {

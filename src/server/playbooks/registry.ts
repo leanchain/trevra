@@ -82,7 +82,8 @@ export const auditLedOutreachPlaybook: PlaybookDefinition = {
         metadata: {
           leadScore: { $ref: '$.steps.score.output.overall' },
           auditScore: { $ref: '$.steps.audit.output.score' },
-          evidence: { $ref: '$.steps.audit.output.evidence' }
+          evidence: { $ref: '$.steps.audit.output.evidence' },
+          deliveryPurpose: 'outreach'
         }
       }
     },
@@ -93,7 +94,7 @@ export const auditLedOutreachPlaybook: PlaybookDefinition = {
       approvalStepId: 'approve-outreach',
       needs: ['approve-outreach'],
       payload: { $ref: '$.steps.approve-outreach.input' },
-      retry: { maxAttempts: 3, delaySeconds: 30 }
+      retry: { maxAttempts: 1, delaySeconds: 0 }
     }
   ],
   output: {
@@ -357,9 +358,67 @@ export const threadReplyPlaybook: PlaybookDefinition = {
   source: { type: 'builtin' }
 };
 
+export const conversationEmailReplyPlaybook: PlaybookDefinition = {
+  id: 'gtm.conversation-email-reply',
+  version: '1.0.0',
+  name: 'Reply by email',
+  description:
+    'Prepare one email reply in a shared GTM conversation and require founder approval of the exact bytes before provider execution.',
+  inputSchema: z
+    .object({
+      idempotencyKey: z.string().trim().min(8).max(200),
+      conversationId: z.string().trim().min(1).max(160),
+      personId: z.string().trim().min(1).max(160),
+      recipient: z.string().email(),
+      subject: z.string().trim().min(1).max(200),
+      body: z.string().trim().min(1).max(20_000),
+      threadExternalRef: z.string().trim().min(1).max(1000),
+      threadIdempotencyKey: z.string().trim().max(500).nullable().optional()
+    })
+    .strict(),
+  steps: [
+    {
+      id: 'approve-reply',
+      type: 'approval',
+      title: 'Approve email reply',
+      payload: {
+        recipient: { $ref: '$.input.recipient' },
+        subject: { $ref: '$.input.subject' },
+        body: { $ref: '$.input.body' },
+        metadata: {
+          threaded: true,
+          threadExternalRef: { $ref: '$.input.threadExternalRef' },
+          threadIdempotencyKey: { $ref: '$.input.threadIdempotencyKey' },
+          conversationId: { $ref: '$.input.conversationId' },
+          personId: { $ref: '$.input.personId' },
+          deliveryPurpose: 'reply',
+          deliverySourceType: 'conversation_reply',
+          deliverySourceId: { $ref: '$.input.idempotencyKey' },
+          intent: 'conversation-email-reply'
+        }
+      }
+    },
+    {
+      id: 'send-reply',
+      type: 'action',
+      actionType: 'email.send',
+      approvalStepId: 'approve-reply',
+      needs: ['approve-reply'],
+      payload: { $ref: '$.steps.approve-reply.input' },
+      retry: { maxAttempts: 1, delaySeconds: 0 }
+    }
+  ],
+  output: {
+    approved: { $ref: '$.steps.approve-reply.output.approved' },
+    delivery: { $ref: '$.steps.send-reply.output' }
+  },
+  source: { type: 'builtin' }
+};
+
 registerPlaybook(auditLedOutreachPlaybook);
 registerPlaybook(communityOutreachPlaybook);
 registerPlaybook(threadReplyPlaybook);
+registerPlaybook(conversationEmailReplyPlaybook);
 
 export function registerPlaybook(playbook: PlaybookDefinition): PlaybookDefinition {
   validatePlaybook(playbook);

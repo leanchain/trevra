@@ -57,7 +57,7 @@ npm run agent -- runs [skill-id] [limit]
 npm run agent -- run:get <run-id>
 ```
 
-Legacy revenue-brief, pending-revenue-action, and recommendation-preparation commands are removed.
+Legacy finance-oriented agent commands are removed; the Agent surface is GTM-only.
 
 ## Direct agent API
 

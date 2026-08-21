@@ -10,11 +10,16 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 const UPSTREAM_INSTRUCTIONS = 'Mock Trevra instructions from the HTTP endpoint.';
 const UPSTREAM_TOOLS = [
   {
-    name: 'trevra_revenue_brief',
-    title: 'Read the Trevra revenue brief',
-    description: 'Read current evidence-backed recommendations.',
+    name: 'trevra_gtm_brief',
+    title: 'Read the Trevra GTM brief',
+    description: 'Read current evidence-backed GTM work.',
     inputSchema: { type: 'object' as const, properties: {}, additionalProperties: false },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
   },
   {
     name: 'trevra_gtm_test-score',
@@ -26,7 +31,12 @@ const UPSTREAM_TOOLS = [
       required: ['company'],
       additionalProperties: false
     },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    }
   }
 ];
 
@@ -73,12 +83,19 @@ async function startUpstream(): Promise<Upstream> {
           calls.push({ name, arguments: args });
           if (name === 'trevra_gtm_test-score') {
             return {
-              content: [{ type: 'text' as const, text: JSON.stringify({ run: { output: { score: 0.9 } } }) }],
+              content: [
+                { type: 'text' as const, text: JSON.stringify({ run: { output: { score: 0.9 } } }) }
+              ],
               isError: false
             };
           }
           return {
-            content: [{ type: 'text' as const, text: JSON.stringify({ error: `Unknown Trevra tool: ${name}` }) }],
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({ error: `Unknown Trevra tool: ${name}` })
+              }
+            ],
             isError: true
           };
         });
@@ -106,7 +123,9 @@ async function startUpstream(): Promise<Upstream> {
 
 function bridgeEnv(overrides: Record<string, string>): Record<string, string> {
   const inherited = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+    Object.entries(process.env).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string'
+    )
   );
   return { ...inherited, ...overrides };
 }
@@ -125,22 +144,27 @@ describe('Trevra MCP stdio bridge', () => {
   it('proxies listTools, callTool and instructions to the HTTP MCP endpoint', async () => {
     upstream = await startUpstream();
     client = new Client({ name: 'trevra-mcp-test', version: '1.0.0' });
-    await client.connect(new StdioClientTransport({
-      command: process.execPath,
-      args: ['--import', 'tsx', 'src/mcp/server.ts'],
-      cwd: process.cwd(),
-      env: bridgeEnv({
-        TREVRA_API_URL: upstream.url,
-        TREVRA_AGENT_TOKEN: 'trv_live_test_token_abcdefghijklmnopqrstuvwxyz'
-      }),
-      stderr: 'pipe'
-    }));
+    await client.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: ['--import', 'tsx', 'src/mcp/server.ts'],
+        cwd: process.cwd(),
+        env: bridgeEnv({
+          TREVRA_API_URL: upstream.url,
+          TREVRA_AGENT_TOKEN: 'trv_live_test_token_abcdefghijklmnopqrstuvwxyz'
+        }),
+        stderr: 'pipe'
+      })
+    );
 
     // The bridge advertises the endpoint's instructions, not a local copy.
     expect(client.getInstructions()).toBe(UPSTREAM_INSTRUCTIONS);
 
     const listed = await client.listTools();
-    expect(listed.tools.map((tool) => tool.name).sort()).toEqual(['trevra_gtm_test-score', 'trevra_revenue_brief']);
+    expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+      'trevra_gtm_brief',
+      'trevra_gtm_test-score'
+    ]);
     const scoreTool = listed.tools.find((tool) => tool.name === 'trevra_gtm_test-score');
     expect(scoreTool?.title).toBe('Test score');
     expect(scoreTool?.inputSchema).toMatchObject({
@@ -150,12 +174,17 @@ describe('Trevra MCP stdio bridge', () => {
     });
     expect(scoreTool?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
 
-    const called = await client.callTool({ name: 'trevra_gtm_test-score', arguments: { company: 'Acme' } });
+    const called = await client.callTool({
+      name: 'trevra_gtm_test-score',
+      arguments: { company: 'Acme' }
+    });
     expect(called.isError).not.toBe(true);
     const content = called.content as Array<{ type: string; text?: string }>;
     const text = content.find((item) => item.type === 'text')?.text;
     expect(text ? JSON.parse(text).run.output.score : null).toBe(0.9);
-    expect(upstream.calls).toEqual([{ name: 'trevra_gtm_test-score', arguments: { company: 'Acme' } }]);
+    expect(upstream.calls).toEqual([
+      { name: 'trevra_gtm_test-score', arguments: { company: 'Acme' } }
+    ]);
 
     // An upstream tool error stays a tool error and does not kill the bridge.
     const failed = await client.callTool({ name: 'trevra_unknown', arguments: {} });
@@ -164,9 +193,11 @@ describe('Trevra MCP stdio bridge', () => {
     expect(stillAlive.tools).toHaveLength(2);
 
     expect(upstream.authorizations.length).toBeGreaterThan(0);
-    expect(upstream.authorizations.every(
-      (value) => value === 'Bearer trv_live_test_token_abcdefghijklmnopqrstuvwxyz'
-    )).toBe(true);
+    expect(
+      upstream.authorizations.every(
+        (value) => value === 'Bearer trv_live_test_token_abcdefghijklmnopqrstuvwxyz'
+      )
+    ).toBe(true);
   }, 30_000);
 
   it('exits with a readable message naming the URL when the API is unreachable', async () => {
@@ -174,11 +205,16 @@ describe('Trevra MCP stdio bridge', () => {
     const url = `http://127.0.0.1:${port}`;
     const child = spawn(process.execPath, ['--import', 'tsx', 'src/mcp/server.ts'], {
       cwd: process.cwd(),
-      env: bridgeEnv({ TREVRA_API_URL: url, TREVRA_AGENT_TOKEN: 'trv_live_test_token_abcdefghijklmnopqrstuvwxyz' }),
+      env: bridgeEnv({
+        TREVRA_API_URL: url,
+        TREVRA_AGENT_TOKEN: 'trv_live_test_token_abcdefghijklmnopqrstuvwxyz'
+      }),
       stdio: ['pipe', 'pipe', 'pipe']
     });
     let stderr = '';
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
     const code = await new Promise<number | null>((resolve) => child.on('exit', resolve));
 
     expect(code).toBe(1);
@@ -196,7 +232,9 @@ describe('Trevra MCP stdio bridge', () => {
       stdio: ['pipe', 'pipe', 'pipe']
     });
     let stderr = '';
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+    });
     const code = await new Promise<number | null>((resolve) => child.on('exit', resolve));
 
     expect(code).toBe(1);

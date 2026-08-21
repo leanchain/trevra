@@ -1,13 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  CheckCircle2,
-  ChevronRight,
-  Circle,
-  Clock3,
-  Inbox,
-  LoaderCircle,
-  Send
-} from 'lucide-react';
+import { CheckCircle2, ChevronRight, Clock3, Inbox, LoaderCircle, Send } from 'lucide-react';
 import type { DashboardPayload, PlaybookRun } from '../../shared/types';
 import {
   fetchLoopCost,
@@ -15,8 +7,10 @@ import {
   getLinkedInAnalytics,
   getLinkedInManagedCampaigns,
   getLinkedInManagerLeadLists,
-  getLinkedInManagerWorkflows,
   getPlaybookRuns,
+  getToday,
+  planGtmIntent,
+  prepareCompiledGtmPlan,
   type LinkedInAnalytics,
   type LinkedInLimitsReport,
   type LoopCost
@@ -65,6 +59,8 @@ export function LoopView({
     waitingApprovals: []
   });
   const [cost, setCost] = useState<LoopCost | null>(null);
+  const [today, setToday] = useState<Awaited<ReturnType<typeof getToday>> | null>(null);
+  const [todayError, setTodayError] = useState('');
 
   // The one operator-controlled window for this page's outreach numbers --
   // shared by the metric cards below and by <LinkedInFunnel>, so the two can
@@ -97,6 +93,20 @@ export function LoopView({
       cancelled = true;
     };
   }, []);
+
+  const loadToday = useCallback(async () => {
+    try {
+      setToday(await getToday());
+      setTodayError('');
+    } catch (error) {
+      setTodayError(errorMessage(error, 'Unable to read what needs you right now.'));
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadToday();
+  }, [loadToday]);
+  useOutreachRefresh(loadToday);
 
   const loadAnalytics = useCallback(async () => {
     setAnalyticsLoading(true);
@@ -206,7 +216,9 @@ export function LoopView({
 
   return (
     <>
-      <OnboardingChecklist limits={limits} onNavigate={onNavigate} />
+      <TodayAttention today={today} problem={todayError} onNavigate={onNavigate} />
+      <FirstRunJobs limits={limits} onNavigate={onNavigate} />
+      <PlanWork onNavigate={onNavigate} />
 
       <section className="loop-stages" aria-label="The outreach loop, stage by stage">
         {stages.map((stage) => {
@@ -233,26 +245,6 @@ export function LoopView({
             </div>
           );
         })}
-      </section>
-
-      <section className="loop-block">
-        {block ? (
-          <>
-            <p>
-              <strong>{stages.find((stage) => stage.id === block.stage)?.label}.</strong>{' '}
-              {block.sentence}
-            </p>
-            <button className="primary-button" type="button" onClick={() => onNavigate(block.href)}>
-              {block.action} <ChevronRight size={16} />
-            </button>
-          </>
-        ) : limits ? (
-          <p>Nothing needs you right now.</p>
-        ) : seatError ? (
-          <p>{seatError}</p>
-        ) : (
-          <p>Loading…</p>
-        )}
       </section>
 
       <section className="metrics-grid metrics-grid-four">
@@ -284,8 +276,8 @@ export function LoopView({
         <Metric
           icon={<Clock3 />}
           label="Waiting on you"
-          value={String(waitingCount)}
-          detail={waitingCount ? 'See the ledger below' : 'Nothing waiting'}
+          value={String(today?.needsAttention.length ?? waitingCount)}
+          detail={today?.needsAttention.length ? 'Across GTM' : 'Nothing waiting'}
         />
       </section>
 
@@ -383,123 +375,455 @@ function Metric({
   );
 }
 
-interface Step {
-  done: boolean;
-  title: string;
-  detail: string;
-  cta: string;
-  href: string;
+function TodayAttention({
+  today,
+  problem,
+  onNavigate
+}: {
+  today: Awaited<ReturnType<typeof getToday>> | null;
+  problem: string;
+  onNavigate: (path: string) => void;
+}) {
+  const items = today?.needsAttention ?? [];
+  return (
+    <section className="recommendations-panel">
+      <div className="section-heading">
+        <div>
+          <h2>Needs you</h2>
+          <p>Only GTM work Trevra cannot safely finish without your judgment.</p>
+        </div>
+        {today && <span className="status-pill">{items.length} open</span>}
+      </div>
+
+      {problem ? (
+        <div className="error-banner">{problem}</div>
+      ) : !today ? (
+        <p className="onboarding-loading">
+          <LoaderCircle className="spin" size={16} /> Reading your GTM state…
+        </p>
+      ) : items.length === 0 ? (
+        <div className="empty-state">
+          <CheckCircle2 size={24} />
+          <h4>Nothing needs you right now</h4>
+          <p>
+            Trevra has no unresolved safety block, reply, approval, inbound request, or hot-account
+            review to hand you.
+          </p>
+        </div>
+      ) : (
+        <ol className="onboarding-steps">
+          {items.map((item) => (
+            <li key={item.id}>
+              <Inbox size={19} />
+              <div>
+                <strong>{item.title}</strong>
+                <small>{item.detail}</small>
+              </div>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => onNavigate(item.href)}
+              >
+                Open <ChevronRight size={15} />
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
 }
 
-function OnboardingChecklist({
+type PlannerObjective =
+  'find_accounts' | 'research_accounts' | 'prepare_outreach' | 'watch_accounts' | 'capture_inbound';
+
+const PLANNER_OBJECTIVES: ReadonlyArray<{ value: PlannerObjective; label: string }> = [
+  { value: 'find_accounts', label: 'Find prospects' },
+  { value: 'research_accounts', label: 'Research accounts' },
+  { value: 'prepare_outreach', label: 'Prepare outreach' },
+  { value: 'watch_accounts', label: 'Watch accounts' },
+  { value: 'capture_inbound', label: 'Capture inbound' }
+];
+
+function plannerPrepareKey(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return `gtm-plan-${uuid ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
+}
+
+function PlanWork({ onNavigate }: { onNavigate: (path: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [objective, setObjective] = useState<PlannerObjective>('find_accounts');
+  const [audience, setAudience] = useState('');
+  const [quantity, setQuantity] = useState(25);
+  const [leadLists, setLeadLists] = useState<
+    Awaited<ReturnType<typeof getLinkedInManagerLeadLists>>
+  >([]);
+  const [leadListId, setLeadListId] = useState('');
+  const [plan, setPlan] = useState<Awaited<ReturnType<typeof planGtmIntent>> | null>(null);
+  const [prepared, setPrepared] = useState<Awaited<
+    ReturnType<typeof prepareCompiledGtmPlan>
+  > | null>(null);
+  const [prepareKey, setPrepareKey] = useState('');
+  const [planning, setPlanning] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [problem, setProblem] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void getLinkedInManagerLeadLists()
+      .then((lists) => {
+        if (cancelled) return;
+        setLeadLists(lists);
+        setLeadListId((current) =>
+          current && lists.some((list) => list.id === current) ? current : (lists[0]?.id ?? '')
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setLeadLists([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const resetPlan = () => {
+    setPlan(null);
+    setPrepared(null);
+    setPrepareKey('');
+    setProblem('');
+  };
+
+  const compile = async () => {
+    setPlanning(true);
+    setProblem('');
+    setPrepared(null);
+    try {
+      const intent =
+        objective === 'prepare_outreach'
+          ? {
+              objective,
+              ...(leadListId ? { people: { existingListId: leadListId } } : {}),
+              channels: ['linkedin'] as Array<'linkedin' | 'email' | 'community'>,
+              autonomy: 'approval_required' as const
+            }
+          : objective === 'capture_inbound'
+            ? { objective }
+            : {
+                objective,
+                audience: {
+                  ...(audience.trim() ? { description: audience.trim() } : {}),
+                  quantity
+                }
+              };
+      const next = await planGtmIntent(intent);
+      setPlan(next);
+      setPrepareKey(plannerPrepareKey());
+    } catch (error) {
+      setProblem(errorMessage(error, 'Unable to plan this GTM job. Nothing was changed.'));
+    } finally {
+      setPlanning(false);
+    }
+  };
+
+  const prepare = async () => {
+    if (!plan) return;
+    const key = prepareKey || plannerPrepareKey();
+    if (!prepareKey) setPrepareKey(key);
+    setPreparing(true);
+    setProblem('');
+    try {
+      setPrepared(await prepareCompiledGtmPlan(plan, key));
+    } catch (error) {
+      setProblem(errorMessage(error, 'Unable to prepare this GTM plan. Nothing was sent.'));
+    } finally {
+      setPreparing(false);
+    }
+  };
+
+  const prepareSupported = plan?.defaults.prepareSupported === true && plan.blockers.length === 0;
+
+  return (
+    <section className="page-panel gtm-plan-work">
+      <div className="section-heading">
+        <div>
+          <h2>Start new work</h2>
+          <p>
+            State a bounded GTM job, inspect Trevra's deterministic plan, then prepare only what the
+            plan allows.
+          </p>
+        </div>
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+        >
+          {open ? 'Close' : 'Plan work'}
+        </button>
+      </div>
+
+      {open && (
+        <div className="gtm-plan-body">
+          <div className="gtm-plan-form">
+            <label>
+              Goal
+              <select
+                value={objective}
+                onChange={(event) => {
+                  setObjective(event.target.value as PlannerObjective);
+                  resetPlan();
+                }}
+              >
+                {PLANNER_OBJECTIVES.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {objective === 'prepare_outreach' ? (
+              <label>
+                People
+                <select
+                  value={leadListId}
+                  onChange={(event) => {
+                    setLeadListId(event.target.value);
+                    resetPlan();
+                  }}
+                >
+                  <option value="">Choose a People list</option>
+                  {leadLists.map((list) => (
+                    <option key={list.id} value={list.id}>
+                      {list.name} · {list.leadCount} people
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : objective === 'capture_inbound' ? null : (
+              <>
+                <label>
+                  Audience
+                  <input
+                    value={audience}
+                    onChange={(event) => {
+                      setAudience(event.target.value);
+                      resetPlan();
+                    }}
+                    placeholder="Swiss B2B SaaS companies hiring salespeople"
+                    maxLength={500}
+                  />
+                </label>
+                <label>
+                  Quantity
+                  <input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={quantity}
+                    onChange={(event) => {
+                      setQuantity(Math.max(1, Math.min(500, Number(event.target.value) || 1)));
+                      resetPlan();
+                    }}
+                  />
+                </label>
+              </>
+            )}
+
+            <button
+              className="primary-button"
+              type="button"
+              disabled={planning}
+              onClick={() => void compile()}
+            >
+              {planning ? 'Planning…' : 'Show plan'}
+            </button>
+          </div>
+
+          {problem && <div className="error-banner">{problem}</div>}
+
+          {plan && (
+            <div className="gtm-plan-preview">
+              <div className="gtm-plan-preview-head">
+                <div>
+                  <span>Your plan</span>
+                  <strong>{plan.summary}</strong>
+                </div>
+                <span className="status-pill">
+                  {plan.consequences.externalWrites ? 'External write' : 'No external write'}
+                </span>
+              </div>
+
+              <ol className="gtm-plan-steps">
+                {plan.steps.map((step) => (
+                  <li key={`${step.kind}:${step.title}`}>
+                    <strong>{step.title}</strong>
+                    <span>{step.detail}</span>
+                  </li>
+                ))}
+              </ol>
+
+              {plan.blockers.length > 0 && (
+                <div className="gtm-plan-blockers">
+                  <strong>
+                    {plan.blockers.length === 1 ? 'One thing is missing' : 'Things to resolve'}
+                  </strong>
+                  {plan.blockers.map((blocker) => (
+                    <div key={blocker.code}>
+                      <span>{blocker.message}</span>
+                      {blocker.actionHref && (
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          onClick={() => onNavigate(blocker.actionHref!)}
+                        >
+                          Resolve <ChevronRight size={15} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="gtm-plan-actions">
+                {prepareSupported ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={preparing}
+                    onClick={() => void prepare()}
+                  >
+                    {preparing ? 'Preparing…' : 'Prepare this'}
+                  </button>
+                ) : plan.blockers.length === 0 ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => onNavigate(plan.next.href)}
+                  >
+                    Continue <ChevronRight size={15} />
+                  </button>
+                ) : null}
+                <span>
+                  {plan.consequences.approvalRequired
+                    ? 'Nothing will be sent until the consequential action is approved.'
+                    : 'This plan contains no consequential external action.'}
+                </span>
+              </div>
+
+              {prepared && (
+                <div className="gtm-plan-result">
+                  <strong>Prepared</strong>
+                  <span>
+                    {prepared.result.campaign.enrolled} people · campaign remains{' '}
+                    {prepared.result.campaign.status}
+                  </span>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => onNavigate(prepared.next.href)}
+                  >
+                    Review campaign <ChevronRight size={15} />
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FirstRunJobs({
   limits,
   onNavigate
 }: {
   limits: LinkedInLimitsReport | null;
   onNavigate: (path: string) => void;
 }) {
-  const [outreachSetup, setOutreachSetup] = useState<{
+  const [workspaceShape, setWorkspaceShape] = useState<{
     leadLists: number;
-    workflows: number;
     campaigns: number;
   } | null>(null);
-  const seat = limits?.seat ?? null;
 
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
       getLinkedInManagerLeadLists().catch(() => []),
-      getLinkedInManagerWorkflows().catch(() => []),
       getLinkedInManagedCampaigns().catch(() => [])
-    ]).then(([leadLists, workflows, campaigns]) => {
+    ]).then(([leadLists, campaigns]) => {
       if (!cancelled)
-        setOutreachSetup({
-          leadLists: leadLists.length,
-          workflows: workflows.length,
-          campaigns: campaigns.length
-        });
+        setWorkspaceShape({ leadLists: leadLists.length, campaigns: campaigns.length });
     });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const steps: Step[] = [
+  if (!workspaceShape) {
+    return (
+      <section className="onboarding-card">
+        <p className="onboarding-loading">
+          <LoaderCircle className="spin" size={16} /> Checking your workspace…
+        </p>
+      </section>
+    );
+  }
+
+  const materiallyEmpty =
+    !limits?.seat?.configured && workspaceShape.leadLists === 0 && workspaceShape.campaigns === 0;
+  if (!materiallyEmpty) return null;
+
+  const jobs = [
     {
-      done: Boolean(seat?.configured),
-      title: 'Add a LinkedIn account',
-      detail: 'Set the timezone and daily limits.',
-      cta: 'Add account',
-      href: '/outreach/settings'
+      title: 'Find prospects',
+      detail: 'Find and rank companies worth investigating.',
+      href: '/research'
     },
     {
-      done: (outreachSetup?.leadLists ?? 0) > 0,
-      title: 'Build one lead list',
-      detail: 'Import leads or build a list from LinkedIn search.',
-      cta: 'Build lead list',
-      href: '/outreach'
+      title: 'Prepare outreach',
+      detail: 'Turn known people into a campaign that is ready for review.',
+      href: '/outreach/new'
     },
     {
-      done: (outreachSetup?.workflows ?? 0) > 0,
-      title: 'Build one workflow',
-      detail: 'Choose the outreach steps and timing.',
-      cta: 'Build workflow',
-      href: '/outreach'
+      title: 'Watch accounts',
+      detail: 'Monitor target companies and surface source-backed reasons to act.',
+      href: '/research'
     },
     {
-      done: (outreachSetup?.campaigns ?? 0) > 0,
-      title: 'Create your first campaign',
-      detail: 'Choose the account, lead list, and workflow.',
-      cta: 'Create campaign',
-      href: '/outreach'
+      title: 'Capture inbound',
+      detail: 'Route demo, contact, waitlist, and signup submissions into Trevra.',
+      href: '/setup/capture'
     }
-  ];
-  const progressReady = outreachSetup !== null;
-  const completed = steps.filter((step) => step.done).length;
-  if (progressReady && completed === steps.length) return null;
-  const nextTitle = steps.find((step) => !step.done)?.title ?? null;
+  ] as const;
 
   return (
     <section className="onboarding-card">
       <div className="onboarding-head">
         <div>
-          <h2>Set up outreach</h2>
-          <p>Connect an account, add leads, build a workflow, start a campaign.</p>
+          <h2>What do you want Trevra to do?</h2>
+          <p>Choose a GTM job. You can inspect the machinery later if you need it.</p>
         </div>
-        {progressReady && (
-          <span className="status-pill">
-            {completed} of {steps.length} done
-          </span>
-        )}
       </div>
-      {!progressReady ? (
-        <p className="onboarding-loading">
-          <LoaderCircle className="spin" size={16} /> Checking setup…
-        </p>
-      ) : (
-        <ol className="onboarding-steps">
-          {steps.map((step) => {
-            const next = !step.done && step.title === nextTitle;
-            return (
-              <li
-                key={step.title}
-                className={`${step.done ? 'is-done' : ''}${next ? ' is-next' : ''}`.trim()}
-              >
-                {step.done ? <CheckCircle2 size={19} /> : <Circle size={19} />}
-                <div>
-                  <strong>{step.title}</strong>
-                  <small>{step.detail}</small>
-                </div>
-                {next && (
-                  <button className="primary-button" onClick={() => onNavigate(step.href)}>
-                    {step.cta} <ChevronRight size={15} />
-                  </button>
-                )}
-              </li>
-            );
-          })}
-        </ol>
-      )}
+      <ol className="onboarding-steps">
+        {jobs.map((job) => (
+          <li key={job.title}>
+            <Send size={19} />
+            <div>
+              <strong>{job.title}</strong>
+              <small>{job.detail}</small>
+            </div>
+            <button className="primary-button" type="button" onClick={() => onNavigate(job.href)}>
+              Start <ChevronRight size={15} />
+            </button>
+          </li>
+        ))}
+      </ol>
+      <p className="onboarding-loading">
+        Nothing is sent just because Trevra prepared it. External actions require approval by
+        default.
+      </p>
     </section>
   );
 }
@@ -576,8 +900,8 @@ export function LoopCostView({ onNavigate }: { onNavigate: (path: string) => voi
                 <p>
                   {usd(cost.spent.costCents)} on {cost.spent.calls.toLocaleString('en-US')} model{' '}
                   {cost.spent.calls === 1 ? 'call' : 'calls'} in this window. Every figure in this
-                  panel is USD, billed by your model provider; the revenue figures elsewhere are in
-                  your workspace currency.
+                  panel is USD, billed by your model provider. Trevra does not model customer
+                  revenue or payment state.
                 </p>
               </div>
               <span className="status-pill">{usd(cost.spent.budget.spentCents)} this month</span>

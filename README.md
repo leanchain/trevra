@@ -44,9 +44,6 @@ Trevra does not rebuild OAuth, refresh-token rotation, provider credential stora
 Trevra includes durable orchestration, exact-payload approvals, append-only control-plane events, and GTM playbooks. External-write skills cannot execute through the generic skill runner; named GTM action adapters own consequential execution.
 
 The hosted module registry supports signed digest-pinned releases, SBOMs, workspace installation, isolated execution, and privacy-safe popularity counters. A module still cannot bypass the GTM product boundary or the external-write approval boundary.
-Trevra includes Temporal or PostgreSQL durable orchestration, exact-payload approvals, event-derived commercial projections, and built-in outreach, invoice, and change-order playbooks.
-
-The hosted module registry supports Ed25519 publisher identities, signed digest-pinned releases, SBOMs, workspace installation, isolated OCI/WASI/remote execution, and privacy-safe popularity counters. The public landing page displays real run counts, success rates, installations, and popularity ranks without publishing workspace or customer data.
 
 Architecture and operations are documented in:
 
@@ -302,28 +299,6 @@ See [`docs/deployment.md`](docs/deployment.md) for DNS, secrets, scaling, backup
 
 Migrations run automatically at startup from `migrations/`. Trevra and Better Auth migrations are serialized with PostgreSQL advisory locks.
 
-### One-time migration from the previous SQLite build
-
-The application never reads SQLite at runtime. A separate migration utility exists only to preserve data from the previous build and requires Python 3's standard library.
-
-Stop the old application, point `DATABASE_URL` at a **fresh PostgreSQL database**, and inspect the transfer first:
-
-```bash
-npm run db:migrate-sqlite -- --dry-run \
-  --app data/trevra.db \
-  --auth data/trevra-auth.db
-```
-
-Commit the migration:
-
-```bash
-npm run db:migrate-sqlite -- \
-  --app data/trevra.db \
-  --auth data/trevra-auth.db
-```
-
-Before reading any rows, the utility uses Python's SQLite backup API to create consistent snapshots in a timestamped `data/sqlite-backup-*` directory. The PostgreSQL import is one transaction and aborts if rows conflict. `--allow-conflicts` enables a non-destructive merge that skips existing rows.
-
 Reset only the seeded demo workspace:
 
 ```bash
@@ -360,17 +335,24 @@ Recommended production controls:
 - `POST /api/actions/:id/approve`
 - `POST /api/actions/:id/execute`
 
-### Connections and ingestion
+### Connections and GTM ingestion
 
 - `GET /api/integrations`
 - `POST /api/integrations/connect-session`
 - `POST /api/integrations/:id/sync`
 - `DELETE /api/integrations/:id`
-- `POST /api/imports/document`
-- `POST /api/imports/marketplace`
-- `POST /api/events`
+- `GET /api/capture-sources`
+- `POST /api/capture-sources`
+- `POST /api/intake/v1/submissions`
+- `GET /api/inbound/people`
+- `GET /api/inbound/submissions`
+- `POST /api/accounts/import`
+- `POST /api/accounts/source`
+- `GET /api/opportunities`
+- `POST /api/opportunities`
+- `GET /api/conversations`
+- `GET /api/deliveries`
 - `POST /api/webhooks/nango`
-- `POST /api/webhooks/stripe`
 
 ### Automation
 
@@ -381,7 +363,7 @@ Recommended production controls:
 ## Safety rules
 
 - Scope changes can never be auto-executed.
-- Approval hashes cover visible text and structured financial payloads.
+- Approval hashes cover visible text and structured GTM payloads.
 - Execution is blocked if an approved payload changes.
 - Production refuses simulated delivery.
 - Scheduled work executes only after the approved time.
@@ -398,7 +380,6 @@ The code and deployment foundations are implemented. The operator still must com
 - privacy policy, terms, DPA, subprocessor list, and deletion process;
 - custom domains and DNS;
 - alerts, incident response, backup validation, and restore drills;
-- accounting-provider sandbox certification where applicable;
 - security review and cross-tenant adversarial testing.
 
 ## Durable GTM control plane

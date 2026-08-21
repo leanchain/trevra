@@ -1,0 +1,307 @@
+.capture-create-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 0.45fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.capture-source-grid {
+  display: grid;
+  grid-template-columns: minmax(230px, 0.34fr) minmax(0, 1fr);
+  gap: 20px;
+}
+
+.capture-source-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.capture-source-card {
+  appearance: none;
+  width: 100%;
+  min-height: var(--t-tap);
+  border: 1px solid var(--t-line);
+  background: var(--t-surface);
+  color: var(--ink);
+  border-radius: var(--t-r-md);
+  padding: 12px 13px;
+  text-align: left;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  box-shadow: var(--t-shadow-sm);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease,
+    transform 100ms ease;
+}
+
+.capture-source-card:hover {
+  border-color: var(--t-line-strong);
+  background: var(--t-surface-2);
+  transform: translateY(-1px);
+  box-shadow: var(--t-shadow-md);
+}
+
+.capture-source-card.is-active {
+  border-color: var(--t-green-300);
+  background: var(--t-green-50);
+  box-shadow:
+    inset 3px 0 0 var(--t-green-fill),
+    var(--t-shadow-sm);
+}
+
+.capture-source-card span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.capture-source-card strong {
+  font-size: var(--t-text-sm);
+}
+
+.capture-source-card small,
+.capture-metrics small {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+
+.capture-source-detail {
+  min-width: 0;
+}
+
+.capture-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.capture-metrics span {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-md);
+  padding: 12px;
+  background: var(--t-surface-2);
+}
+
+.capture-metrics strong {
+  font-size: var(--t-text-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+.capture-secret {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--t-green-200);
+  border-radius: var(--t-r-md);
+  padding: 13px;
+  margin: 12px 0;
+  background: var(--t-green-50);
+}
+
+.capture-secret > strong {
+  color: var(--green);
+  font-size: var(--t-text-xs);
+}
+
+.capture-secret code {
+  overflow: auto;
+  white-space: nowrap;
+  border: 1px solid var(--t-line-soft);
+  background: var(--t-surface);
+  color: var(--ink);
+  padding: 10px 11px;
+  border-radius: var(--t-r-sm);
+  font-family: var(--t-mono);
+  font-size: var(--t-text-xs);
+}
+
+.capture-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.capture-recipes {
+  margin-top: 18px;
+  display: grid;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid var(--t-line-soft);
+}
+
+.capture-recipes nav {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.capture-recipes nav button {
+  min-height: var(--t-tap);
+  border: 1px solid var(--t-line);
+  background: var(--t-surface);
+  color: var(--muted);
+  border-radius: var(--t-r-pill);
+  padding: 7px 12px;
+  cursor: pointer;
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-medium);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.capture-recipes nav button:hover:not(.is-active) {
+  border-color: var(--t-line-strong);
+  color: var(--ink);
+  background: var(--t-surface-2);
+}
+
+.capture-recipes nav button.is-active {
+  background: var(--t-green-50);
+  color: var(--green);
+  border-color: var(--t-green-300);
+}
+
+.capture-recipes pre,
+.capture-submission-card pre {
+  max-width: 100%;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--t-line-soft);
+  background: var(--t-night);
+  color: var(--t-code);
+  border-radius: var(--t-r-md);
+  padding: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--t-mono);
+  font-size: var(--t-text-xs);
+  line-height: 1.55;
+}
+
+.capture-submission-list {
+  display: grid;
+  gap: 10px;
+}
+
+.capture-submission-card {
+  border: 1px solid var(--t-line);
+  border-radius: var(--t-r-md);
+  padding: 15px;
+  display: grid;
+  gap: 11px;
+  background: var(--t-surface);
+  box-shadow: var(--t-shadow-sm);
+}
+
+.capture-submission-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.capture-submission-card header div {
+  display: grid;
+  gap: 3px;
+}
+
+.capture-submission-card header strong {
+  font-size: var(--t-text-sm);
+}
+
+.capture-submission-card header span,
+.capture-submission-card time,
+.capture-submission-meta {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+
+.capture-submission-meta {
+  display: flex;
+  gap: 8px 14px;
+  flex-wrap: wrap;
+}
+
+.capture-submission-meta span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.capture-message {
+  margin: 0;
+  padding: 11px 12px;
+  border-left: 3px solid var(--t-green-300);
+  background: var(--t-surface-2);
+  border-radius: 0 var(--t-r-sm) var(--t-r-sm) 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+
+.capture-tags {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.capture-tags span,
+.status-pill {
+  border: 1px solid var(--t-line);
+  border-radius: var(--t-r-pill);
+  padding: 4px 8px;
+  background: var(--t-surface-2);
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-weight: var(--t-w-medium);
+}
+
+.status-pill.ok {
+  border-color: var(--t-green-200);
+  background: var(--t-green-50);
+  color: var(--green);
+}
+
+.capture-submission-card details {
+  border-top: 1px solid var(--t-line-soft);
+  padding-top: 10px;
+}
+
+.capture-submission-card summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-medium);
+}
+
+.capture-submission-card details[open] summary {
+  margin-bottom: 9px;
+  color: var(--ink);
+}
+
+@media (max-width: 780px) {
+  .capture-create-row,
+  .capture-source-grid,
+  .capture-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .capture-create-row .primary-button {
+    width: 100%;
+  }
+
+  .capture-submission-card header {
+    display: grid;
+  }
+}

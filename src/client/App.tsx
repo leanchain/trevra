@@ -26,6 +26,7 @@ import {
   X
 } from 'lucide-react';
 import type {
+  AgentPrincipal,
   AgentSetup,
   AgentTokenSummary,
   AvailableIntegration,
@@ -36,6 +37,7 @@ import type {
 import {
   createAgentToken,
   createPolicy,
+  getAgents,
   createConnectSession,
   ApiError,
   deleteAgentCliToken,
@@ -69,6 +71,7 @@ import { ActiveLinkedInAccountName } from './LinkedInActiveAccount';
 import { reloadOutreach } from './LinkedInSafety';
 import { LinkedInExclusions, relativeTime } from './LinkedInScreen';
 import { TeamSettingsView } from './TeamScreen';
+import { LeadCaptureSetup } from './LeadCaptureSetup';
 import { ResearchView } from './views/ResearchView';
 import { trackEvent, trackPageView } from './analytics';
 import { ConfirmDrawer } from './ui/dialog';
@@ -324,7 +327,7 @@ export function App() {
   if (!data) return null;
 
   return (
-    <div className="app-shell">
+    <div className="app-shell ui-standard">
       <a
         className="skip-link"
         href="#main"
@@ -511,13 +514,15 @@ const HIDDEN_LIVE_REGION: React.CSSProperties = {
 };
 
 /**
- * Setup is two screens. Access is what may reach the workspace; Workspace is
- * what the workspace itself holds. Everything else is a redirect kept for
+ * Setup has three live screens. Access is what may reach the workspace;
+ * Workspace is what the workspace itself holds; Lead capture is the explicit
+ * website/form ingress boundary. Everything else is a redirect kept for
  * bookmarks -- a URL that used to name a tab now names a section anchor.
  */
 const SETUP_TABS = [
   { sub: '', label: 'Access', path: '/setup' },
-  { sub: 'workspace', label: 'Workspace', path: '/setup/workspace' }
+  { sub: 'workspace', label: 'Workspace', path: '/setup/workspace' },
+  { sub: 'capture', label: 'Lead capture', path: '/setup/capture' }
 ] as const;
 
 const SETUP_LEGACY_REDIRECTS: Record<string, string> = {
@@ -587,6 +592,7 @@ function SetupView({
   }
 
   const onWorkspace = sub === 'workspace';
+  const onCapture = sub === 'capture';
 
   return (
     <div className="page-stack">
@@ -595,8 +601,8 @@ function SetupView({
           <button
             key={tab.path}
             type="button"
-            className={(tab.sub === 'workspace') === onWorkspace ? 'is-active' : undefined}
-            aria-current={(tab.sub === 'workspace') === onWorkspace ? 'page' : undefined}
+            className={tab.sub === sub ? 'is-active' : undefined}
+            aria-current={tab.sub === sub ? 'page' : undefined}
             onClick={() => onNavigate(tab.path)}
           >
             {tab.label}
@@ -604,7 +610,9 @@ function SetupView({
         ))}
       </nav>
 
-      {onWorkspace ? (
+      {onCapture ? (
+        <LeadCaptureSetup setToast={setToast} />
+      ) : onWorkspace ? (
         <>
           <ConnectionsView
             data={data}
@@ -996,14 +1004,27 @@ function AgentCommandBox({
  * here, in the browser, at the only moment the secret exists.
  */
 function AgentAccessPanel({ setToast }: { setToast: (message: string) => void }) {
+  const [agents, setAgents] = useState<AgentPrincipal[]>([]);
   const [tokens, setTokens] = useState<AgentTokenSummary[]>([]);
+  const [agentId, setAgentId] = useState('');
   const [revealed, setRevealed] = useState('');
   const [apiBaseUrl, setApiBaseUrl] = useState('');
   const [busy, setBusy] = useState('');
   const [copiedTarget, setCopiedTarget] = useState<'claude' | 'codex' | ''>('');
   const [confirmRevoke, setConfirmRevoke] = useState<AgentTokenSummary | null>(null);
 
-  const reload = async () => setTokens(await getAgentTokens());
+  const reload = async () => {
+    const [nextAgents, nextTokens] = await Promise.all([getAgents(), getAgentTokens()]);
+    setAgents(nextAgents);
+    setTokens(nextTokens);
+    setAgentId((current) =>
+      current && nextAgents.some((agent) => agent.id === current && agent.status === 'active')
+        ? current
+        : (nextAgents.find((agent) => agent.status === 'active' && agent.isDefault)?.id ??
+          nextAgents.find((agent) => agent.status === 'active')?.id ??
+          '')
+    );
+  };
 
   useEffect(() => {
     void reload().catch(() => undefined);
@@ -1021,6 +1042,7 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
       // connect anything was a question with no useful answer. One stable
       // name either way: the same token backs both commands below.
       const created = await createAgentToken({
+        agentId: agentId || undefined,
         name: `Agent access · ${new Date().toLocaleDateString()}`
       });
       setRevealed(created.token);
@@ -1083,6 +1105,20 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
         </div>
       </div>
 
+      {agents.length > 0 && (
+        <label className="agent-access-agent">
+          Agent
+          <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id} disabled={agent.status !== 'active'}>
+                {agent.name}
+                {agent.status === 'active' ? '' : ` · ${agent.status}`}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
       {!revealed && (
         <button
           className="primary-button agent-create"
@@ -1113,7 +1149,8 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
           {tokens.map((token) => (
             <article key={token.id} className={token.revokedAt ? 'is-revoked' : undefined}>
               <div>
-                <strong>{token.name}</strong>
+                <strong>{token.agentName}</strong>
+                <span>{token.name}</span>
                 <code>{token.prefix}…</code>
               </div>
               <span>
@@ -1233,6 +1270,8 @@ function HostedAgentPanel({
   onInspectRun: (runId: string) => void;
 }) {
   const [setup, setSetup] = useState<AgentSetup | null>(null);
+  const [agents, setAgents] = useState<AgentPrincipal[]>([]);
+  const [agentId, setAgentId] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState('');
   const [problem, setProblem] = useState('');
@@ -1252,13 +1291,24 @@ function HostedAgentPanel({
   const [confirmRemoveCliToken, setConfirmRemoveCliToken] = useState(false);
 
   useEffect(() => {
-    void getAgentSetup()
-      .then((next) => {
+    void Promise.all([getAgentSetup(), getAgents()])
+      .then(([next, nextAgents]) => {
+        setAgents(nextAgents);
         if (!next) return;
         setSetup(next);
         setBaseUrl(next.config?.baseUrl ?? '');
         setModel(next.config?.model ?? '');
         setCapDollars(String(Math.round(next.budget.monthlyCapCents / 100)));
+        setAgentId(
+          next.schedule?.agentId &&
+            nextAgents.some(
+              (agent) => agent.id === next.schedule?.agentId && agent.status === 'active'
+            )
+            ? next.schedule.agentId
+            : (nextAgents.find((agent) => agent.status === 'active' && agent.isDefault)?.id ??
+                nextAgents.find((agent) => agent.status === 'active')?.id ??
+                '')
+        );
         if (next.cli.config) {
           setCliKind(next.cli.config.cli);
           setCliModel(next.cli.config.model);
@@ -1351,7 +1401,7 @@ function HostedAgentPanel({
     setBusy('run');
     setProblem('');
     try {
-      const run = await startAgentRun({ goal: job });
+      const run = await startAgentRun({ agentId: agentId || undefined, goal: job });
       setToast('Started. Every step it takes shows up in the run ledger as it happens.');
       onInspectRun(run.id);
     } catch (error) {
@@ -1544,9 +1594,11 @@ function HostedAgentPanel({
           ? 'Switch spending on first — a run costs money at your provider.'
           : capReached
             ? `This month’s ${usd(budget.monthlyCapCents)} is used up. Raise the cap to run again.`
-            : !goal.trim()
-              ? 'Write what it should work on first.'
-              : null;
+            : !agentId
+              ? 'Choose an active Agent first.'
+              : !goal.trim()
+                ? 'Write what it should work on first.'
+                : null;
 
   const goalField = (label: string) => (
     <label>
@@ -1555,7 +1607,7 @@ function HostedAgentPanel({
         rows={2}
         value={goal}
         onChange={(event) => setGoal(event.target.value)}
-        placeholder="Check which invoices are overdue and draft the follow-ups."
+        placeholder="Review inbound replies and prepare the next GTM follow-ups worth my attention."
       />
     </label>
   );
@@ -1840,7 +1892,20 @@ function HostedAgentPanel({
             <h4 aria-level={3}>Run it once, now</h4>
           </div>
         </div>
-        <div className="byok-fields byok-fields-one">{goalField('What should it work on?')}</div>
+        <div className="byok-fields byok-fields-schedule">
+          <label>
+            Agent
+            <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id} disabled={agent.status !== 'active'}>
+                  {agent.name}
+                  {agent.status === 'active' ? '' : ` · ${agent.status}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          {goalField('What should it work on?')}
+        </div>
         <div className="panel-footer">
           <button
             className="secondary-button"

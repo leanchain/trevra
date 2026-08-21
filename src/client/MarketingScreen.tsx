@@ -135,17 +135,16 @@ const POLICY_CHECKS = [
 const POLICY_FILE = `external_writes:
   default: require_approval
 
-outreach.send:
+email.send:
   max_recipients: 5
   confidence_min: 0.84
   delay_minutes: 30
 
-invoice.create:
+community.reply:
   approval_required: true
-  amount_ceiling: 2500
 
-scope.change:
-  delegation: forbidden`;
+crm.log-activity:
+  approval_required: true`;
 
 function ThemeToggle() {
   return (
@@ -394,8 +393,9 @@ export function MarketingScreen({
         <div className="hero-copy">
           <h1>Run GTM with Claude Code or Codex.</h1>
           <p className="hero-lede">
-            Trevra gives agents tools for research, scoring, outreach, and revenue work. External
-            actions wait for your approval. Every run is logged. The runtime is open source.
+            Trevra gives agents tools for research, scoring, outreach, conversations, and pipeline
+            work. External actions wait for your approval. Every run is logged. The runtime is open
+            source.
           </p>
           <div className="launch-actions">
             <a className="launch-button" data-hosted-cta href={primaryHref} onClick={handlePrimary}>

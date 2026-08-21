@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
 import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from './actions.js';
 import { acceptedTri, repliedTri } from './branching.js';
-import { runCampaignChannelActions } from './campaign-channels.js';
+import { runCampaignChannelActions, syncCampaignEmailProviderEvents } from './campaign-channels.js';
 import {
   decideAdmission,
   workflowAdmissionDemand,
@@ -573,6 +573,11 @@ export async function runManagedCampaigns(
   workspaceId: string,
   now: Date = new Date()
 ): Promise<RunnerResult> {
+  // Learn mailbox replies/bounces before the planner makes any new decisions.
+  // This network-backed observation runs outside the advisory scheduling lease,
+  // and a provider outage cannot block LinkedIn planning for the workspace.
+  await syncCampaignEmailProviderEvents(db, workspaceId, now).catch(() => undefined);
+
   const planned = await db.withConnection('linkedin-runner-lease', async (lease) => {
     const claimed = await lease.query<{ locked: boolean }>(
       'SELECT pg_try_advisory_lock(hashtext($1), hashtext($2)) AS locked',
@@ -1449,6 +1454,27 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
             updatedAt: nowIso
           });
           result.membersCompleted += 1;
+          continue;
+        }
+
+        if (member.assigned_seat_key && !budgetBySeat.has(member.assigned_seat_key)) {
+          memberWrites.set(
+            member.id,
+            stayOnStep(
+              stepIndex,
+              step.id,
+              completedStepIds,
+              new Date(now.getTime() + 24 * 3_600_000),
+              now,
+              branchStatePatch(`blocked:${step.id}`, {
+                reason:
+                  'The LinkedIn account assigned to this lead is unavailable. Trevra will not silently reassign an admitted lead to another sender.',
+                assignedSeatKey: member.assigned_seat_key,
+                at: nowIso
+              })
+            )
+          );
+          result.membersBlocked += 1;
           continue;
         }
 

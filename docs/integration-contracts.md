@@ -11,7 +11,7 @@ A provider connection must never choose a workspace from payload data. The authe
 
 ## Synced canonical records
 
-The legacy Nango canonical sync surface is intentionally narrow while the People/Conversation spine is completed. It accepts only GTM records that Trevra can own today.
+The Nango canonical sync surface is intentionally narrow. It accepts only GTM records that map onto Trevra's canonical Person, Account, Conversation, and Opportunity-lite state.
 
 ### Message
 
@@ -19,9 +19,9 @@ The legacy Nango canonical sync surface is intentionally narrow while the People
 {
   "kind": "message",
   "id": "provider-message-id",
-  "clientName": "Acme Labs",
-  "contactName": "Maya Chen",
-  "clientEmail": "maya@acme.example",
+  "accountName": "Acme Labs",
+  "personName": "Maya Chen",
+  "personEmail": "maya@acme.example",
   "direction": "inbound",
   "subject": "Re: proposal",
   "body": "Can we talk on Thursday?",
@@ -36,18 +36,18 @@ The legacy Nango canonical sync surface is intentionally narrow while the People
 {
   "kind": "opportunity",
   "id": "provider-opportunity-id",
-  "clientName": "Acme Labs",
-  "contactName": "Maya Chen",
-  "clientEmail": "maya@acme.example",
+  "accountName": "Acme Labs",
+  "personName": "Maya Chen",
+  "personEmail": "maya@acme.example",
   "title": "Expansion conversation",
-  "status": "proposal_sent",
+  "status": "proposal",
   "proposalSentAt": "2026-08-18T09:00:00.000Z",
   "expectedResponseAt": "2026-08-25T09:00:00.000Z",
   "externalUrl": "https://provider.example/opportunity/123"
 }
 ```
 
-Opportunity is commercial pipeline state. It does not own invoice value, accounting currency, delivery milestones, contracts, projects, or payment state.
+Opportunity is minimal GTM progression state. Its bounded stages are `new`, `qualified`, `meeting`, `proposal`, `won`, and `lost`; it does not own amount, forecast, accounting currency, delivery milestones, contracts, projects, or payment state.
 
 ## Explicit GTM execution actions
 
@@ -71,14 +71,14 @@ For each returned record Trevra:
 2. maps only a supported GTM model alias;
 3. validates the bounded canonical schema;
 4. stores source evidence with workspace/provider identity;
-5. deterministically matches or creates the current legacy contact/client identity;
-6. upserts the GTM message or opportunity.
+5. deterministically resolves a canonical Person and optional Account identity;
+6. records provider identity evidence and upserts the GTM message or Opportunity-lite state.
 
 Unsupported models are counted as skipped rather than silently treated as a successful empty sync.
 
 ## Inbound website lead capture
 
-Website/form ingestion is **not** the old generic `/api/events` route. It is a GTM-specific capture source contract described in `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`.
+Website/form ingestion is **not** the old generic `/api/events` route. It is a GTM-specific capture source contract described in `docs/superpowers/specs/2026-08-20-generic-lead-capture-design.md`; the operator/integrator runbook is `docs/lead-capture.md`.
 
 The intended resource model is:
 
@@ -101,7 +101,7 @@ HubSpot and Attio may observe GTM records. CRM activity write-back is a dedicate
 
 A connector belongs in Trevra only when it does at least one of these:
 
-1. **Observe GTM state** — people, accounts, conversations, commercial signals, opportunities, campaign/reply outcomes.
+1. **Observe GTM state** — People, Accounts, Conversations, GTM signals, Opportunities, and campaign/reply outcomes.
 2. **Execute a GTM action** — a bounded founder-approved outreach or CRM action.
 
 Do not add providers whose primary purpose is customer accounting, invoicing, project delivery, contract administration, arbitrary application telemetry, generic storage, or arbitrary webhook automation.

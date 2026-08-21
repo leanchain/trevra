@@ -4,8 +4,6 @@
 
 Trevra refuses to start without `DATABASE_URL`, and the URL must begin with `postgres://` or `postgresql://`. Both the commercial graph and Better Auth use PostgreSQL. No embedded database is present in the runtime image.
 
-The one-time `db:migrate-sqlite` utility is deliberately outside the runtime path. It snapshots legacy files, imports them transactionally, and then leaves the original and backup files untouched for recovery.
-
 ## Migrations
 
 Application migrations are stored in `migrations/` and recorded in `schema_migrations`. `migrations/README.md` states the rules a migration file has to follow, including how a file opts out of its transaction for `CREATE INDEX CONCURRENTLY`.

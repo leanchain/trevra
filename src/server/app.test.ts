@@ -388,9 +388,9 @@ describe('Trevra API on PostgreSQL', () => {
       .set('Authorization', authorization)
       .expect(200);
 
-    // Removed agent-Money endpoints are no longer agent-token routes; the normal session boundary rejects the token.
+    // Agent tokens do not become browser sessions merely because the path starts with /api/agent.
     await request(app)
-      .get('/api/agent/revenue-brief')
+      .get('/api/agent/not-a-real-session-route')
       .set('Authorization', authorization)
       .expect(401);
     await request(app).get('/api/agent/actions').set('Authorization', authorization).expect(401);
@@ -427,7 +427,7 @@ describe('Trevra API on PostgreSQL', () => {
       );
       const tools = await mcp.listTools();
       expect(tools.tools.some((tool) => tool.name === 'trevra_gtm_score-lead')).toBe(true);
-      expect(tools.tools.some((tool) => tool.name === 'trevra_revenue_brief')).toBe(false);
+      expect(tools.tools.some((tool) => tool.name === 'trevra_execute_action')).toBe(false);
       expect(tools.tools.some((tool) => tool.name === 'trevra_prepare_recommendation')).toBe(false);
       expect(tools.tools.some((tool) => tool.name === 'trevra_list_pending_actions')).toBe(false);
       expect(tools.tools.some((tool) => tool.name === 'trevra_list_playbooks')).toBe(true);
@@ -1292,7 +1292,6 @@ describe('owner-only acts', () => {
       .post('/api/registry/modules/gtm.score-lead/install')
       .send({ version: '1.0.0' })
       .expect(403);
-    await member.agent.post('/api/commercial-projections/rebuild').expect(403);
 
     // Credentials, money, and the unattended cadence that spends it.
     await member.agent.delete('/api/agent-tokens/tok_whatever').expect(403);
@@ -1314,7 +1313,7 @@ describe('owner-only acts', () => {
       .send({ enabled: true, intervalMinutes: 60 })
       .expect(403);
 
-    // The two downloads. Both are files of client names and message bodies that
+    // The two downloads. Both are files of Person names and message bodies that
     // cannot be recalled once they have left.
     await member.agent.get('/api/ledger/exports/exp_whatever').expect(403);
 
@@ -1414,7 +1413,7 @@ describe('export and erasure', () => {
       withheld: string[];
       truncated: string[];
     };
-    expect(bundle.tables.clients.length).toBeGreaterThan(0);
+    expect(bundle.tables.contacts.length).toBeGreaterThan(0);
     expect(bundle.tables.messages.length).toBeGreaterThan(0);
     expect(bundle.tables.workspace_settings.length).toBe(1);
     expect(bundle.tables.workspace_secrets).toBeUndefined();
@@ -1428,7 +1427,7 @@ describe('export and erasure', () => {
     expect(preview.body.confirmationPhrase).toBe('Northstar Studio');
     expect(preview.body.erasable).toBe(false);
     expect(
-      preview.body.inventory.some((entry: { table: string }) => entry.table === 'clients')
+      preview.body.inventory.some((entry: { table: string }) => entry.table === 'contacts')
     ).toBe(true);
     expect(preview.body.totalRows).toBeGreaterThan(0);
 
@@ -1437,10 +1436,10 @@ describe('export and erasure', () => {
       .send({ confirm: 'Northstar Studio' })
       .expect(403);
     expect(refused.body.error).toMatch(/demo workspace/i);
-    const clients = await db!
-      .prepare('SELECT COUNT(*) AS count FROM clients WHERE workspace_id=?')
+    const people = await db!
+      .prepare('SELECT COUNT(*) AS count FROM contacts WHERE workspace_id=?')
       .get<{ count: number }>(DEMO_WORKSPACE_ID);
-    expect(Number(clients?.count ?? 0)).toBeGreaterThan(0);
+    expect(Number(people?.count ?? 0)).toBeGreaterThan(0);
   });
 
   /**

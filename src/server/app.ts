@@ -78,11 +78,14 @@ import {
   uninstallModuleRelease,
   setPublisherVerification
 } from './registry/service.js';
-import {
-  listCommercialProjections,
-  rebuildCommercialProjections
-} from './projections/commercial.js';
 import { AgentBudgetError, getAgentBudget, setAgentBudget } from './agent/budget.js';
+import {
+  AgentPrincipalError,
+  createAgent,
+  ensureDefaultAgent,
+  listAgents,
+  updateAgent
+} from './agents.js';
 import { getAgentRun, listAgentRuns, type AgentRunRecord } from './agent/runs.js';
 import { AGENT_STOP_REASON_MAX_CHARS, requestAgentRunStop } from './agent/stop-request.js';
 import {
@@ -94,6 +97,19 @@ import {
   readLedgerExport
 } from './ledger-export.js';
 import { LOOP_COST_DEFAULT_WINDOW_DAYS, LOOP_COST_MAX_WINDOW_DAYS, loopCost } from './loop-cost.js';
+import { getToday } from './today.js';
+import { listConversationMessages, listConversations } from './conversations.js';
+import { listEmailDeliveries } from './email-deliveries.js';
+import { ConversationReplyError, prepareConversationEmailReply } from './conversation-replies.js';
+import { PrepareOutreachError, prepareOutreach } from './outreach/prepare.js';
+import { GtmPlanError, compileGtmIntent, prepareGtmPlan } from './gtm/intent.js';
+import {
+  OPPORTUNITY_STAGES,
+  OpportunityError,
+  createOpportunity,
+  listOpportunities,
+  updateOpportunity
+} from './opportunities.js';
 import { runHostedAgent } from './agent/loop.js';
 import {
   MAX_INTERVAL_MINUTES,
@@ -102,7 +118,6 @@ import {
   setAgentSchedule
 } from './agent/schedule.js';
 import { secretsConfigured } from './secrets/crypto.js';
-// readWorkspaceSecretPlaintext is deliberately NOT imported here. Section 3 of
 // docs/byok-and-hosted-agent.md: no API route returns plaintext, and there is
 // no reveal endpoint, for anyone. The HTTP layer only ever sees last4/label.
 // The same discipline applies to 'cli_oauth_token' -- it is a third kind in
@@ -340,6 +355,8 @@ import { runManagedCampaigns } from './linkedin/runner.js';
 import {
   listCampaignMailboxes,
   recordCampaignEmailEvent,
+  recordCampaignEmailTrackingClick,
+  recordCampaignEmailTrackingOpen,
   resolveCampaignChannelUnknownOutcome,
   retryCampaignChannelAction,
   upsertCampaignMailboxSettings
@@ -395,6 +412,24 @@ import { rescoreAccounts, rescoreWorkspace } from './accounts/score.js';
 import type { Account, AccountScore, AccountSignal, RankedAccount } from './accounts/types.js';
 import { listProviders as listLeadSourceProviders } from './research/registry.js';
 import { envCredentials as leadSourceCredentials } from './research/types.js';
+import { registerLeadCaptureIntake } from './lead-capture/http.js';
+import {
+  createCaptureSource,
+  getWorkspaceCaptureSource,
+  listCaptureSources,
+  rotateCaptureSourceSecret,
+  setCaptureSourceStatus
+} from './lead-capture/sources.js';
+import { listContacts } from './lead-capture/people.js';
+import { listInboundSubmissions } from './lead-capture/submissions.js';
+import { persistImportedPeople } from './lead-capture/import.js';
+import { captureSourceCreateSchema, LeadCaptureError } from './lead-capture/types.js';
+import {
+  createSuppression,
+  liftSuppression,
+  listSuppressions,
+  SUPPRESSION_CHANNELS
+} from './suppressions.js';
 
 const SESSION_COOKIE = 'trevra_session';
 const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
@@ -521,6 +556,38 @@ export function createApp(db: Db) {
   });
   registerPublicSiteRoutes(app, db);
 
+  // Opaque, unauthenticated email telemetry endpoints. The tokens are random
+  // per-action/per-link identifiers and resolve server-side; campaign/member ids
+  // and destination URLs never appear in the request path.
+  app.get('/t/e/:token/open.gif', async (req, res) => {
+    await recordCampaignEmailTrackingOpen(db, String(req.params.token), new Date()).catch(
+      () => false
+    );
+    res.setHeader('Content-Type', 'image/gif');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.status(200).send(Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64'));
+  });
+
+  app.get('/t/e/:token/c/:linkToken', async (req, res) => {
+    const target = await recordCampaignEmailTrackingClick(
+      db,
+      String(req.params.token),
+      String(req.params.linkToken),
+      new Date()
+    ).catch(() => null);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Robots-Tag', 'noindex, nofollow, noarchive');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    if (!target) {
+      res.status(404).send('Not found');
+      return;
+    }
+    res.redirect(302, target);
+  });
+
   app.post(
     '/api/webhooks/nango',
     express.raw({ type: 'application/json', limit: '2mb' }),
@@ -561,7 +628,17 @@ export function createApp(db: Db) {
             workspaceId: z.string().trim().min(1).max(200),
             channelActionId: z.string().trim().min(1).max(200).optional(),
             externalRef: z.string().trim().min(1).max(500).optional(),
-            eventKind: z.enum(['opened', 'clicked', 'bounced', 'replied']),
+            eventKind: z.enum([
+              'opened',
+              'clicked',
+              'reply',
+              'unsubscribe',
+              'bounce',
+              'delivery_failure',
+              'out_of_office',
+              'auto_reply',
+              'unknown'
+            ]),
             providerEventId: z.string().trim().max(300).nullable().optional(),
             metadata: z.record(z.unknown()).optional(),
             occurredAt: z.string().datetime().optional()
@@ -677,6 +754,11 @@ export function createApp(db: Db) {
   });
 
   app.all('/api/auth/*splat', toNodeHandler(betterAuth));
+
+  // Public GTM capture must see the exact JSON bytes that the website signed.
+  // Register it before the global JSON parser; the route derives the workspace
+  // from its encrypted Capture Source credential, never from request-body data.
+  registerLeadCaptureIntake(app, db);
 
   app.use(express.json({ limit: '6mb' }));
   app.use(enforceAllowedOrigin);
@@ -816,7 +898,7 @@ export function createApp(db: Db) {
           skillId: String(req.params.id),
           payload: req.body ?? {},
           actorType: 'agent',
-          actorId: req.agent!.tokenId
+          actorId: req.agent!.agentId
         });
         res.status(201).json(result);
       } catch (error) {
@@ -876,7 +958,7 @@ export function createApp(db: Db) {
           version: input.version,
           payload: input.input,
           actorType: 'agent',
-          actorId: req.agent!.tokenId
+          actorId: req.agent!.agentId
         });
         res.status(201).json({ run });
       } catch (error) {
@@ -931,6 +1013,174 @@ export function createApp(db: Db) {
   // workspace spending its own minute; nothing below it can spend anyone
   // else's.
   app.use('/api', workspaceLimiter);
+
+  // ---------------------------------------------------------------------
+  // Generic GTM lead capture management. Reads are workspace-visible; source
+  // creation/rotation/disable changes credentials and are owner-only.
+  // ---------------------------------------------------------------------
+  app.get('/api/capture-sources', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ sources: await listCaptureSources(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post(
+    '/api/capture-sources',
+    ownerOnly('create a lead capture source'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = captureSourceCreateSchema.parse(req.body ?? {});
+        const created = await createCaptureSource(db, {
+          workspaceId: req.auth!.workspaceId,
+          actorUserId: req.auth!.userId,
+          name: input.name,
+          kind: input.kind
+        });
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(201).json(created);
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  app.get('/api/capture-sources/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      const source = await getWorkspaceCaptureSource(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id)
+      );
+      if (!source) return res.status(404).json({ error: 'Capture source not found' });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ source });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch(
+    '/api/capture-sources/:id/status',
+    ownerOnly('change a lead capture source'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = z
+          .object({ status: z.enum(['active', 'disabled']) })
+          .strict()
+          .parse(req.body ?? {});
+        const source = await setCaptureSourceStatus(db, {
+          workspaceId: req.auth!.workspaceId,
+          sourceId: String(req.params.id),
+          status: input.status,
+          actorUserId: req.auth!.userId
+        });
+        if (!source) return res.status(404).json({ error: 'Capture source not found' });
+        res.json({ source });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  app.post(
+    '/api/capture-sources/:id/rotate',
+    ownerOnly('rotate a lead capture source secret'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const rotated = await rotateCaptureSourceSecret(db, {
+          workspaceId: req.auth!.workspaceId,
+          sourceId: String(req.params.id),
+          actorUserId: req.auth!.userId
+        });
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(rotated);
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  app.get('/api/inbound/people', async (req: AuthedRequest, res, next) => {
+    try {
+      const limit = z.coerce.number().int().min(1).max(500).default(100).parse(req.query.limit);
+      res.json({ people: await listContacts(db, req.auth!.workspaceId, limit) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/inbound/submissions', async (req: AuthedRequest, res, next) => {
+    try {
+      const limit = z.coerce.number().int().min(1).max(500).default(100).parse(req.query.limit);
+      res.json({ submissions: await listInboundSubmissions(db, req.auth!.workspaceId, limit) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Workspace GTM suppression is shared safety state, not a campaign setting.
+  // Humans may add or lift suppressions; agent access will be added only once
+  // durable Agent principals/capabilities exist, so a token cannot invent an
+  // unsuppression path ahead of that authority model.
+  app.get('/api/suppressions', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ suppressions: await listSuppressions(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/suppressions', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          channel: z.enum(SUPPRESSION_CHANNELS).default('all'),
+          personId: z.string().trim().min(1).max(200).nullable().optional(),
+          email: z.string().trim().email().max(320).nullable().optional(),
+          domain: z.string().trim().min(3).max(253).nullable().optional(),
+          linkedinUrl: z.string().trim().url().max(500).nullable().optional(),
+          reason: z.string().trim().min(1).max(500)
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const suppression = await createSuppression(db, {
+        workspaceId: req.auth!.workspaceId,
+        channel: input.channel,
+        personId: input.personId,
+        email: input.email,
+        domain: input.domain,
+        linkedinUrl: input.linkedinUrl,
+        reason: input.reason,
+        source: 'manual',
+        actorType: 'human',
+        actorId: req.auth!.userId
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(201).json({ suppression });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete('/api/suppressions/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      const suppression = await liftSuppression(db, {
+        workspaceId: req.auth!.workspaceId,
+        suppressionId: String(req.params.id),
+        actorType: 'human',
+        actorId: req.auth!.userId
+      });
+      if (!suppression) return res.status(404).json({ error: 'Active suppression not found' });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ suppression });
+    } catch (error) {
+      next(error);
+    }
+  });
 
   // ---------------------------------------------------------------------
   // LinkedIn companion: pair a member computer, keep a short website-presence
@@ -1402,9 +1652,9 @@ export function createApp(db: Db) {
     }
   );
 
-  // The other half of the same decision. Uninstalling is not dangerous the way
-  // installing is, but it silently breaks every playbook step that names the
-  // module, so it belongs with the person who chose it.
+  // Uninstalling a GTM module can break every playbook step that names it, so
+  // it remains an explicit owner-level registry decision even though the old
+  // generic commercial projection control surface no longer exists.
   app.delete(
     '/api/registry/modules/:id/install',
     ownerOnly('uninstall a community module'),
@@ -1423,37 +1673,70 @@ export function createApp(db: Db) {
     }
   );
 
-  app.get('/api/commercial-projections', async (req: AuthedRequest, res, next) => {
+  app.get('/api/agents', async (req: AuthedRequest, res, next) => {
     try {
-      const input = projectionFiltersSchema.parse(req.query);
-      res.json({ projections: await listCommercialProjections(db, req.auth!.workspaceId, input) });
+      await ensureDefaultAgent(db, req.auth!.workspaceId, req.auth!.userId);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ agents: await listAgents(db, req.auth!.workspaceId) });
     } catch (error) {
       next(error);
     }
   });
 
-  /**
-   * Rebuild THIS workspace's projections, and nobody else's.
-   *
-   * The call used to be `rebuildCommercialProjections(db)` -- no workspace,
-   * because the function had no workspace to take. On a single-tenant box that
-   * reads as a maintenance button. On a hosted one it was a route that any
-   * member of any workspace could press to truncate
-   * `commercial_entity_projections` for EVERY TENANT ON THE DEPLOYMENT and
-   * then replay the whole event log to rebuild it -- one customer's button
-   * blanking another customer's dashboard, and paying for the replay in shared
-   * database load. The workspace argument is what makes the blast radius the
-   * caller's own data; owner-only is what keeps it from being pressed casually.
-   */
-  app.post(
-    '/api/commercial-projections/rebuild',
-    ownerOnly("rebuild this workspace's commercial projections"),
+  app.post('/api/agents', ownerOnly('create an Agent'), async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          name: z.string().trim().min(1).max(100),
+          purpose: z.string().trim().min(1).max(500)
+        })
+        .strict()
+        .parse(req.body ?? {});
+      res.status(201).json({
+        agent: await createAgent(db, {
+          workspaceId: req.auth!.workspaceId,
+          createdByUserId: req.auth!.userId,
+          ...input
+        })
+      });
+    } catch (error) {
+      if (error instanceof AgentPrincipalError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      next(error);
+    }
+  });
+
+  app.patch(
+    '/api/agents/:id',
+    ownerOnly('change an Agent'),
     async (req: AuthedRequest, res, next) => {
       try {
-        res
-          .status(202)
-          .json({ processed: await rebuildCommercialProjections(db, req.auth!.workspaceId) });
+        const input = z
+          .object({
+            name: z.string().trim().min(1).max(100).optional(),
+            purpose: z.string().trim().min(1).max(500).optional(),
+            status: z.enum(['active', 'paused', 'disabled']).optional()
+          })
+          .strict()
+          .refine(
+            (patch) =>
+              patch.name !== undefined || patch.purpose !== undefined || patch.status !== undefined,
+            { message: 'Provide name, purpose, status, or any combination' }
+          )
+          .parse(req.body ?? {});
+        res.json({
+          agent: await updateAgent(db, {
+            workspaceId: req.auth!.workspaceId,
+            actorUserId: req.auth!.userId,
+            agentId: String(req.params.id),
+            ...input
+          })
+        });
       } catch (error) {
+        if (error instanceof AgentPrincipalError) {
+          return res.status(error.status).json({ error: error.message });
+        }
         next(error);
       }
     }
@@ -1472,6 +1755,7 @@ export function createApp(db: Db) {
     try {
       const input = z
         .object({
+          agentId: z.string().trim().min(1).max(200).optional(),
           name: z.string().trim().min(1).max(100),
           scopes: z.array(z.enum(AGENT_SCOPES)).min(1).max(AGENT_SCOPES.length).optional(),
           expiresAt: z.string().datetime().nullable().optional()
@@ -1480,6 +1764,7 @@ export function createApp(db: Db) {
       const created = await createAgentToken(db, {
         workspaceId: req.auth!.workspaceId,
         userId: req.auth!.userId,
+        agentId: input.agentId,
         name: input.name,
         scopes: input.scopes,
         expiresAt: input.expiresAt
@@ -1487,6 +1772,9 @@ export function createApp(db: Db) {
       res.setHeader('Cache-Control', 'no-store');
       res.status(201).json(created);
     } catch (error) {
+      if (error instanceof AgentPrincipalError) {
+        return res.status(error.status).json({ error: error.message });
+      }
       next(error);
     }
   });
@@ -1783,6 +2071,9 @@ export function createApp(db: Db) {
         const schedule = await setAgentSchedule(db, req.auth!.workspaceId, input, req.auth!.userId);
         res.json({ schedule });
       } catch (error) {
+        if (error instanceof AgentPrincipalError) {
+          return res.status(error.status).json({ error: error.message });
+        }
         next(error);
       }
     }
@@ -1840,11 +2131,19 @@ export function createApp(db: Db) {
 
       const run = await acceptAgentRun(
         db,
-        { workspaceId: req.auth!.workspaceId, goal: input.goal, maxSteps: input.maxSteps },
+        {
+          workspaceId: req.auth!.workspaceId,
+          agentId: input.agentId,
+          goal: input.goal,
+          maxSteps: input.maxSteps
+        },
         (error) => req.log.error({ err: error }, 'Detached hosted agent run failed')
       );
       res.status(201).json({ run });
     } catch (error) {
+      if (error instanceof AgentPrincipalError) {
+        return res.status(error.status).json({ error: error.message });
+      }
       next(error);
     }
   });
@@ -1978,7 +2277,7 @@ export function createApp(db: Db) {
    * `/api/ledger/exports` renders ten run-and-action tables: it is the evidence
    * pack a founder shows a client, and it deliberately excludes lead contacts,
    * lead lists, harvested leads, inbox threads and messages, campaigns, seats,
-   * accounts, clients, audit events and settings. That is the right shape for
+   * Accounts, People, audit events and settings. That is the right shape for
    * "prove what the agent did" and the wrong shape for "give me my data", and
    * a flag on the first would have made one archive answer two questions
    * badly.
@@ -2095,7 +2394,7 @@ export function createApp(db: Db) {
    *
    * THE CASCADE IS THE DELETION. Seventy-two of the seventy-four foreign keys
    * pointing at `workspaces` are `ON DELETE CASCADE`, so one statement removes
-   * clients, messages, invoices, campaigns, leads, threads, seats, exclusions,
+   * People, messages, opportunities, campaigns, leads, threads, seats, exclusions,
    * exports, audit events, settings and the rest -- and does it atomically,
    * which is the property that makes "never half of it" true. The two that are
    * not cascades are `module_publishers` and `module_packages`, which are
@@ -2268,6 +2567,200 @@ export function createApp(db: Db) {
       res.setHeader('Cache-Control', 'no-store');
       res.json(await loopCost(db, req.auth!.workspaceId, filters.window, new Date()));
     } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/today', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await getToday(db, req.auth!.workspaceId, new Date()));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/gtm/plan', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({ intent: z.unknown() })
+        .strict()
+        .parse(req.body ?? {});
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ plan: await compileGtmIntent(db, req.auth!.workspaceId, input.intent) });
+    } catch (error) {
+      if (error instanceof GtmPlanError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      next(error);
+    }
+  });
+
+  app.post('/api/gtm/prepare', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          plan: z.unknown(),
+          planHash: z.string().regex(/^[a-f0-9]{64}$/),
+          idempotencyKey: z.string().trim().min(8).max(200)
+        })
+        .strict()
+        .parse(req.body ?? {});
+      if (input.plan === undefined) return res.status(400).json({ error: 'Plan is required' });
+      const result = await prepareGtmPlan(db, {
+        workspaceId: req.auth!.workspaceId,
+        actorUserId: req.auth!.userId,
+        plan: input.plan,
+        planHash: input.planHash,
+        idempotencyKey: input.idempotencyKey
+      });
+      res.status(201).json(result);
+    } catch (error) {
+      if (error instanceof GtmPlanError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      next(error);
+    }
+  });
+
+  app.get('/api/opportunities', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          stage: z.enum(OPPORTUNITY_STAGES).optional(),
+          limit: z.coerce.number().int().min(1).max(500).default(200)
+        })
+        .parse(req.query);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ opportunities: await listOpportunities(db, req.auth!.workspaceId, input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/opportunities', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = opportunityWriteSchema.parse(req.body ?? {});
+      const opportunity = await createOpportunity(db, {
+        workspaceId: req.auth!.workspaceId,
+        ...input
+      });
+      res.status(201).json({ opportunity });
+    } catch (error) {
+      if (error instanceof OpportunityError)
+        return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  app.patch('/api/opportunities/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = opportunityWriteSchema.partial().parse(req.body ?? {});
+      const opportunity = await updateOpportunity(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        input
+      );
+      if (!opportunity) return res.status(404).json({ error: 'Opportunity not found' });
+      res.json({ opportunity });
+    } catch (error) {
+      if (error instanceof OpportunityError)
+        return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  app.get('/api/deliveries', async (req: AuthedRequest, res, next) => {
+    try {
+      const limit = z.coerce.number().int().min(1).max(500).default(100).parse(req.query.limit);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ deliveries: await listEmailDeliveries(db, req.auth!.workspaceId, limit) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/conversations', async (req: AuthedRequest, res, next) => {
+    try {
+      const limit = z.coerce.number().int().min(1).max(500).default(100).parse(req.query.limit);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ conversations: await listConversations(db, req.auth!.workspaceId, limit) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/conversations/:id/messages', async (req: AuthedRequest, res, next) => {
+    try {
+      const workspaceId = req.auth!.workspaceId;
+      const conversationId = String(req.params.id);
+      const exists = await db
+        .prepare('SELECT 1 AS present FROM conversations WHERE workspace_id=? AND id=?')
+        .get<{ present: number }>(workspaceId, conversationId);
+      if (!exists) return res.status(404).json({ error: 'Conversation not found' });
+      const limit = z.coerce.number().int().min(1).max(1000).default(200).parse(req.query.limit);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        messages: await listConversationMessages(db, workspaceId, conversationId, limit)
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/conversations/:id/replies/prepare', async (req: AuthedRequest, res, next) => {
+    try {
+      const body = z
+        .object({
+          idempotencyKey: z.string().trim().min(8).max(200),
+          subject: z.string().trim().min(1).max(200),
+          body: z.string().trim().min(1).max(20_000)
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const run = await prepareConversationEmailReply(db, {
+        workspaceId: req.auth!.workspaceId,
+        actorUserId: req.auth!.userId,
+        conversationId: String(req.params.id),
+        ...body
+      });
+      res.status(201).json({ run });
+    } catch (error) {
+      if (error instanceof ConversationReplyError) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      next(error);
+    }
+  });
+
+  app.post('/api/outreach/prepare', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          idempotencyKey: z.string().trim().min(8).max(200),
+          name: z.string().trim().min(1).max(160).optional(),
+          senderKey: z.string().trim().min(1).max(64).optional(),
+          existingLeadListId: z.string().trim().min(1).max(160).optional(),
+          uploadedPeopleCsv: z.string().max(2_000_000).optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      res.status(201).json(
+        await prepareOutreach(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            actorUserId: req.auth!.userId,
+            ...input
+          },
+          new Date()
+        )
+      );
+    } catch (error) {
+      if (error instanceof PrepareOutreachError) {
+        return res.status(error.status).json({ error: error.message });
+      }
       next(error);
     }
   });
@@ -2851,13 +3344,13 @@ export function createApp(db: Db) {
          *
          * Rows a worker had already CLAIMED cannot be pulled back -- a browser is
          * mid-action on them, and rewriting the row would not close the tab. So a
-         * non-zero `released.actionsInFlight` means this seat is disconnected and
+         * non-zero `released.actionsInFlight` or `released.channelActionsInFlight` means this seat is disconnected and
          * still sending, for up to one more batch. A response that reported that
          * as a clean disconnect would be the same lie the Reddit route used to
          * tell, and the screen has to be able to say "3 actions were already in
          * flight and will finish" rather than "done".
          */
-        fullyStopped: released.actionsInFlight === 0
+        fullyStopped: released.actionsInFlight === 0 && released.channelActionsInFlight === 0
       });
     })
   );
@@ -4546,7 +5039,17 @@ export function createApp(db: Db) {
     linkedinRoute(async (req, res) => {
       const input = z
         .object({
-          eventKind: z.enum(['opened', 'clicked', 'bounced', 'replied']),
+          eventKind: z.enum([
+            'opened',
+            'clicked',
+            'reply',
+            'unsubscribe',
+            'bounce',
+            'delivery_failure',
+            'out_of_office',
+            'auto_reply',
+            'unknown'
+          ]),
           providerEventId: z.string().trim().max(300).nullable().optional(),
           metadata: z.record(z.unknown()).optional(),
           occurredAt: z.string().datetime().optional()
@@ -5895,6 +6398,12 @@ export function createApp(db: Db) {
         source: input.source,
         tags: input.tags
       });
+      if (input.people.length > 0) {
+        result.people = await persistImportedPeople(db, workspaceId, input.people, {
+          type: 'human',
+          id: req.auth!.userId
+        });
+      }
       // ONE BULK RESCORE, not one per row: an import is up to 2,000 accounts,
       // and a round trip each would make the paste the slowest thing in the
       // product. The operator's own rejections go in with it, so a shape they
@@ -5909,7 +6418,7 @@ export function createApp(db: Db) {
       );
       // 200 when a re-paste of the same list wrote nothing: nothing was
       // created, and saying 201 would make a no-op look like work.
-      res.status(result.created > 0 ? 201 : 200).json(result);
+      res.status(result.created > 0 || (result.people?.created ?? 0) > 0 ? 201 : 200).json(result);
     } catch (error) {
       next(error);
     }
@@ -5964,11 +6473,22 @@ export function createApp(db: Db) {
 
   app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (error instanceof AgentBudgetError) return res.status(409).json({ error: error.message });
-    if (error instanceof SkillApiError || error instanceof PlaybookError)
+    if (
+      error instanceof SkillApiError ||
+      error instanceof PlaybookError ||
+      error instanceof LeadCaptureError
+    )
       return res.status(error.status).json({ error: error.message });
     if (error instanceof z.ZodError)
       return res.status(400).json({ error: 'Invalid request', issues: error.issues });
     if (error instanceof multer.MulterError) return res.status(400).json({ error: error.message });
+    if (
+      error &&
+      typeof error === 'object' &&
+      'type' in error &&
+      (error as { type?: string }).type === 'entity.too.large'
+    )
+      return res.status(413).json({ error: 'Request body is too large' });
     req.log.error({ err: error }, 'Unhandled request error');
     res.status(500).json({ error: 'Internal server error', requestId: req.id });
   });
@@ -6005,10 +6525,15 @@ const moduleInstallSchema = z.object({
   config: z.record(z.unknown()).default({})
 });
 
-const projectionFiltersSchema = z.object({
-  entityType: z.string().min(1).max(100).optional(),
-  includeDeleted: z.coerce.boolean().default(false),
-  limit: z.coerce.number().int().min(1).max(1000).default(200)
+const opportunityWriteSchema = z.object({
+  personId: z.string().trim().min(1).max(160).nullable().optional(),
+  accountId: z.string().trim().min(1).max(160).nullable().optional(),
+  title: z.string().trim().min(1).max(240),
+  stage: z.enum(OPPORTUNITY_STAGES).optional(),
+  ownerType: z.enum(['user', 'agent', 'system']).nullable().optional(),
+  ownerId: z.string().trim().min(1).max(160).nullable().optional(),
+  nextAction: z.string().trim().max(1000).nullable().optional(),
+  nextActionAt: z.string().datetime().nullable().optional()
 });
 
 const playbookStartSchema = z.object({
@@ -6125,6 +6650,7 @@ const agentRunFiltersSchema = z.object({
 const AGENT_GOAL_MAX_CHARS = 2000;
 
 const agentRunStartSchema = z.object({
+  agentId: z.string().trim().min(1).max(200).optional(),
   goal: z.string().trim().min(1, 'goal is required').max(AGENT_GOAL_MAX_CHARS),
   // The loop owns the real ceiling (MAX_STEPS_CEILING) and clamps to it. This
   // bound only keeps nonsense out of the request; it is not the authority, and
@@ -6184,14 +6710,21 @@ const agentScheduleSchema = z
   .object({
     enabled: z.boolean().optional(),
     goal: z.string().trim().min(1).max(AGENT_GOAL_MAX_CHARS).optional(),
-    intervalMinutes: z.number().int().min(MIN_INTERVAL_MINUTES).max(MAX_INTERVAL_MINUTES).optional()
+    intervalMinutes: z
+      .number()
+      .int()
+      .min(MIN_INTERVAL_MINUTES)
+      .max(MAX_INTERVAL_MINUTES)
+      .optional(),
+    agentId: z.string().trim().min(1).max(200).optional()
   })
   .refine(
     (patch) =>
       patch.enabled !== undefined ||
       patch.goal !== undefined ||
-      patch.intervalMinutes !== undefined,
-    { message: 'Provide enabled, goal, intervalMinutes, or any combination' }
+      patch.intervalMinutes !== undefined ||
+      patch.agentId !== undefined,
+    { message: 'Provide enabled, goal, intervalMinutes, agentId, or any combination' }
   );
 
 /** How long the request will wait for the run's ledger row to appear. */
@@ -6221,7 +6754,7 @@ const AGENT_RUN_ACCEPT_POLL_MS = 20;
  */
 async function acceptAgentRun(
   db: Db,
-  input: { workspaceId: string; goal: string; maxSteps?: number },
+  input: { workspaceId: string; agentId?: string; goal: string; maxSteps?: number },
   log: (error: unknown) => void
 ): Promise<AgentRunRecord> {
   type Settled = { failed: true; error: unknown } | { failed: false; run: AgentRunRecord };
@@ -7967,7 +8500,25 @@ const accountImportSchema = z
   .object({
     text: z.string().min(1).max(5_000_000),
     source: z.enum(['csv', 'sourced', 'linkedin', 'manual']).default('csv'),
-    tags: z.array(z.string().trim().min(1).max(60)).max(20).default([])
+    tags: z.array(z.string().trim().min(1).max(60)).max(20).default([]),
+    people: z
+      .array(
+        z
+          .object({
+            accountDomain: z.string().trim().min(1).max(500),
+            name: z.string().trim().max(200).optional(),
+            email: z.string().trim().email().max(320).optional(),
+            phone: z.string().trim().max(80).optional(),
+            role: z.string().trim().max(160).optional(),
+            sourcePath: z.string().trim().max(1000).optional()
+          })
+          .strict()
+          .refine((value) => Boolean(value.email || value.phone), {
+            message: 'Imported Person evidence requires email or phone'
+          })
+      )
+      .max(4000)
+      .default([])
   })
   .strict();
 

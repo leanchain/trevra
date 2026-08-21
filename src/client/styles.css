@@ -439,6 +439,181 @@ p {
   border-color: var(--t-field-line);
 }
 
+/* --------------------------------------------------------------------------
+ * Shared UI primitives
+ *
+ * `ui/primitives.tsx` owns ordinary controls. Feature styles own layout only;
+ * these classes own the visual language so Setup, Research, Outreach, drawers,
+ * and future screens do not each grow a different input/button skin.
+ * ----------------------------------------------------------------------- */
+.ui-field {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-strong);
+}
+.ui-field-label {
+  line-height: 1.35;
+}
+.ui-field-hint {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-body);
+  line-height: 1.45;
+}
+.ui-control:not([type='checkbox']):not([type='radio']) {
+  width: 100%;
+  min-height: var(--t-tap);
+  border: 1px solid var(--t-field-line);
+  border-radius: var(--t-r-md);
+  background-color: var(--t-field);
+  color: var(--ink);
+  padding: 9px 12px;
+  box-shadow: 0 1px 0 rgba(20, 32, 25, 0.03);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background-color 120ms ease;
+}
+.ui-control:hover:not(:disabled) {
+  border-color: var(--t-line-strong);
+  background-color: var(--t-surface);
+}
+.ui-control:focus {
+  border-color: var(--t-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-focus) 14%, transparent);
+}
+.ui-control:disabled {
+  background-color: var(--t-surface-2);
+  color: var(--muted);
+}
+.ui-select:not([multiple]) {
+  appearance: none;
+  padding-right: 38px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px);
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+}
+.ui-textarea {
+  resize: vertical;
+  line-height: 1.55;
+}
+.ui-button {
+  white-space: nowrap;
+  transition:
+    transform 100ms ease,
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease;
+}
+
+/* Legacy screens still contain raw ordinary controls. `ui-standard` gives the
+   authenticated shell the same baseline while those screens migrate to the
+   primitives above. Specialized browser controls are deliberately excluded. */
+.ui-standard
+  :is(input, textarea, select):not([type='checkbox']):not([type='radio']):not([type='range']):not(
+    [type='file']
+  ):not([type='color']):not([type='hidden']) {
+  width: 100%;
+  min-height: var(--t-tap);
+  border: 1px solid var(--t-field-line);
+  border-radius: var(--t-r-md);
+  background-color: var(--t-field);
+  color: var(--ink);
+  padding: 9px 12px;
+  box-shadow: 0 1px 0 rgba(20, 32, 25, 0.03);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    background-color 120ms ease;
+}
+.ui-standard
+  :is(input, textarea, select):not([type='checkbox']):not([type='radio']):not([type='range']):not(
+    [type='file']
+  ):not([type='color']):not([type='hidden']):hover:not(:disabled) {
+  border-color: var(--t-line-strong);
+  background-color: var(--t-surface);
+}
+.ui-standard
+  :is(input, textarea, select):not([type='checkbox']):not([type='radio']):not([type='range']):not(
+    [type='file']
+  ):not([type='color']):not([type='hidden']):focus {
+  border-color: var(--t-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-focus) 14%, transparent);
+}
+.ui-standard select:not([multiple]) {
+  appearance: none;
+  padding-right: 38px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) calc(50% - 2px),
+    calc(100% - 12px) calc(50% - 2px);
+  background-size:
+    5px 5px,
+    5px 5px;
+  background-repeat: no-repeat;
+}
+.ui-standard textarea {
+  line-height: 1.55;
+}
+.ui-standard :is(.primary-button, .secondary-button, .ghost-button, .li-mini-button) {
+  border-radius: var(--t-r-md);
+  transition:
+    transform 100ms ease,
+    border-color 120ms ease,
+    background-color 120ms ease,
+    box-shadow 120ms ease,
+    color 120ms ease;
+}
+.ui-standard .primary-button {
+  padding-inline: 16px;
+  box-shadow: var(--t-shadow-sm);
+}
+.ui-standard .primary-button:hover:not(:disabled) {
+  background: var(--t-green-700);
+  border-color: var(--t-green-700);
+  transform: translateY(-1px);
+  box-shadow: var(--t-shadow-md);
+}
+:root[data-theme='dark'] .ui-standard .primary-button:hover:not(:disabled) {
+  background: var(--t-green-500);
+  border-color: var(--t-green-500);
+}
+.ui-standard .secondary-button {
+  border-color: var(--t-line-strong);
+  background: var(--t-surface);
+  box-shadow: var(--t-shadow-sm);
+}
+.ui-standard .secondary-button:hover:not(:disabled) {
+  color: var(--green);
+  border-color: var(--t-green-300);
+  background: var(--t-green-50);
+  transform: translateY(-1px);
+  box-shadow: var(--t-shadow-md);
+}
+.ui-standard .ghost-button:hover:not(:disabled) {
+  color: var(--green);
+  background: var(--t-green-50);
+}
+.ui-standard
+  :is(.primary-button, .secondary-button, .ghost-button, .li-mini-button):active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
 /* Interactive floor. 40px pointing, 44px touching -- see --t-tap. */
 .nav-item,
 .icon-button,
@@ -857,18 +1032,6 @@ h1 {
 }
 .recommendation-icon svg {
   width: 18px;
-}
-.type-scope_creep {
-  background: var(--amber-bg);
-  color: var(--amber);
-}
-.type-overdue_invoice {
-  background: var(--red-bg);
-  color: var(--red);
-}
-.type-unbilled_milestone {
-  background: var(--green-2);
-  color: var(--green);
 }
 .type-stale_proposal {
   background: var(--blue-bg);
@@ -10641,4 +10804,373 @@ button:disabled {
 .li-action-menu-popover > button.is-danger:hover:not(:disabled) {
   color: var(--red);
   background: var(--t-red-bg);
+}
+
+/* Shared GTM conversation projection: one Person, multiple channel transcripts. */
+.shared-conversation-grid {
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.85fr) minmax(0, 1.6fr);
+  gap: 14px;
+  margin-top: 14px;
+}
+.shared-conversation-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  max-height: 36rem;
+  overflow: auto;
+}
+.shared-conversation-row {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.shared-conversation-row:hover,
+.shared-conversation-row.is-active {
+  border-color: var(--green);
+  background: var(--t-surface-2);
+}
+.shared-conversation-row-head,
+.shared-message-head,
+.shared-transcript-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.shared-conversation-meta,
+.shared-conversation-preview,
+.shared-transcript-head span,
+.shared-message-head span,
+.shared-message-subject,
+.shared-conversation-footnote {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.shared-conversation-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shared-transcript {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.shared-transcript-head {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.shared-transcript-head > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.shared-message {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+}
+.shared-message.is-outbound {
+  margin-left: min(12%, 4rem);
+}
+.shared-message.is-inbound {
+  margin-right: min(12%, 4rem);
+}
+.shared-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shared-message-subject {
+  font-weight: var(--t-w-medium);
+}
+.shared-reply-notice {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--t-green-300);
+  border-radius: var(--t-r-md);
+  background: var(--t-green-50);
+  color: var(--t-green-800);
+  font-size: var(--t-text-sm);
+}
+.shared-reply-composer {
+  display: grid;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.shared-reply-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.shared-reply-heading > div,
+.shared-reply-review {
+  display: grid;
+  gap: 4px;
+}
+.shared-reply-heading span,
+.shared-reply-review span {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.shared-reply-composer label {
+  display: grid;
+  gap: 5px;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-medium);
+}
+.shared-reply-composer input,
+.shared-reply-composer textarea {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--t-field-line);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+  color: var(--ink);
+  font: inherit;
+}
+.shared-reply-composer textarea {
+  resize: vertical;
+}
+.shared-reply-review {
+  padding: 10px 11px;
+  border: 1px solid var(--t-amber-line);
+  border-radius: var(--t-r-md);
+  background: var(--t-amber-bg);
+}
+.shared-reply-review p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.shared-reply-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.shared-conversation-footnote {
+  margin: 12px 0 0;
+}
+/* Typed GTM intent planner on Today: compact goal -> plan -> result. */
+.gtm-plan-body {
+  display: grid;
+  gap: 14px;
+  margin-top: 12px;
+}
+.gtm-plan-form {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(12rem, 2fr) minmax(7rem, 0.5fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+.gtm-plan-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-medium);
+}
+.gtm-plan-form input,
+.gtm-plan-form select {
+  min-height: 40px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--t-field-line);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+  color: var(--ink);
+  font: inherit;
+}
+.gtm-plan-preview {
+  display: grid;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.gtm-plan-preview-head,
+.gtm-plan-actions,
+.gtm-plan-result,
+.gtm-plan-blockers > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.gtm-plan-preview-head > div,
+.gtm-plan-result {
+  min-width: 0;
+}
+.gtm-plan-preview-head > div {
+  display: grid;
+  gap: 3px;
+}
+.gtm-plan-preview-head > div > span,
+.gtm-plan-actions > span,
+.gtm-plan-result > span,
+.gtm-plan-steps span,
+.gtm-plan-blockers span {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.gtm-plan-steps {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.gtm-plan-steps li {
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--panel);
+}
+.gtm-plan-blockers {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--t-amber-line);
+  border-radius: var(--t-r-md);
+  background: var(--t-amber-bg);
+}
+.gtm-plan-result {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+/* Opportunity-lite: fixed GTM stages, not a configurable CRM pipeline. */
+.opportunity-create {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+  margin: 14px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.opportunity-create label,
+.opportunity-row label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.opportunity-create input,
+.opportunity-create select,
+.opportunity-row input,
+.opportunity-row select {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  background: var(--panel);
+  color: var(--ink);
+}
+.opportunity-stage-list {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+.opportunity-stage {
+  display: grid;
+  gap: 8px;
+}
+.opportunity-stage > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.opportunity-row {
+  display: grid;
+  grid-template-columns: minmax(13rem, 1.25fr) minmax(8rem, 0.55fr) minmax(12rem, 1fr) minmax(
+      10rem,
+      0.7fr
+    ) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+}
+.opportunity-main {
+  display: grid;
+  gap: 4px;
+  align-self: center;
+}
+.opportunity-main span,
+.opportunity-owner {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.opportunity-owner {
+  align-self: center;
+  white-space: nowrap;
+}
+
+@media (max-width: 980px) {
+  .opportunity-create {
+    grid-template-columns: 1fr 1fr;
+  }
+  .opportunity-row {
+    grid-template-columns: 1fr 1fr;
+  }
+  .opportunity-main {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 900px) {
+  .gtm-plan-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 760px) {
+  .opportunity-create,
+  .opportunity-row {
+    grid-template-columns: 1fr;
+  }
+  .gtm-plan-form {
+    grid-template-columns: 1fr;
+  }
+  .gtm-plan-preview-head,
+  .gtm-plan-actions,
+  .gtm-plan-result,
+  .gtm-plan-blockers > div {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .shared-conversation-grid {
+    grid-template-columns: 1fr;
+  }
+  .shared-conversation-list {
+    max-height: 18rem;
+  }
+  .shared-message.is-outbound,
+  .shared-message.is-inbound {
+    margin-inline: 0;
+  }
 }

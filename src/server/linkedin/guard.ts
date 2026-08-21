@@ -55,6 +55,7 @@ import { OWNER_SEAT_KEY, effectivePosture, getSeat, warmupWeekOf } from './seats
 export type LinkedInCheckName =
   | 'seat-configured'
   | 'seat-paused'
+  | 'suppression'
   | 'warmup-ceiling'
   | 'campaign-warmup'
   | 'rolling-24h'
@@ -72,6 +73,7 @@ export type LinkedInCheckName =
 export const LINKEDIN_CHECK_NAMES = [
   'seat-configured',
   'seat-paused',
+  'suppression',
   'warmup-ceiling',
   'campaign-warmup',
   'rolling-24h',
@@ -373,6 +375,7 @@ interface SeatLedgerFacts {
   /** 0 when no campaign was named; only read when the campaign is a managed one. */
   campaignUsed24: number;
   duplicate: boolean;
+  suppressionReason: string | null;
 }
 
 /** The three kinds that share the operator's account-level message ceiling. */
@@ -445,7 +448,22 @@ async function seatLedgerFacts(
              AND status <> 'skipped' AND recorded_at > ?::timestamptz) AS campaign_used_24,
         EXISTS (SELECT 1 FROM linkedin_actions
            WHERE workspace_id=? AND seat_key=? AND kind=? AND target_ref=? AND replay_scope=?
-             AND status <> 'skipped' AND id IS DISTINCT FROM ?::text) AS duplicate
+             AND status <> 'skipped' AND id IS DISTINCT FROM ?::text) AS duplicate,
+        (SELECT s.reason
+           FROM suppressions s
+           LEFT JOIN contacts p ON p.workspace_id=s.workspace_id AND p.id=s.person_id
+          WHERE s.workspace_id=? AND s.lifted_at IS NULL AND s.channel IN ('all','linkedin')
+            AND (
+              (s.linkedin_url IS NOT NULL AND
+               LOWER(RTRIM(SPLIT_PART(SPLIT_PART(s.linkedin_url, chr(63),1),'#',1),'/')) =
+               LOWER(RTRIM(SPLIT_PART(SPLIT_PART(?::text, chr(63),1),'#',1),'/')))
+              OR
+              (p.linkedin_url_normalized IS NOT NULL AND
+               LOWER(RTRIM(p.linkedin_url_normalized,'/')) =
+               LOWER(RTRIM(SPLIT_PART(SPLIT_PART(?::text, chr(63),1),'#',1),'/')))
+            )
+          ORDER BY CASE WHEN s.channel='linkedin' THEN 0 ELSE 1 END, s.created_at DESC
+          LIMIT 1) AS suppression_reason
       FROM windowed
     `
     )
@@ -460,6 +478,7 @@ async function seatLedgerFacts(
       pending_invites: number;
       campaign_used_24: number;
       duplicate: boolean;
+      suppression_reason: string | null;
     }>(
       seat.workspaceId,
       seat.seatKey,
@@ -491,7 +510,10 @@ async function seatLedgerFacts(
       input.kind,
       input.targetRef,
       input.replayScope,
-      input.excludeActionId
+      input.excludeActionId,
+      seat.workspaceId,
+      input.targetRef,
+      input.targetRef
     );
 
   // bucket 0 is the newest 24h and the array is oldest-first, so it lands last
@@ -518,7 +540,8 @@ async function seatLedgerFacts(
     acceptanceAccepted: row?.accepted ?? 0,
     pendingInvites: row?.pending_invites ?? 0,
     campaignUsed24: row?.campaign_used_24 ?? 0,
-    duplicate: row?.duplicate === true
+    duplicate: row?.duplicate === true,
+    suppressionReason: row?.suppression_reason ?? null
   };
 }
 
@@ -532,7 +555,7 @@ function campaignDayOf(startedAt: string, now: Date): number {
 /**
  * Run every gate against one proposed action.
  *
- * A workspace with NO seat still gets all fourteen checks, evaluated against the
+ * A workspace with NO seat still gets every check, evaluated against the
  * most conservative assumptions available (warm-up band, week 1, UTC). The
  * alternative -- returning early with one blocker -- is the short-circuit this
  * module exists to avoid, and it would hide the fact that the action is also
@@ -614,6 +637,17 @@ export async function evaluateLinkedInSafety(
       posture === 'paused'
         ? `Seat is paused${seat?.pausedReason ? `: ${seat.pausedReason}` : ''}. Resume it before acting.`
         : `Seat posture is ${posture}, not paused.`
+  });
+
+  // Workspace suppression is an authority boundary, not pacing. A manual action
+  // may bypass Trevra's rhythm controls below, but it may never override an
+  // active Person/profile suppression merely by being hand-triggered.
+  checks.push({
+    check: 'suppression',
+    passed: ledger.suppressionReason === null,
+    detail: ledger.suppressionReason
+      ? `Workspace suppression blocks this LinkedIn target: ${ledger.suppressionReason}.`
+      : 'No active workspace suppression matches this LinkedIn target.'
   });
 
   const used24 = ledger.used24;

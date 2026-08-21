@@ -37,7 +37,7 @@ async function seedTenant(
   const now = new Date().toISOString();
   const workspaceId = id('ws');
   const userId = id('usr');
-  const clientId = id('cl');
+  const personId = id('con');
   const recommendationId = id('rec');
   const actionId = id('act');
   createdWorkspaces.push(workspaceId);
@@ -50,15 +50,14 @@ async function seedTenant(
     .run(userId, workspaceId, `${userId}@example.test`, label, now);
   await database
     .prepare(
-      'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
+      'INSERT INTO contacts (id,workspace_id,name,email,email_normalized,created_at,updated_at) VALUES (?,?,?,?,?,?,?)'
     )
     .run(
-      clientId,
+      personId,
       workspaceId,
-      `${label} client`,
       'Contact Person',
-      `${clientId}@example.test`,
-      'prospect',
+      `${personId}@example.test`,
+      `${personId}@example.test`,
       now,
       now
     );
@@ -66,7 +65,7 @@ async function seedTenant(
     .prepare(
       `
       INSERT INTO recommendations (
-        id,workspace_id,client_id,source_key,type,title,summary,
+        id,workspace_id,person_id,source_key,type,title,summary,
         confidence,urgency,priority_score,status,recommended_action,created_at,updated_at
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `
@@ -74,7 +73,7 @@ async function seedTenant(
     .run(
       recommendationId,
       workspaceId,
-      clientId,
+      personId,
       `opportunity:${recommendationId}:stale`,
       'stale_proposal',
       'Follow up on the proposal',
@@ -100,7 +99,7 @@ async function seedTenant(
       workspaceId,
       recommendationId,
       'email_draft',
-      `${clientId}@example.test`,
+      `${personId}@example.test`,
       'Proposal follow-up',
       'Checking whether there are any questions.',
       '{}',

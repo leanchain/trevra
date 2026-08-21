@@ -14,6 +14,8 @@ import {
   updateLeadContact
 } from './lead-lists.js';
 import { createLeadSource } from './leads.js';
+import { resolveContact } from '../lead-capture/people.js';
+import { findSuppression } from '../suppressions.js';
 import {
   createManagedCampaign,
   listCampaignMembers,
@@ -99,7 +101,8 @@ beforeEach(async () => {
     'linkedin_workflows',
     'linkedin_lead_contacts',
     'linkedin_lead_lists',
-    'linkedin_seats'
+    'linkedin_seats',
+    'contacts'
   ]) {
     await db.prepare(`DELETE FROM ${table} WHERE workspace_id=?`).run(WORKSPACE_ID);
   }
@@ -285,6 +288,119 @@ describe('materialising a harvest into a campaign-usable list', () => {
 describe('one person, one contact row, per workspace', () => {
   const csv = (url: string) => `First Name,Last Name,Company,LinkedIn URL\nMaya,Chen,Acme,${url}`;
 
+  it('links LinkedIn leads to the canonical Person spine and reuses an existing Person by email', async () => {
+    const canonical = await resolveContact(db, WORKSPACE_ID, {
+      name: 'Maya Chen',
+      email: 'maya-person@example.com'
+    });
+    const list = await createLeadList(
+      db,
+      { workspaceId: WORKSPACE_ID, name: 'Canonical people' },
+      NOW
+    );
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Chen,Acme,maya-person@example.com,https://www.linkedin.com/in/maya-person/'
+      },
+      NOW
+    );
+
+    const [lead] = await listLeadContacts(db, WORKSPACE_ID, list.id);
+    expect(lead?.personId).toBe(canonical.contact.id);
+    const person = await db
+      .prepare('SELECT email_normalized,linkedin_url FROM contacts WHERE workspace_id=? AND id=?')
+      .get<{ email_normalized: string; linkedin_url: string }>(WORKSPACE_ID, canonical.contact.id);
+    expect(person).toEqual({
+      email_normalized: 'maya-person@example.com',
+      linkedin_url: 'https://www.linkedin.com/in/maya-person/'
+    });
+  });
+
+  it('creates one canonical Person for a profile-only LinkedIn lead', async () => {
+    const list = await createLeadList(
+      db,
+      { workspaceId: WORKSPACE_ID, name: 'Profile people', sourceKind: 'profile_urls' },
+      NOW
+    );
+    await importLeadProfileUrls(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        listId: list.id,
+        urls: ['https://LinkedIn.com/in/Maya-Profile/?trk=feed']
+      },
+      NOW
+    );
+
+    const [lead] = await listLeadContacts(db, WORKSPACE_ID, list.id);
+    expect(lead).toMatchObject({
+      personResolutionStatus: 'resolved',
+      profileUrl: 'https://www.linkedin.com/in/Maya-Profile/'
+    });
+    expect(lead?.personId).toBeTruthy();
+    const person = await db
+      .prepare(
+        'SELECT linkedin_url,linkedin_url_normalized FROM contacts WHERE workspace_id=? AND id=?'
+      )
+      .get<{ linkedin_url: string; linkedin_url_normalized: string }>(
+        WORKSPACE_ID,
+        lead!.personId!
+      );
+    expect(person).toEqual({
+      linkedin_url: 'https://www.linkedin.com/in/maya-profile/',
+      linkedin_url_normalized: 'https://www.linkedin.com/in/maya-profile/'
+    });
+  });
+
+  it('keeps identity-poor LinkedIn rows explicit instead of inventing a Person from a name', async () => {
+    const list = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'Names only' }, NOW);
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company\nMaya,Chen,Acme'
+      },
+      NOW
+    );
+
+    const [lead] = await listLeadContacts(db, WORKSPACE_ID, list.id);
+    expect(lead).toMatchObject({ personId: null, personResolutionStatus: 'insufficient_identity' });
+    const people = await db
+      .prepare('SELECT COUNT(*)::int AS total FROM contacts WHERE workspace_id=?')
+      .get<{ total: number }>(WORKSPACE_ID);
+    expect(people?.total).toBe(0);
+  });
+
+  it('preserves conflicting deterministic identities for review without aborting the LinkedIn import', async () => {
+    const emailPerson = await resolveContact(db, WORKSPACE_ID, {
+      name: 'Email Maya',
+      email: 'maya-conflict@example.com'
+    });
+    const linkedInPerson = await resolveContact(db, WORKSPACE_ID, {
+      name: 'LinkedIn Maya',
+      linkedinUrl: 'https://www.linkedin.com/in/maya-conflict/'
+    });
+    expect(linkedInPerson.contact.id).not.toBe(emailPerson.contact.id);
+
+    const list = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'Conflicts' }, NOW);
+    const result = await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Chen,Acme,maya-conflict@example.com,https://www.linkedin.com/in/maya-conflict/'
+      },
+      NOW
+    );
+
+    expect(result.inserted).toBe(1);
+    const [lead] = await listLeadContacts(db, WORKSPACE_ID, list.id);
+    expect(lead).toMatchObject({ personId: null, personResolutionStatus: 'conflict' });
+  });
   it('reuses the existing contact when the same person is imported into a second list', async () => {
     const first = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'Batch one' }, NOW);
     const second = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'Batch two' }, NOW);
@@ -330,6 +446,62 @@ describe('one person, one contact row, per workspace', () => {
     expect(await countLeadContacts(db, WORKSPACE_ID, second.id)).toBe(1);
     // The contact reports the list it was asked for, not the one it landed in.
     expect((await listLeadContacts(db, WORKSPACE_ID, second.id))[0].listId).toBe(second.id);
+  });
+
+  it('keeps the LinkedIn do-not-contact toggle in sync with workspace suppression', async () => {
+    const list = await createLeadList(db, { workspaceId: WORKSPACE_ID, name: 'DNC sync' }, NOW);
+    await importLeadCsv(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        listId: list.id,
+        csv: 'First Name,Last Name,Company,Email,LinkedIn URL\nMaya,Chen,Acme,maya-dnc@example.com,https://www.linkedin.com/in/maya-dnc/'
+      },
+      NOW
+    );
+    let lead = (await listLeadContacts(db, WORKSPACE_ID, list.id))[0]!;
+    lead = await updateLeadContact(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        contactId: lead.id,
+        firstName: lead.firstName,
+        lastName: lead.lastName,
+        company: lead.company,
+        email: lead.email,
+        profileUrl: lead.profileUrl,
+        doNotContact: true
+      },
+      NOW
+    );
+    expect(lead.doNotContact).toBe(true);
+    expect(
+      await findSuppression(db, WORKSPACE_ID, {
+        channel: 'linkedin',
+        linkedinUrl: lead.profileUrl
+      })
+    ).toMatchObject({ source: 'linkedin_lead', sourceRef: lead.id });
+
+    await updateLeadContact(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        contactId: lead.id,
+        firstName: lead.firstName,
+        lastName: lead.lastName,
+        company: lead.company,
+        email: lead.email,
+        profileUrl: lead.profileUrl,
+        doNotContact: false
+      },
+      new Date(NOW.getTime() + 1_000)
+    );
+    expect(
+      await findSuppression(db, WORKSPACE_ID, {
+        channel: 'linkedin',
+        linkedinUrl: lead.profileUrl
+      })
+    ).toBeNull();
   });
 
   it('records imported and manual email provenance explicitly', async () => {

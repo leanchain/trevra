@@ -2,8 +2,8 @@
  * The smallest ZIP writer that can hold a ledger export.
  *
  * WHY NOT A LIBRARY. `jszip` and `archiver` are both already resolved in
- * node_modules -- as transitive dependencies of `mammoth` and `testcontainers`
- * respectively -- and neither is a declared dependency of this project.
+ * node_modules through unrelated development dependencies, and neither is a
+ * declared runtime dependency of this project.
  * Promoting one means editing package.json and regenerating package-lock.json,
  * and the lock file is the single most conflict-prone file in a repo with more
  * than one session open on it. What is actually needed here is the ZIP
@@ -78,7 +78,8 @@ function crc32(data: Buffer): number {
  */
 function dosDateTime(at: Date): { time: number; date: number } {
   const year = Math.max(1980, at.getUTCFullYear());
-  const time = (at.getUTCHours() << 11) | (at.getUTCMinutes() << 5) | Math.floor(at.getUTCSeconds() / 2);
+  const time =
+    (at.getUTCHours() << 11) | (at.getUTCMinutes() << 5) | Math.floor(at.getUTCSeconds() / 2);
   const date = ((year - 1980) << 9) | ((at.getUTCMonth() + 1) << 5) | at.getUTCDate();
   return { time, date };
 }

@@ -128,7 +128,7 @@
           <details open>
             <summary>01. Approval integrity</summary>
             <p>
-              The exact approved payload, including structured financial fields, is hashed before
+              The exact approved GTM payload, including structured action metadata, is hashed before
               execution. Modified payloads are rejected.
             </p>
           </details>
@@ -143,8 +143,8 @@
           <details open>
             <summary>03. Verified events</summary>
             <p>
-              Stripe and Nango webhooks are signature-verified, deduplicated, and processed
-              idempotently.
+              Nango integration webhooks and signed GTM capture requests are verified, deduplicated,
+              and processed idempotently.
             </p>
           </details>
           <details open id="disclosure">

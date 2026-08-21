@@ -15,6 +15,7 @@ import { writeActionStatus } from './action-ledger.js';
 import { canonicalPayloadHash } from '../control-plane/payload.js';
 import { encodeBackgroundRunDetail, recordSeatEvent } from './seat-events.js';
 import { AVAILABILITY_RETURN_MARKER, markSideTaskRun } from './side-tasks.js';
+import { LINKEDIN_CHECK_NAMES } from './guard.js';
 
 /**
  * The LinkedIn HTTP surface (docs/linkedin-outreach-plan.md section 5).
@@ -1163,7 +1164,10 @@ describe('engagement route (034)', () => {
 
     expect(queued.verdict.allowed).toBe(true);
     // EVERY check, unfiltered. "It is only a follow" is not a reason to skip one.
-    expect(queued.verdict.checks).toHaveLength(14);
+    // Compare against the gate's canonical check vocabulary so adding a real
+    // safety boundary (for example workspace suppression) cannot leave this
+    // HTTP test frozen on an obsolete count.
+    expect(queued.verdict.checks.map((check) => check.check)).toEqual([...LINKEDIN_CHECK_NAMES]);
 
     const row = await db
       .prepare('SELECT kind,status FROM linkedin_actions WHERE id=?')
@@ -1537,7 +1541,13 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
       deleted: boolean;
       clearedThreads: number;
       fullyStopped: boolean;
-      released: { actionsSkipped: number; tasksCancelled: number; actionsInFlight: number };
+      released: {
+        actionsSkipped: number;
+        tasksCancelled: number;
+        channelActionsSkipped: number;
+        channelActionsInFlight: number;
+        actionsInFlight: number;
+      };
     };
     // `released` and `fullyStopped` are the disconnect actually disconnecting:
     // the seat row was never the only thing that had to go.
@@ -1545,6 +1555,8 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     expect(deleted.released).toMatchObject({
       actionsSkipped: 0,
       tasksCancelled: 0,
+      channelActionsSkipped: 0,
+      channelActionsInFlight: 0,
       actionsInFlight: 0
     });
 

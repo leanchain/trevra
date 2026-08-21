@@ -103,6 +103,7 @@ import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { createAgentToken, revokeAgentToken, type AgentScope } from '../agent-access.js';
+import { resolveActiveAgent } from '../agents.js';
 import type { Db } from '../db.js';
 import { getWorkspaceCliAgentConfig, readWorkspaceSecretPlaintext } from '../secrets/store.js';
 import { AgentBudgetError, assertAgentBudgetAvailable, recordAgentModelCall } from './budget.js';
@@ -130,17 +131,45 @@ const MCP_SERVER_NAME = 'trevra';
  */
 const CLAUDE_BLOCKED_TOOLS = [
   // Filesystem, shell and network.
-  'Bash', 'BashOutput', 'KillShell', 'Edit', 'Write', 'Read', 'Glob', 'Grep',
-  'NotebookEdit', 'WebFetch', 'WebSearch',
+  'Bash',
+  'BashOutput',
+  'KillShell',
+  'Edit',
+  'Write',
+  'Read',
+  'Glob',
+  'Grep',
+  'NotebookEdit',
+  'WebFetch',
+  'WebSearch',
   // Delegation and scheduling. A subagent or a cron job is a way to keep
   // working after this run's ledger, budget and kill switch have stopped
   // watching, which is the one thing an audited run must not be able to do.
-  'Task', 'TaskCreate', 'TaskGet', 'TaskList', 'TaskOutput', 'TaskStop',
-  'TaskUpdate', 'Workflow', 'ScheduleWakeup', 'CronCreate', 'CronDelete',
-  'CronList', 'Monitor', 'RemoteTrigger', 'SendMessage', 'PushNotification',
+  'Task',
+  'TaskCreate',
+  'TaskGet',
+  'TaskList',
+  'TaskOutput',
+  'TaskStop',
+  'TaskUpdate',
+  'Workflow',
+  'ScheduleWakeup',
+  'CronCreate',
+  'CronDelete',
+  'CronList',
+  'Monitor',
+  'RemoteTrigger',
+  'SendMessage',
+  'PushNotification',
   // Everything else the CLI ships that is not a Trevra tool.
-  'TodoWrite', 'Skill', 'ToolSearch', 'DesignSync', 'ReportFindings',
-  'EnterWorktree', 'ExitWorktree', 'SlashCommand'
+  'TodoWrite',
+  'Skill',
+  'ToolSearch',
+  'DesignSync',
+  'ReportFindings',
+  'EnterWorktree',
+  'ExitWorktree',
+  'SlashCommand'
 ];
 
 /**
@@ -152,7 +181,7 @@ const CLAUDE_BLOCKED_TOOLS = [
  * that ships a new built-in ships it enabled until this file learns the name.
  * The environment has to be the hard boundary, and a deny list cannot be one.
  * Its failure mode is silent and it lives in the future: the next
- * `STRIPE_SECRET_KEY`-shaped variable added to the deployment is readable by
+ * deployment-secret-shaped variable added to the environment is readable by
  * every tenant's child from the moment it is set, and nothing announces it.
  * Inverted, the failure mode is loud, immediate and cheap -- a run that needs
  * a variable it cannot see fails visibly, and the fix is one line here.
@@ -185,7 +214,10 @@ const INHERITED_ENV = [
   'HOME',
   // Text handling. A child that decodes its own output as ASCII mangles every
   // non-English name the agent reads back into the ledger.
-  'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
   // Scratch space: `os.tmpdir()` reads TMPDIR, and both CLIs stage large tool
   // results through it.
   'TMPDIR',
@@ -193,9 +225,17 @@ const INHERITED_ENV = [
   // and a corporate CA bundle are the difference between a working run and a
   // run that cannot reach the model at all. Both spellings, because both are
   // conventional and neither CLI promises which it reads.
-  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
-  'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
-  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'NODE_EXTRA_CA_CERTS',
   // Read by the MCP bridge (`src/mcp/server.ts`), which the CLI spawns as its
   // own child and which therefore inherits exactly this environment. The
   // bridge's two REQUIRED variables (TREVRA_API_URL, TREVRA_AGENT_TOKEN_FILE)
@@ -261,8 +301,8 @@ export function resolveCliBackend(env: NodeJS.ProcessEnv = process.env): CliBack
   if (env.TREVRA_DEPLOYMENT_MODE === 'hosted') {
     throw new Error(
       'TREVRA_AGENT_CLI cannot be used when TREVRA_DEPLOYMENT_MODE=hosted: the CLI is signed in as one ' +
-      'human under a personal subscription, and billing other tenants to it breaches that subscription. ' +
-      'Configure a BYOK model key instead.'
+        'human under a personal subscription, and billing other tenants to it breaches that subscription. ' +
+        'Configure a BYOK model key instead.'
     );
   }
 
@@ -272,7 +312,9 @@ export function resolveCliBackend(env: NodeJS.ProcessEnv = process.env): CliBack
     bin: env.TREVRA_AGENT_CLI_BIN?.trim() || requested,
     model: model || null,
     mcpCommand: resolveMcpCommand(env),
-    apiUrl: (env.TREVRA_API_URL?.trim() || `http://127.0.0.1:${env.PORT?.trim() || '43887'}`).replace(/\/$/, ''),
+    apiUrl: (
+      env.TREVRA_API_URL?.trim() || `http://127.0.0.1:${env.PORT?.trim() || '43887'}`
+    ).replace(/\/$/, ''),
     oauthToken: env.TREVRA_AGENT_CLI_OAUTH_TOKEN?.trim() || null,
     home: env.TREVRA_AGENT_CLI_HOME?.trim() || null
   };
@@ -343,7 +385,9 @@ export async function resolveWorkspaceCliBackend(
     bin: config.cli,
     model: config.model,
     mcpCommand: resolveMcpCommand(env),
-    apiUrl: (env.TREVRA_API_URL?.trim() || `http://127.0.0.1:${env.PORT?.trim() || '43887'}`).replace(/\/$/, ''),
+    apiUrl: (
+      env.TREVRA_API_URL?.trim() || `http://127.0.0.1:${env.PORT?.trim() || '43887'}`
+    ).replace(/\/$/, ''),
     // The one field that differs in kind from the env path: a token read out
     // of `workspace_secrets` at resolve time rather than out of the
     // environment. From here it flows through the exact same `childEnv` /
@@ -372,7 +416,9 @@ function resolveMcpCommand(env: NodeJS.ProcessEnv): string[] {
 
   const self = fileURLToPath(import.meta.url);
   const source = self.endsWith('.ts');
-  const bridge = fileURLToPath(new URL(source ? '../../mcp/server.ts' : '../../mcp/server.js', import.meta.url));
+  const bridge = fileURLToPath(
+    new URL(source ? '../../mcp/server.ts' : '../../mcp/server.js', import.meta.url)
+  );
   if (!source) return [process.execPath, bridge];
 
   // ABSOLUTE, not the bare specifier `tsx`.
@@ -387,6 +433,7 @@ function resolveMcpCommand(env: NodeJS.ProcessEnv): string[] {
 
 export interface CliAgentRunInput {
   workspaceId: string;
+  agentId?: string | null;
   goal: string;
   trigger: 'manual' | 'schedule';
   /** Already clamped by the caller. */
@@ -408,8 +455,10 @@ export async function runHostedAgentViaCli(
   backend: CliBackend,
   input: CliAgentRunInput
 ): Promise<AgentRunRecord> {
+  const agent = await resolveActiveAgent(db, input.workspaceId, input.agentId);
   const run = await startAgentRun(db, {
     workspaceId: input.workspaceId,
+    agentId: agent.id,
     trigger: input.trigger,
     goal: input.goal,
     maxSteps: input.maxSteps
@@ -426,6 +475,7 @@ export async function runHostedAgentViaCli(
     const minted = await createAgentToken(db, {
       workspaceId: input.workspaceId,
       userId: null,
+      agentId: agent.id,
       name: `hosted-agent-cli ${run.id}`,
       scopes: [...input.scopes],
       expiresAt: new Date(Date.now() + TOKEN_TTL_MS).toISOString()
@@ -439,7 +489,11 @@ export async function runHostedAgentViaCli(
       // 'stopped', not 'failed': a human asked for this and nothing went wrong.
       await finishAgentRun(db, run.id, { status: 'stopped', summary: outcome.summary });
     } else if (outcome.error) {
-      await finishAgentRun(db, run.id, { status: 'failed', summary: outcome.summary, error: outcome.error });
+      await finishAgentRun(db, run.id, {
+        status: 'failed',
+        summary: outcome.summary,
+        error: outcome.error
+      });
     } else {
       await finishAgentRun(db, run.id, { status: 'completed', summary: outcome.summary });
     }
@@ -451,7 +505,8 @@ export async function runHostedAgentViaCli(
   } finally {
     // Both are best-effort on purpose: a run that finished must not be reopened
     // by a cleanup failure. The token expires on its own either way.
-    if (tokenId) await revokeAgentToken(db, input.workspaceId, null, tokenId).catch(() => undefined);
+    if (tokenId)
+      await revokeAgentToken(db, input.workspaceId, null, tokenId).catch(() => undefined);
     if (workDir) await rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }
 
@@ -531,7 +586,9 @@ async function driveCli(
     stderr = (stderr + chunk).slice(-STDERR_LIMIT);
   });
 
-  child.once('error', (cause) => { spawnError = cause; });
+  child.once('error', (cause) => {
+    spawnError = cause;
+  });
   const exited = new Promise<number | null>((resolve) => {
     child.once('close', (code) => resolve(code));
     child.once('error', () => resolve(null));
@@ -571,7 +628,7 @@ async function driveCli(
   if (spawnError) {
     throw new Error(
       `Could not run '${backend.bin}': ${describeError(spawnError)}. ` +
-      'Install the CLI and sign it in, or set TREVRA_AGENT_CLI_BIN to its path.'
+        'Install the CLI and sign it in, or set TREVRA_AGENT_CLI_BIN to its path.'
     );
   }
 
@@ -617,7 +674,10 @@ interface CliRunState {
  * before it, and `result` closes the run. Anything else -- init banners,
  * partial-message chunks -- is not ledger material and is ignored.
  */
-async function handleClaudeEvent(state: CliRunState, event: Record<string, unknown>): Promise<void> {
+async function handleClaudeEvent(
+  state: CliRunState,
+  event: Record<string, unknown>
+): Promise<void> {
   if (event.type === 'assistant') {
     const message = asRecord(event.message);
     const content = Array.isArray(message.content) ? message.content : [];
@@ -710,7 +770,9 @@ async function handleCodexEvent(state: CliRunState, event: Record<string, unknow
 
     if (kind === 'mcp_tool_call') {
       const failed = String(item.status ?? '') === 'failed';
-      const name = [item.server, item.tool].filter((part) => typeof part === 'string' && part).join('__');
+      const name = [item.server, item.tool]
+        .filter((part) => typeof part === 'string' && part)
+        .join('__');
       await recordToolStep(state, {
         toolName: name || 'unknown',
         input: item.arguments ?? item.input,
@@ -744,7 +806,8 @@ async function handleCodexEvent(state: CliRunState, event: Record<string, unknow
   }
 
   if (event.type === 'turn.failed' || event.type === 'error') {
-    const message = typeof event.message === 'string' ? event.message : describeContent(event.error);
+    const message =
+      typeof event.message === 'string' ? event.message : describeContent(event.error);
     state.failure ??= message || 'the CLI reported an error';
     state.halt = true;
   }
@@ -876,13 +939,19 @@ export function buildCliArgs(
 
 function claudeArgs(backend: CliBackend, input: CliAgentRunInput, mcpPath: string): string[] {
   const args = [
-    '-p', input.goal,
-    '--output-format', 'stream-json', '--verbose',
+    '-p',
+    input.goal,
+    '--output-format',
+    'stream-json',
+    '--verbose',
     // `--strict-mcp-config` matters: without it the child also loads whatever
     // MCP servers the operator configured for their own interactive use, and
     // the agent's tool surface stops being the one tools.ts describes.
-    '--strict-mcp-config', '--mcp-config', mcpPath,
-    '--allowedTools', `mcp__${MCP_SERVER_NAME}`,
+    '--strict-mcp-config',
+    '--mcp-config',
+    mcpPath,
+    '--allowedTools',
+    `mcp__${MCP_SERVER_NAME}`,
     // An allowlist alone does NOT remove a tool -- it only auto-approves one,
     // and a built-in that needs no approval still runs. The deny list is what
     // actually leaves the agent with the Trevra surface and nothing else.
@@ -891,9 +960,11 @@ function claudeArgs(backend: CliBackend, input: CliAgentRunInput, mcpPath: strin
     // ships a new built-in ships it enabled here until this list learns about
     // it. `system/init` in the stream names every tool the child got -- read it
     // after a CLI upgrade and add anything unexpected.
-    '--disallowedTools', ...CLAUDE_BLOCKED_TOOLS,
+    '--disallowedTools',
+    ...CLAUDE_BLOCKED_TOOLS,
     '--disable-slash-commands',
-    '--append-system-prompt', input.systemPrompt,
+    '--append-system-prompt',
+    input.systemPrompt,
     '--no-session-persistence'
   ];
   if (backend.model) args.push('--model', backend.model);
@@ -903,16 +974,25 @@ function claudeArgs(backend: CliBackend, input: CliAgentRunInput, mcpPath: strin
 function codexArgs(backend: CliBackend, input: CliAgentRunInput, tokenPath: string): string[] {
   const [command, ...rest] = backend.mcpCommand;
   const args = [
-    'exec', '--json', '--skip-git-repo-check', '--ephemeral',
+    'exec',
+    '--json',
+    '--skip-git-repo-check',
+    '--ephemeral',
     // Read-only with no approvals: the agent's only sanctioned capability is
     // the Trevra MCP surface, and an approval prompt in a headless run is a
     // hang, not a safeguard.
-    '--sandbox', 'read-only',
-    '-c', 'approval_policy="never"',
-    '-c', `mcp_servers.${MCP_SERVER_NAME}.command=${JSON.stringify(command)}`,
-    '-c', `mcp_servers.${MCP_SERVER_NAME}.args=${JSON.stringify(rest)}`,
-    '-c', `mcp_servers.${MCP_SERVER_NAME}.env.TREVRA_API_URL=${JSON.stringify(backend.apiUrl)}`,
-    '-c', `mcp_servers.${MCP_SERVER_NAME}.env.TREVRA_AGENT_TOKEN_FILE=${JSON.stringify(tokenPath)}`
+    '--sandbox',
+    'read-only',
+    '-c',
+    'approval_policy="never"',
+    '-c',
+    `mcp_servers.${MCP_SERVER_NAME}.command=${JSON.stringify(command)}`,
+    '-c',
+    `mcp_servers.${MCP_SERVER_NAME}.args=${JSON.stringify(rest)}`,
+    '-c',
+    `mcp_servers.${MCP_SERVER_NAME}.env.TREVRA_API_URL=${JSON.stringify(backend.apiUrl)}`,
+    '-c',
+    `mcp_servers.${MCP_SERVER_NAME}.env.TREVRA_AGENT_TOKEN_FILE=${JSON.stringify(tokenPath)}`
   ];
   if (backend.model) args.push('--model', backend.model);
   // Codex has no append-system-prompt, so the rules ride in front of the goal.
@@ -1042,11 +1122,19 @@ async function codexHomeFromToken(
     });
     let stderr = '';
     login.stderr.setEncoding('utf8');
-    login.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-STDERR_LIMIT); });
+    login.stderr.on('data', (chunk: string) => {
+      stderr = (stderr + chunk).slice(-STDERR_LIMIT);
+    });
     login.once('error', reject);
-    login.once('close', (code) => code === 0
-      ? resolve()
-      : reject(new Error(`codex login rejected TREVRA_AGENT_CLI_OAUTH_TOKEN: ${stderr.trim() || `exit ${code}`}`)));
+    login.once('close', (code) =>
+      code === 0
+        ? resolve()
+        : reject(
+            new Error(
+              `codex login rejected TREVRA_AGENT_CLI_OAUTH_TOKEN: ${stderr.trim() || `exit ${code}`}`
+            )
+          )
+    );
     login.stdin.end(`${backend.oauthToken}\n`);
   });
 
@@ -1055,7 +1143,7 @@ async function codexHomeFromToken(
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : {};
 }
 

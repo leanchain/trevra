@@ -35,8 +35,10 @@ const {
   handleNangoWebhook,
   executeConnectedAction,
   ingestCanonicalRecord,
-  listAvailableIntegrations
+  listAvailableIntegrations,
+  readConnectedEmailThreadEvents
 } = await import('./integration-service.js');
+const { createSuppression } = await import('./suppressions.js');
 
 type DbQueryable = ConstructorParameters<typeof Db>[0];
 type LiveDb = InstanceType<typeof Db>;
@@ -90,29 +92,14 @@ async function openLiveDatabase(): Promise<LiveDb> {
 }
 
 /** A throwaway tenant with one GTM identity, torn down in afterEach. */
-async function seedTenant(database: LiveDb): Promise<{ workspaceId: string; clientId: string }> {
+async function seedTenant(database: LiveDb): Promise<{ workspaceId: string }> {
   const now = new Date().toISOString();
   const workspaceId = id('ws');
-  const clientId = id('cl');
   createdWorkspaces.push(workspaceId);
   await database
     .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
     .run(workspaceId, `Tenant ${workspaceId}`, now);
-  await database
-    .prepare(
-      'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
-    )
-    .run(
-      clientId,
-      workspaceId,
-      'Client',
-      'Contact',
-      `${clientId}@example.test`,
-      'prospect',
-      now,
-      now
-    );
-  return { workspaceId, clientId };
+  return { workspaceId };
 }
 
 describe('integration catalog', () => {
@@ -262,7 +249,7 @@ describe('Nango connect sessions', () => {
 });
 
 describe('GTM canonical ingestion', () => {
-  it('stores GTM messages and opportunities', async () => {
+  it('stores GTM messages and opportunities on canonical People', async () => {
     const database = await openLiveDatabase();
     const tenant = await seedTenant(database);
     const occurredAt = new Date().toISOString();
@@ -270,9 +257,9 @@ describe('GTM canonical ingestion', () => {
     await ingestCanonicalRecord(database, tenant.workspaceId, 'test', null, {
       kind: 'message',
       id: `msg-${id('x')}`,
-      clientName: 'Prospect Co',
-      contactName: 'Ada Example',
-      clientEmail: 'ada@example.test',
+      accountName: 'Prospect Co',
+      personName: 'Ada Example',
+      personEmail: 'ada@example.test',
       direction: 'inbound',
       subject: 'Demo request',
       body: 'Can we talk next week?',
@@ -281,52 +268,61 @@ describe('GTM canonical ingestion', () => {
     await ingestCanonicalRecord(database, tenant.workspaceId, 'test', null, {
       kind: 'opportunity',
       id: `opp-${id('x')}`,
-      clientName: 'Prospect Co',
-      contactName: 'Ada Example',
-      clientEmail: 'ada@example.test',
+      accountName: 'Prospect Co',
+      personName: 'Ada Example',
+      personEmail: 'ada@example.test',
       title: 'Demo follow-up',
       status: 'qualified',
       proposalSentAt: occurredAt
     });
 
-    const person = await database
+    const canonicalPerson = await database
       .prepare(
-        'SELECT name,contact_name,email,status FROM clients WHERE workspace_id=? AND email=?'
+        'SELECT id,name,email_normalized FROM contacts WHERE workspace_id=? AND email_normalized=?'
       )
-      .get<Record<string, unknown>>(tenant.workspaceId, 'ada@example.test');
-    expect(person).toMatchObject({
-      name: 'Prospect Co',
-      contact_name: 'Ada Example',
-      email: 'ada@example.test',
-      status: 'active'
+      .get<{ id: string; name: string; email_normalized: string }>(
+        tenant.workspaceId,
+        'ada@example.test'
+      );
+    expect(canonicalPerson).toMatchObject({
+      name: 'Ada Example',
+      email_normalized: 'ada@example.test'
     });
 
     const identity = await database
       .prepare(
-        'SELECT provider,identity_type,identity_value FROM contact_identities WHERE workspace_id=? AND identity_value=?'
+        'SELECT provider,identity_type,identity_value,person_id FROM person_identities WHERE workspace_id=? AND normalized_value=?'
       )
       .get<Record<string, unknown>>(tenant.workspaceId, 'ada@example.test');
     expect(identity).toMatchObject({
       provider: 'test',
       identity_type: 'email',
-      identity_value: 'ada@example.test'
+      identity_value: 'ada@example.test',
+      person_id: canonicalPerson?.id
     });
 
     const message = await database
-      .prepare('SELECT direction,subject,body FROM messages WHERE workspace_id=? AND subject=?')
+      .prepare(
+        'SELECT direction,subject,body,person_id FROM messages WHERE workspace_id=? AND subject=?'
+      )
       .get<Record<string, unknown>>(tenant.workspaceId, 'Demo request');
     expect(message).toEqual({
       direction: 'inbound',
       subject: 'Demo request',
-      body: 'Can we talk next week?'
+      body: 'Can we talk next week?',
+      person_id: canonicalPerson?.id
     });
 
     const opportunity = await database
       .prepare(
-        'SELECT title,status,proposal_sent_at FROM opportunities WHERE workspace_id=? AND title=?'
+        'SELECT title,stage,proposal_sent_at,person_id FROM opportunities WHERE workspace_id=? AND title=?'
       )
       .get<Record<string, unknown>>(tenant.workspaceId, 'Demo follow-up');
-    expect(opportunity).toMatchObject({ title: 'Demo follow-up', status: 'qualified' });
+    expect(opportunity).toMatchObject({
+      title: 'Demo follow-up',
+      stage: 'qualified',
+      person_id: canonicalPerson?.id
+    });
     expect(opportunity?.proposal_sent_at).toBeTruthy();
 
     const sourceRecords = await database
@@ -340,6 +336,7 @@ describe('GTM canonical ingestion', () => {
     ]);
   });
 });
+
 describe('connected mailbox threading', () => {
   async function mailbox(provider: 'gmail' | 'microsoft') {
     const database = await openLiveDatabase();
@@ -364,6 +361,30 @@ describe('connected mailbox threading', () => {
       );
     return { database, workspaceId: tenant.workspaceId, connectionId };
   }
+  it('refuses a globally suppressed email before contacting the provider', async () => {
+    const { database, workspaceId, connectionId } = await mailbox('gmail');
+    await createSuppression(database, {
+      workspaceId,
+      channel: 'email',
+      email: 'blocked@example.test',
+      reason: 'Unsubscribed',
+      source: 'test'
+    });
+
+    await expect(
+      executeConnectedAction(database, workspaceId, {
+        type: 'email_draft',
+        connection_id: connectionId,
+        recipient: 'BLOCKED@example.test',
+        subject: 'Should not send',
+        body: 'Blocked',
+        structured_payload_json: '{}',
+        payload_hash: 'blocked-key'
+      })
+    ).rejects.toThrow(/Unsubscribed/);
+    expect(nangoMock.post).not.toHaveBeenCalled();
+  });
+
   it('threads Gmail follow-ups with threadId and RFC reply headers', async () => {
     const { database, workspaceId, connectionId } = await mailbox('gmail');
     nangoMock.post
@@ -410,6 +431,89 @@ describe('connected mailbox threading', () => {
     expect(mime).toContain('Message-ID: <second-key@trevra.app>');
   });
 
+  it('sends an HTML alternative through Gmail when campaign tracking prepared one', async () => {
+    const { database, workspaceId, connectionId } = await mailbox('gmail');
+    nangoMock.post.mockResolvedValueOnce({
+      data: { id: 'gmail-html', threadId: 'thread-html' },
+      headers: {}
+    });
+    await executeConnectedAction(database, workspaceId, {
+      type: 'email_draft',
+      connection_id: connectionId,
+      recipient: 'lead@example.test',
+      subject: 'Tracked',
+      body: 'Read https://example.test/demo',
+      structured_payload_json: JSON.stringify({
+        threaded: false,
+        htmlBody:
+          'Read <a href="https://trevra.test/t/e/open/c/link">https://example.test/demo</a><img src="https://trevra.test/t/e/open/open.gif" />'
+      }),
+      payload_hash: 'html-key'
+    });
+    const send = nangoMock.post.mock.calls[0]?.[0] as { data?: { raw?: string } };
+    const mime = Buffer.from(String(send.data?.raw ?? ''), 'base64url').toString('utf8');
+    expect(mime).toContain('Content-Type: multipart/alternative');
+    expect(mime).toContain('Content-Type: text/html; charset=UTF-8');
+    expect(mime).toContain('https://trevra.test/t/e/open/open.gif');
+  });
+
+  it('reads Gmail thread replies and delivery failures as idempotent provider events', async () => {
+    const { database, workspaceId, connectionId } = await mailbox('gmail');
+    nangoMock.get
+      .mockResolvedValueOnce({ data: { threadId: 'thread-telemetry' }, headers: {} })
+      .mockResolvedValueOnce({
+        data: {
+          messages: [
+            { id: 'gmail-sent', internalDate: '1787216400000', payload: { headers: [] } },
+            {
+              id: 'gmail-reply',
+              internalDate: '1787216460000',
+              payload: {
+                mimeType: 'text/plain',
+                body: { data: Buffer.from('Interested — Friday works.').toString('base64url') },
+                headers: [
+                  { name: 'From', value: 'Lead <lead@example.test>' },
+                  { name: 'Subject', value: 'Re: hello' }
+                ]
+              }
+            },
+            {
+              id: 'gmail-bounce',
+              internalDate: '1787216520000',
+              payload: {
+                headers: [
+                  { name: 'From', value: 'Mail Delivery Subsystem <mailer-daemon@googlemail.com>' },
+                  { name: 'Subject', value: 'Delivery Status Notification (Failure)' }
+                ]
+              }
+            }
+          ]
+        },
+        headers: {}
+      });
+
+    const events = await readConnectedEmailThreadEvents(database, workspaceId, {
+      localConnectionId: connectionId,
+      externalRef: 'gmail-sent',
+      recipient: 'lead@example.test'
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'reply',
+          providerEventId: 'gmail:gmail-reply',
+          body: 'Interested — Friday works.',
+          subject: 'Re: hello',
+          sender: 'lead@example.test'
+        }),
+        expect.objectContaining({
+          kind: 'delivery_failure',
+          providerEventId: 'gmail:gmail-bounce'
+        })
+      ])
+    );
+  });
+
   it('threads Microsoft follow-ups through Graph reply drafts', async () => {
     const { database, workspaceId, connectionId } = await mailbox('microsoft');
     nangoMock.post
@@ -454,6 +558,55 @@ describe('connected mailbox threading', () => {
     expect(nangoMock.post.mock.calls[3]?.[0]).toMatchObject({
       endpoint: '/v1.0/me/messages/ms-reply/send'
     });
+  });
+
+  it('reads Microsoft conversation replies and NDRs as provider events', async () => {
+    const { database, workspaceId, connectionId } = await mailbox('microsoft');
+    nangoMock.get
+      .mockResolvedValueOnce({ data: { conversationId: 'conv-1' }, headers: {} })
+      .mockResolvedValueOnce({
+        data: {
+          value: [
+            {
+              id: 'ms-reply-event',
+              receivedDateTime: '2026-08-20T09:02:00.000Z',
+              subject: 'RE: hello',
+              from: { emailAddress: { address: 'lead@example.test', name: 'Lead' } },
+              body: { contentType: 'HTML', content: '<p>Yes, Friday works.</p>' }
+            },
+            {
+              id: 'ms-ndr-event',
+              receivedDateTime: '2026-08-20T09:03:00.000Z',
+              subject: 'Undeliverable: hello',
+              from: {
+                emailAddress: { address: 'postmaster@example.test', name: 'Microsoft Outlook' }
+              }
+            }
+          ]
+        },
+        headers: {}
+      });
+
+    const events = await readConnectedEmailThreadEvents(database, workspaceId, {
+      localConnectionId: connectionId,
+      externalRef: 'ms-sent',
+      recipient: 'lead@example.test'
+    });
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'reply',
+          providerEventId: 'microsoft:ms-reply-event',
+          body: 'Yes, Friday works.',
+          subject: 'RE: hello',
+          sender: 'lead@example.test'
+        }),
+        expect.objectContaining({
+          kind: 'delivery_failure',
+          providerEventId: 'microsoft:ms-ndr-event'
+        })
+      ])
+    );
   });
 });
 

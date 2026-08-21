@@ -219,7 +219,12 @@ const AAD_SEPARATOR = '';
  * bound to the same (store, workspace, seat, kind) identity, or it is not
  * custody at all.
  */
-export type SecretStore = 'workspace_secrets' | 'linkedin_seat_credentials' | 'linkedin_seat_sessions' | 'linkedin_seat_proxy_secrets';
+export type SecretStore =
+  | 'workspace_secrets'
+  | 'linkedin_seat_credentials'
+  | 'linkedin_seat_sessions'
+  | 'linkedin_seat_proxy_secrets'
+  | 'capture_source_secrets';
 
 /**
  * The seat component for a row with no seat dimension.
@@ -332,7 +337,11 @@ export function secretCustody(
 }
 
 /** True while a row is not yet on the current key AND the v2 envelope. */
-export function needsReseal(envelopeVersion: number, keyId: string | null, ids: ConfiguredKeyIds): boolean {
+export function needsReseal(
+  envelopeVersion: number,
+  keyId: string | null,
+  ids: ConfiguredKeyIds
+): boolean {
   return secretCustody(envelopeVersion, keyId, ids) !== 'current';
 }
 
@@ -382,7 +391,9 @@ export function openSecret(
 
   if (sealed.keyVersion === ENVELOPE_V1) return openLegacy(sealed, keys);
   if (sealed.keyVersion !== ENVELOPE_V2) {
-    throw new Error(`Stored secret was sealed with envelope version ${sealed.keyVersion}, but this server only implements versions ${ENVELOPE_V1} and ${ENVELOPE_V2}`);
+    throw new Error(
+      `Stored secret was sealed with envelope version ${sealed.keyVersion}, but this server only implements versions ${ENVELOPE_V1} and ${ENVELOPE_V2}`
+    );
   }
 
   const aad = secretAad(context);
@@ -393,15 +404,19 @@ export function openSecret(
   const candidates = sealed.keyId ? keys.filter((entry) => entry.id === sealed.keyId) : keys;
   if (candidates.length === 0) {
     throw new Error(
-      `Stored secret was sealed with server key ${sealed.keyId}, which this deployment does not hold `
-      + `(${KEY_ENV} is ${keys[0]?.id ?? 'absent'}${keys[1] ? `, ${PREVIOUS_KEY_ENV} is ${keys[1].id}` : ''}). `
-      + `Restore that key as ${PREVIOUS_KEY_ENV} and re-encrypt, or delete and re-enter this secret.`
+      `Stored secret was sealed with server key ${sealed.keyId}, which this deployment does not hold ` +
+        `(${KEY_ENV} is ${keys[0]?.id ?? 'absent'}${keys[1] ? `, ${PREVIOUS_KEY_ENV} is ${keys[1].id}` : ''}). ` +
+        `Restore that key as ${PREVIOUS_KEY_ENV} and re-encrypt, or delete and re-enter this secret.`
     );
   }
 
   for (const entry of candidates) {
     try {
-      const decipher = createDecipheriv(ALGORITHM, deriveWorkspaceKey(entry.key, context.workspaceId), sealed.iv);
+      const decipher = createDecipheriv(
+        ALGORITHM,
+        deriveWorkspaceKey(entry.key, context.workspaceId),
+        sealed.iv
+      );
       decipher.setAAD(aad);
       decipher.setAuthTag(sealed.authTag);
       return Buffer.concat([decipher.update(sealed.ciphertext), decipher.final()]).toString('utf8');
@@ -419,10 +434,10 @@ export function openSecret(
   // generic "failed authentication" -- is what let a cross-tenant transplant
   // look like an ordinary key problem.
   throw new Error(
-    `Stored secret failed authentication for ${context.store} `
-    + `(workspace ${context.workspaceId}, seat ${context.seatKey}, kind ${context.kind}): `
-    + 'it was sealed for a DIFFERENT row -- another workspace, seat, kind or table -- or it was tampered with. '
-    + 'A sealed secret is bound to the row it was written to and cannot be moved between rows.'
+    `Stored secret failed authentication for ${context.store} ` +
+      `(workspace ${context.workspaceId}, seat ${context.seatKey}, kind ${context.kind}): ` +
+      'it was sealed for a DIFFERENT row -- another workspace, seat, kind or table -- or it was tampered with. ' +
+      'A sealed secret is bound to the row it was written to and cannot be moved between rows.'
   );
 }
 
@@ -447,7 +462,9 @@ function openLegacy(sealed: SealedSecret, keys: ServerKey[]): string {
     }
   }
   const tried = keys.length > 1 ? `${KEY_ENV} or ${PREVIOUS_KEY_ENV}` : KEY_ENV;
-  throw new Error(`Stored secret failed authentication: it was sealed with a different ${tried}, or the row was tampered with`);
+  throw new Error(
+    `Stored secret failed authentication: it was sealed with a different ${tried}, or the row was tampered with`
+  );
 }
 
 /**
@@ -461,7 +478,9 @@ function secretAad(context: SecretContext): Buffer {
   const parts = [AAD_PREFIX, context.store, context.workspaceId, context.seatKey, context.kind];
   for (const part of parts) {
     if (!part || part.includes(AAD_SEPARATOR)) {
-      throw new Error('A secret context needs a non-empty store, workspaceId, seatKey and kind, none containing U+001F');
+      throw new Error(
+        'A secret context needs a non-empty store, workspaceId, seatKey and kind, none containing U+001F'
+      );
     }
   }
   return Buffer.from(parts.join(AAD_SEPARATOR), 'utf8');
@@ -478,7 +497,9 @@ function deriveWorkspaceKey(master: Buffer, workspaceId: string): Buffer {
 
 /** A key's identity: derived from the key, never configured. See the header. */
 function keyFingerprint(key: Buffer): string {
-  return Buffer.from(hkdfSync(HKDF_HASH, key, HKDF_SALT, KEY_ID_INFO, KEY_ID_BYTES)).toString('base64url');
+  return Buffer.from(hkdfSync(HKDF_HASH, key, HKDF_SALT, KEY_ID_INFO, KEY_ID_BYTES)).toString(
+    'base64url'
+  );
 }
 
 function fingerprintOrNull(raw: string | undefined, name: string): string | null {
@@ -519,7 +540,9 @@ function parseKey(raw: string, name: string): Buffer {
   }
   const key = Buffer.from(raw, 'base64');
   if (key.byteLength !== KEY_BYTES) {
-    throw new Error(`${name} must decode to exactly ${KEY_BYTES} bytes, got ${key.byteLength} (generate with: openssl rand -base64 32)`);
+    throw new Error(
+      `${name} must decode to exactly ${KEY_BYTES} bytes, got ${key.byteLength} (generate with: openssl rand -base64 32)`
+    );
   }
   return key;
 }

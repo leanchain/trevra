@@ -27,6 +27,7 @@ import './account-import-workbench.css';
 import { errorMessage } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 import {
+  collectPreparedPeople,
   prepareAccountFiles,
   reviewPreparedRows,
   serializePreparedAccountRows,
@@ -195,20 +196,28 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     setImporting(true);
     setError('');
     try {
-      const imported = await importAccounts({ text: importText, source });
+      const imported = await importAccounts({
+        text: importText,
+        source,
+        ...(preparedFiles?.rows.length ? { people: collectPreparedPeople(preparedFiles.rows) } : {})
+      });
       setResult(imported);
       setShowAddMore(true);
       // The paste is cleared only when something came of it. A list that was
       // entirely rejected is the operator's data and their next edit.
-      if (imported.created > 0) {
+      if (
+        imported.created > 0 ||
+        (imported.people?.created ?? 0) > 0 ||
+        (imported.people?.matched ?? 0) > 0
+      ) {
         setText('');
         setFileSummary('');
         setPreparedFiles(null);
       }
       setToast(
-        imported.created > 0
-          ? `${imported.created} account(s) added.`
-          : 'All usable accounts were already imported.'
+        imported.created > 0 || (imported.people?.created ?? 0) > 0
+          ? `${imported.created} account(s), ${imported.people?.created ?? 0} person(s) added.`
+          : 'All usable accounts and people were already imported.'
       );
       await load();
     } catch (err) {

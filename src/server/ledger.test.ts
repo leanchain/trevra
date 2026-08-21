@@ -6,6 +6,7 @@ import { inflateRawSync } from 'node:zlib';
 import { openDatabase, type Db } from './db.js';
 import { createApp } from './app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
+import { ensureDefaultAgent } from './agents.js';
 
 /**
  * The ledger export, the combined cost surface, and the agent stop reason
@@ -14,7 +15,7 @@ import { closeAuthDatabase, migrateAuthDatabase } from './auth-service.js';
  * TWO WORKSPACES THROUGHOUT, with real sessions rather than one workspace and a
  * trusting assertion. Every id in this area -- an export id, a run id -- is a
  * global identifier, and a scoping bug here does not look like a bug: it looks
- * like a working export that happens to contain somebody else's clients.
+ * like a working export that happens to contain somebody else's GTM records.
  */
 
 let db: Db;
@@ -69,16 +70,16 @@ function as(token: string) {
 async function seedLedger(workspaceId: string, marker: string): Promise<string> {
   const now = new Date().toISOString();
   const runId = `arun_${marker}`;
+  const agent = await ensureDefaultAgent(db, workspaceId);
 
   await db
     .prepare(
       `
-    INSERT INTO agent_runs (id,workspace_id,trigger,status,goal,step_count,max_steps,started_at)
-    VALUES (?,?,?,?,?,?,?,?)
+    INSERT INTO agent_runs (id,workspace_id,agent_id,trigger,status,goal,step_count,max_steps,started_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
   `
     )
-    .run(runId, workspaceId, 'manual', 'running', `goal for ${marker}`, 1, 12, now);
-
+    .run(runId, workspaceId, agent.id, 'manual', 'running', `goal for ${marker}`, 1, 12, now);
   await db
     .prepare(
       `
@@ -92,7 +93,7 @@ async function seedLedger(workspaceId: string, marker: string): Promise<string> 
       workspaceId,
       1,
       'tool',
-      'list-clients',
+      'list-people',
       JSON.stringify({ marker }),
       JSON.stringify({ nested: { evidence: marker } }),
       now
@@ -261,7 +262,7 @@ describe('POST /api/ledger/exports', () => {
     expect(download.headers['content-disposition']).toBe(
       `attachment; filename="${created.filename}"`
     );
-    // The archive names clients, message bodies and outreach targets. A cache
+    // The archive names People, message bodies and outreach targets. A cache
     // that outlives a deletion keeps handing back somebody who asked to go.
     expect(download.headers['cache-control']).toBe('no-store');
 
@@ -437,16 +438,18 @@ describe('POST /api/agent-runs/stop', () => {
   });
 
   it('accepts a stop with no reason at all, and stores no placeholder', async () => {
+    const agent = await ensureDefaultAgent(db, WORKSPACE_B);
     await db
       .prepare(
         `
-      INSERT INTO agent_runs (id,workspace_id,trigger,status,goal,step_count,max_steps,started_at)
-      VALUES (?,?,?,?,?,?,?,?)
+      INSERT INTO agent_runs (id,workspace_id,agent_id,trigger,status,goal,step_count,max_steps,started_at)
+      VALUES (?,?,?,?,?,?,?,?,?)
     `
       )
       .run(
         'arun_silent',
         WORKSPACE_B,
+        agent.id,
         'manual',
         'running',
         'no note given',

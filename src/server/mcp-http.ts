@@ -1,7 +1,11 @@
 import type { Request, Response } from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type Tool
+} from '@modelcontextprotocol/sdk/types.js';
 import type { AgentIdentity } from './agent-access.js';
 import type { Db } from './db.js';
 import {
@@ -42,7 +46,7 @@ export async function handleMcpHttpRequest(
     try {
       const { name, arguments: args = {} } = request.params;
       const value = await callAgentTool(
-        { db, workspaceId: identity.workspaceId, actorId: identity.tokenId },
+        { db, workspaceId: identity.workspaceId, actorId: identity.agentId },
         identity.scopes,
         name,
         args
@@ -64,7 +68,10 @@ export async function handleMcpHttpRequest(
     if (!res.headersSent) {
       res.status(500).json({
         jsonrpc: '2.0',
-        error: { code: -32603, message: error instanceof Error ? error.message : 'Internal MCP error' },
+        error: {
+          code: -32603,
+          message: error instanceof Error ? error.message : 'Internal MCP error'
+        },
         id: null
       });
     }

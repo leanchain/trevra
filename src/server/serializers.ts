@@ -10,8 +10,9 @@ export async function listRecommendations(db: Db, workspaceId: string): Promise<
   const rows = await db
     .prepare(
       `
-    SELECT r.*, c.name AS client_name
-    FROM recommendations r JOIN clients c ON c.id=r.client_id
+    SELECT r.*, p.name AS person_name,p.email AS person_email
+    FROM recommendations r
+    JOIN contacts p ON p.id=r.person_id AND p.workspace_id=r.workspace_id
     WHERE r.workspace_id=?
       AND r.status NOT IN ('dismissed','completed')
       AND (r.snoozed_until IS NULL OR r.snoozed_until <= CURRENT_TIMESTAMP)
@@ -57,8 +58,8 @@ export async function listRecommendations(db: Db, workspaceId: string): Promise<
         type: row.type as Recommendation['type'],
         title: String(row.title),
         summary: String(row.summary),
-        clientId: String(row.client_id),
-        clientName: String(row.client_name),
+        personId: String(row.person_id),
+        personName: String(row.person_name ?? row.person_email ?? 'Known person'),
         confidence: Number(row.confidence),
         urgency: Number(row.urgency),
         priorityScore: Number(row.priority_score),

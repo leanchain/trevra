@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
 import type { Db } from './db.js';
 import { id } from './db.js';
+import { resolveActiveAgent } from './agents.js';
 
 export const AGENT_SCOPES = [
   'skills:read',
@@ -13,16 +14,22 @@ export const AGENT_SCOPES = [
   'workflows:read'
 ] as const;
 export type AgentScope = (typeof AGENT_SCOPES)[number];
+
+/** A credential resolves to an Agent principal. The token itself is never the actor. */
 export interface AgentIdentity {
+  agentId: string;
   tokenId: string;
   workspaceId: string;
   createdByUserId: string | null;
   name: string;
+  tokenName: string;
   scopes: AgentScope[];
 }
 
 export interface AgentTokenSummary {
   id: string;
+  agentId: string;
+  agentName: string;
   name: string;
   prefix: string;
   scopes: AgentScope[];
@@ -36,19 +43,18 @@ export async function createAgentToken(
   db: Db,
   input: {
     workspaceId: string;
-    /**
-     * The human who asked for this token, or `null` when Trevra itself minted
-     * it -- the CLI agent backend does that once per run (`agent/cli.ts`). The
-     * column is nullable and the audit row says 'system' rather than naming a
-     * user who did not click anything.
-     */
+    /** Human who asked for this credential; null when Trevra minted a single-run CLI token. */
     userId: string | null;
+    agentId?: string | null;
     name: string;
     scopes?: AgentScope[];
     expiresAt?: string | null;
   }
 ): Promise<{ token: string; record: AgentTokenSummary }> {
+  const agent = await resolveActiveAgent(db, input.workspaceId, input.agentId, input.userId);
   const scopes = normalizeScopes(input.scopes ?? [...AGENT_SCOPES]);
+  const tokenName = input.name.trim();
+  if (!tokenName) throw new Error('Token name is required');
   const token = `trv_live_${randomBytes(32).toString('base64url')}`;
   const tokenId = id('tok');
   const prefix = token.slice(0, 18);
@@ -62,17 +68,18 @@ export async function createAgentToken(
   await db
     .prepare(
       `
-    INSERT INTO agent_tokens (
-      id,workspace_id,created_by_user_id,name,token_prefix,token_hash,
-      scopes_json,last_used_at,expires_at,revoked_at,created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-  `
+      INSERT INTO agent_tokens (
+        id,workspace_id,agent_id,created_by_user_id,name,token_prefix,token_hash,
+        scopes_json,last_used_at,expires_at,revoked_at,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    `
     )
     .run(
       tokenId,
       input.workspaceId,
+      agent.id,
       input.userId,
-      input.name.trim(),
+      tokenName,
       prefix,
       hashAgentToken(token),
       JSON.stringify(scopes),
@@ -85,10 +92,10 @@ export async function createAgentToken(
   await db
     .prepare(
       `
-    INSERT INTO audit_events (
-      id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?)
-  `
+      INSERT INTO audit_events (
+        id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?)
+    `
     )
     .run(
       id('audit'),
@@ -98,7 +105,7 @@ export async function createAgentToken(
       'agent_token.created',
       'agent_token',
       tokenId,
-      JSON.stringify({ name: input.name.trim(), prefix, scopes, expiresAt }),
+      JSON.stringify({ agentId: agent.id, tokenName, prefix, scopes, expiresAt }),
       now
     );
 
@@ -106,7 +113,9 @@ export async function createAgentToken(
     token,
     record: {
       id: tokenId,
-      name: input.name.trim(),
+      agentId: agent.id,
+      agentName: agent.name,
+      name: tokenName,
       prefix,
       scopes,
       lastUsedAt: null,
@@ -121,9 +130,13 @@ export async function listAgentTokens(db: Db, workspaceId: string): Promise<Agen
   const rows = await db
     .prepare(
       `
-    SELECT id,name,token_prefix,scopes_json,last_used_at,expires_at,revoked_at,created_at
-    FROM agent_tokens WHERE workspace_id=? ORDER BY created_at DESC
-  `
+      SELECT t.id,t.agent_id,a.name AS agent_name,t.name,t.token_prefix,t.scopes_json,
+             t.last_used_at,t.expires_at,t.revoked_at,t.created_at
+      FROM agent_tokens t
+      JOIN agents a ON a.workspace_id=t.workspace_id AND a.id=t.agent_id
+      WHERE t.workspace_id=?
+      ORDER BY t.created_at DESC
+    `
     )
     .all<Record<string, unknown>>(workspaceId);
   return rows.map(serializeToken);
@@ -132,28 +145,28 @@ export async function listAgentTokens(db: Db, workspaceId: string): Promise<Agen
 export async function revokeAgentToken(
   db: Db,
   workspaceId: string,
-  /** `null` when Trevra revokes its own single-run token. */
   userId: string | null,
   tokenId: string
 ): Promise<boolean> {
   const now = new Date().toISOString();
-  const result = await db
+  const row = await db
     .prepare(
       `
-    UPDATE agent_tokens SET revoked_at=?
-    WHERE id=? AND workspace_id=? AND revoked_at IS NULL
-  `
+      UPDATE agent_tokens SET revoked_at=?
+      WHERE id=? AND workspace_id=? AND revoked_at IS NULL
+      RETURNING agent_id
+    `
     )
-    .run(now, tokenId, workspaceId);
-  if (result.changes === 0) return false;
+    .get<{ agent_id: string }>(now, tokenId, workspaceId);
+  if (!row) return false;
 
   await db
     .prepare(
       `
-    INSERT INTO audit_events (
-      id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?)
-  `
+      INSERT INTO audit_events (
+        id,workspace_id,actor_type,actor_id,event_type,entity_type,entity_id,metadata_json,created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?)
+    `
     )
     .run(
       id('audit'),
@@ -163,7 +176,7 @@ export async function revokeAgentToken(
       'agent_token.revoked',
       'agent_token',
       tokenId,
-      '{}',
+      JSON.stringify({ agentId: row.agent_id }),
       now
     );
   return true;
@@ -183,11 +196,14 @@ export async function resolveAgentIdentity(
   const row = await db
     .prepare(
       `
-    SELECT id,workspace_id,created_by_user_id,name,scopes_json
-    FROM agent_tokens
-    WHERE token_hash=? AND revoked_at IS NULL
-      AND (expires_at IS NULL OR expires_at > ?)
-  `
+      SELECT t.id,t.agent_id,t.workspace_id,t.created_by_user_id,t.name AS token_name,
+             t.scopes_json,a.name AS agent_name
+      FROM agent_tokens t
+      JOIN agents a ON a.workspace_id=t.workspace_id AND a.id=t.agent_id
+      WHERE t.token_hash=? AND t.revoked_at IS NULL
+        AND (t.expires_at IS NULL OR t.expires_at > ?)
+        AND a.status='active'
+    `
     )
     .get<Record<string, unknown>>(hashAgentToken(token), now);
   if (!row) return null;
@@ -195,10 +211,12 @@ export async function resolveAgentIdentity(
   const scopes = normalizeScopes(parseJsonArray(row.scopes_json));
   await db.prepare('UPDATE agent_tokens SET last_used_at=? WHERE id=?').run(now, String(row.id));
   return {
+    agentId: String(row.agent_id),
     tokenId: String(row.id),
     workspaceId: String(row.workspace_id),
     createdByUserId: row.created_by_user_id ? String(row.created_by_user_id) : null,
-    name: String(row.name),
+    name: String(row.agent_name),
+    tokenName: String(row.token_name),
     scopes
   };
 }
@@ -210,6 +228,8 @@ export function hasAgentScope(identity: AgentIdentity, scope: AgentScope): boole
 function serializeToken(row: Record<string, unknown>): AgentTokenSummary {
   return {
     id: String(row.id),
+    agentId: String(row.agent_id),
+    agentName: String(row.agent_name),
     name: String(row.name),
     prefix: String(row.token_prefix),
     scopes: normalizeScopes(parseJsonArray(row.scopes_json)),

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
+import { clearLinkedInConversationProjection, projectLinkedInThread } from '../conversations.js';
 import { recordAction } from './actions.js';
 import { LinkedInApiError } from './errors.js';
 import {
@@ -773,6 +774,15 @@ export async function syncThreadMessages(
     acceptedActionIds: [],
     linkage: 'No new inbound message arrived, so no outreach action changed.'
   };
+
+  // The shared inbox is a projection, never the LinkedIn source of truth. A
+  // projection problem must not rewrite channel state or safety outcomes.
+  try {
+    await projectLinkedInThread(db, input.workspaceId, thread.id, now);
+  } catch {
+    /* idempotent projection can be reconciled/backfilled without replaying LinkedIn */
+  }
+
   if (inbound === 0) return result;
 
   if (!thread.profileUrl) {
@@ -895,6 +905,7 @@ export async function syncThreadMessages(
  * actually sent.
  */
 export async function clearInboxForWorkspace(db: Db, workspaceId: string): Promise<number> {
+  await clearLinkedInConversationProjection(db, workspaceId);
   const result = await db
     .prepare('DELETE FROM linkedin_threads WHERE workspace_id=?')
     .run(workspaceId);
@@ -907,6 +918,7 @@ export async function clearInboxForSeat(
   workspaceId: string,
   seatKey: string = OWNER_SEAT_KEY
 ): Promise<number> {
+  await clearLinkedInConversationProjection(db, workspaceId, seatKey);
   const result = await db
     .prepare('DELETE FROM linkedin_threads WHERE workspace_id=? AND seat_key=?')
     .run(workspaceId, seatKey);

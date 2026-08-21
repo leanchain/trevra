@@ -179,7 +179,7 @@ A module is a versioned, typed unit of go-to-market work: a typed input, a typed
 External actions require approval by default. The approved payload is cryptographically hashed before execution, so a modified payload is rejected. Every run is logged with its inputs, outputs, and evidence.
 
 ## Integrations
-Integration plumbing is delegated to Nango or official provider SDKs, covering patterns such as Gmail, Microsoft 365, Google Calendar, Stripe, QuickBooks, Xero, HoneyBook, and Bonsai. CSV exports can be normalized when a direct API is unavailable.
+Integration plumbing is delegated to Nango or official provider SDKs for GTM systems such as Gmail, Microsoft 365, Google Calendar, HubSpot, Attio, Reddit, and research providers. Trevra does not ingest customer payment, accounting, project, or contract systems as owned product state.
 
 ## Ownership
 Trevra is open source and self-hostable. It runs on your own PostgreSQL, the module runner is open source, and the ledger, evidence, and configuration stay in infrastructure you control.

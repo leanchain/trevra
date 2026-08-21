@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import type { Db } from '../db.js';
 import { executeConnectedAction } from '../integration-service.js';
+import { projectPreparedConversationEmail } from '../conversations.js';
 import { communityReplyPayloadSchema, publishCommunityReply } from '../outreach/publish.js';
 import { crmActivityPayloadSchema, logCrmActivity } from '../crm/activity.js';
-
 /**
  * External execution is intentionally a closed GTM action set.
  *
@@ -39,14 +39,39 @@ export async function executePreparedPlaybookAction(
 
   if (actionType === 'email.send') {
     const payload = emailPayloadSchema.parse(input.payload);
+    const metadata = payload.metadata ?? {};
     const delivery = await executeConnectedAction(db, input.workspaceId, {
       type: 'email_draft',
       recipient: payload.recipient,
       subject: payload.subject,
       body: payload.body,
-      structured_payload_json: JSON.stringify(payload.metadata ?? {}),
+      structured_payload_json: JSON.stringify(metadata),
       payload_hash: input.payloadHash
     });
+    const conversationId =
+      typeof metadata.conversationId === 'string' ? metadata.conversationId : '';
+    const personId = typeof metadata.personId === 'string' ? metadata.personId : '';
+    if (conversationId && personId) {
+      // The provider write has already succeeded. Shared Conversation is a
+      // projection, so a projection failure must never turn this into a retry
+      // of an external email side effect.
+      try {
+        await projectPreparedConversationEmail(db, {
+          workspaceId: input.workspaceId,
+          conversationId,
+          personId,
+          provider: delivery.provider,
+          externalRef: delivery.externalRef,
+          recipient: payload.recipient,
+          subject: payload.subject,
+          body: payload.body,
+          payloadHash: input.payloadHash,
+          actorType: 'system'
+        });
+      } catch {
+        /* idempotent derived-state projection can be reconciled later */
+      }
+    }
     return { ...delivery, actionType };
   }
 

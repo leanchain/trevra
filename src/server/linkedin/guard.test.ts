@@ -11,6 +11,7 @@ import {
 import { MAX_OUTSTANDING_INVITES } from './limits.js';
 import { FLAT_DAY_SHAPE, type DayShapeFn } from './pacing.js';
 import { upsertSeat } from './seats.js';
+import { createSuppression } from '../suppressions.js';
 
 let db: Db;
 
@@ -33,6 +34,7 @@ beforeEach(async () => {
   await db.prepare('DELETE FROM linkedin_campaigns WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_workflows WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
+  await db.prepare('DELETE FROM suppressions WHERE workspace_id=?').run(WORKSPACE_ID);
 });
 
 afterEach(async () => {
@@ -101,7 +103,7 @@ function check(verdict: LinkedInSafetyVerdict, name: LinkedInCheckName) {
 }
 
 describe('the every-check contract', () => {
-  it('runs all fourteen checks even when the very first one fails', async () => {
+  it('runs every check even when the very first one fails', async () => {
     // No seat, a weekend midnight slot, and a duplicate target all at once.
     // The reference behaviour this mirrors -- outreach/safety.ts -- exists
     // because short-circuiting makes an operator fix one blocker per run.
@@ -123,6 +125,26 @@ describe('the every-check contract', () => {
     expect(check(verdict, 'business-hours').passed).toBe(false);
     expect(check(verdict, 'weekend').passed).toBe(false);
     expect(check(verdict, 'duplicate-target').passed).toBe(false);
+  });
+
+  it('never lets a manual action bypass a workspace suppression', async () => {
+    await seat('2026-01-01');
+    await createSuppression(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        channel: 'linkedin',
+        linkedinUrl: 'https://www.linkedin.com/in/fresh/',
+        reason: 'Do not contact',
+        source: 'manual'
+      },
+      NOW
+    );
+
+    const verdict = await guard({ manual: true });
+    expect(verdict.allowed).toBe(false);
+    expect(check(verdict, 'suppression')).toMatchObject({ passed: false });
+    expect(check(verdict, 'suppression').detail).toContain('Do not contact');
   });
 
   it('allows a well-paced action, and still says LinkedIn is prepare-only', async () => {

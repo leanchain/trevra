@@ -22,10 +22,10 @@ export async function prepareAction(db: Db, workspaceId: string, recommendationI
     const recommendation = await tx
       .prepare(
         `
-        SELECT r.*,c.contact_name,c.email,c.name AS client_name,
+        SELECT r.*,p.name AS person_name,p.email,
           COALESCE(ws.sender_name,u.name,'Your team') AS sender_name
         FROM recommendations r
-        JOIN clients c ON c.id=r.client_id AND c.workspace_id=r.workspace_id
+        JOIN contacts p ON p.id=r.person_id AND p.workspace_id=r.workspace_id
         LEFT JOIN workspace_settings ws ON ws.workspace_id=r.workspace_id
         LEFT JOIN users u ON u.workspace_id=r.workspace_id
         WHERE r.id=? AND r.workspace_id=?
@@ -49,7 +49,9 @@ export async function prepareAction(db: Db, workspaceId: string, recommendationI
       .get<Record<string, unknown>>(recommendationId);
     if (existing) return serializeAction(existing);
 
-    const firstName = String(recommendation.contact_name).split(' ')[0];
+    const firstName = String(recommendation.person_name ?? recommendation.email ?? 'there').split(
+      ' '
+    )[0];
     const senderName = String(recommendation.sender_name || 'Your team');
     const type = 'email_draft' as const;
     const subject = 'Following up on our proposal'; // GTM follow-up only; no billing action types exist.
@@ -82,8 +84,8 @@ export async function prepareAction(db: Db, workspaceId: string, recommendationI
     const structuredPayloadJson = JSON.stringify({
       recommendationId,
       recommendationType: String(recommendation.type),
-      clientId: String(recommendation.client_id),
-      clientName: String(recommendation.client_name)
+      personId: String(recommendation.person_id),
+      personName: String(recommendation.person_name ?? recommendation.email)
     });
     const payloadHash = hashPayload(recipient, subject, body, structuredPayloadJson);
     await tx
@@ -262,7 +264,7 @@ export async function executeAction(db: Db, workspaceId: string, actionId: strin
     const row = await tx
       .prepare(
         `
-      SELECT a.*,r.type AS recommendation_type,r.source_key,r.client_id
+      SELECT a.*,r.type AS recommendation_type,r.source_key,r.person_id
       FROM actions a JOIN recommendations r ON r.id=a.recommendation_id
       WHERE a.id=? AND a.workspace_id=?
       FOR UPDATE OF a

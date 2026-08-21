@@ -13,7 +13,8 @@ interface CandidateEvidence {
 interface Candidate {
   sourceKey: string;
   type: 'stale_proposal';
-  clientId: string;
+  personId: string;
+  accountId: string | null;
   title: string;
   summary: string;
   proofSummary: string;
@@ -57,9 +58,9 @@ export async function runRecommendationEngine(
         .prepare(
           `
           INSERT INTO recommendations (
-            id,workspace_id,client_id,source_key,type,title,summary,
+            id,workspace_id,person_id,account_id,source_key,type,title,summary,
             confidence,urgency,priority_score,status,recommended_action,created_at,updated_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           ON CONFLICT(workspace_id,source_key) DO UPDATE SET
             title=excluded.title,
             summary=excluded.summary,
@@ -74,7 +75,8 @@ export async function runRecommendationEngine(
         .run(
           recommendationId,
           workspaceId,
-          candidate.clientId,
+          candidate.personId,
+          candidate.accountId,
           candidate.sourceKey,
           candidate.type,
           candidate.title,
@@ -186,16 +188,25 @@ async function detectStaleProposals(db: Db, workspaceId: string, now: Date): Pro
   const rows = await db
     .prepare(
       `
-      SELECT o.*,c.name AS client_name,
+      SELECT o.*,p.name AS person_name,p.email AS person_email,a.name AS account_name,
         (SELECT m.id FROM messages m
-          WHERE m.workspace_id=o.workspace_id AND m.client_id=o.client_id AND m.direction='outbound'
+          WHERE m.workspace_id=o.workspace_id AND m.person_id=o.person_id AND m.direction='outbound'
           ORDER BY m.occurred_at DESC LIMIT 1) AS message_id,
         (SELECT m.body FROM messages m
-          WHERE m.workspace_id=o.workspace_id AND m.client_id=o.client_id AND m.direction='outbound'
+          WHERE m.workspace_id=o.workspace_id AND m.person_id=o.person_id AND m.direction='outbound'
           ORDER BY m.occurred_at DESC LIMIT 1) AS message_body
       FROM opportunities o
-      JOIN clients c ON c.id=o.client_id AND c.workspace_id=o.workspace_id
-      WHERE o.workspace_id=? AND o.status='proposal_sent' AND o.proposal_sent_at IS NOT NULL
+      JOIN contacts p ON p.id=o.person_id AND p.workspace_id=o.workspace_id
+      LEFT JOIN accounts a ON a.id=o.account_id AND a.workspace_id=o.workspace_id
+      WHERE o.workspace_id=? AND o.stage='proposal' AND o.proposal_sent_at IS NOT NULL
+        AND p.email_normalized IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM messages inbound
+          WHERE inbound.workspace_id=o.workspace_id
+            AND inbound.person_id=o.person_id
+            AND inbound.direction='inbound'
+            AND inbound.occurred_at>o.proposal_sent_at
+        )
     `
     )
     .all<Record<string, unknown>>(workspaceId);
@@ -230,9 +241,10 @@ async function detectStaleProposals(db: Db, workspaceId: string, now: Date): Pro
       {
         sourceKey: `opportunity:${row.id}:stale`,
         type: 'stale_proposal',
-        clientId: String(row.client_id),
-        title: `Follow up on ${row.client_name}`,
-        summary: `This opportunity has had no recorded response for ${ageDays} days.`,
+        personId: String(row.person_id),
+        accountId: row.account_id ? String(row.account_id) : null,
+        title: `Follow up with ${row.person_name ?? row.person_email}`,
+        summary: `${row.account_name ? `${row.account_name}: ` : ''}this opportunity has had no verified inbound response for ${ageDays} days.`,
         proofSummary: `Trevra found the open proposal state, the latest outbound message, and no recorded response after ${ageDays} days.`,
         confidence,
         urgency,

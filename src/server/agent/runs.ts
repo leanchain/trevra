@@ -12,6 +12,7 @@
  */
 
 import { id, type Db } from '../db.js';
+import { resolveActiveAgent } from '../agents.js';
 
 export type AgentRunStatus = 'running' | 'completed' | 'failed' | 'stopped';
 
@@ -35,6 +36,7 @@ export interface AgentRunStep {
 export interface AgentRunRecord {
   id: string;
   workspaceId: string;
+  agentId: string;
   trigger: 'manual' | 'schedule';
   status: AgentRunStatus;
   goal: string;
@@ -67,7 +69,7 @@ const ISO = (column: string): string =>
   `TO_CHAR(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
 
 const RUN_COLUMNS = `
-  id, workspace_id, trigger, status, goal, step_count, max_steps, summary, error,
+  id, workspace_id, agent_id, trigger, status, goal, step_count, max_steps, summary, error,
   ${ISO('started_at')} AS started_at,
   ${ISO('finished_at')} AS finished_at,
   ${ISO('stop_requested_at')} AS stop_requested_at,
@@ -121,19 +123,31 @@ const PAYLOAD_LIMIT_BYTES = 8 * 1024;
 
 export async function startAgentRun(
   db: Db,
-  input: { workspaceId: string; trigger: 'manual' | 'schedule'; goal: string; maxSteps: number }
+  input: {
+    workspaceId: string;
+    agentId?: string | null;
+    trigger: 'manual' | 'schedule';
+    goal: string;
+    maxSteps: number;
+  }
 ): Promise<AgentRunRecord> {
-  const row = await db.prepare(`
-    INSERT INTO agent_runs (id, workspace_id, trigger, status, goal, step_count, max_steps)
-    VALUES (?,?,?,'running',?,0,?)
+  const agent = await resolveActiveAgent(db, input.workspaceId, input.agentId);
+  const row = await db
+    .prepare(
+      `
+    INSERT INTO agent_runs (id, workspace_id, agent_id, trigger, status, goal, step_count, max_steps)
+    VALUES (?,?,?,?,'running',?,0,?)
     RETURNING ${RUN_COLUMNS}
-  `).get<Record<string, unknown>>(
-    id('arun'),
-    input.workspaceId,
-    input.trigger,
-    input.goal,
-    input.maxSteps
-  );
+  `
+    )
+    .get<Record<string, unknown>>(
+      id('arun'),
+      input.workspaceId,
+      agent.id,
+      input.trigger,
+      input.goal,
+      input.maxSteps
+    );
   if (!row) throw new Error('Failed to start agent run');
   return serializeRun(row);
 }
@@ -165,7 +179,9 @@ export async function appendAgentRunStep(
     durationMs?: number | null;
   }
 ): Promise<number> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     WITH bumped AS (
       UPDATE agent_runs SET step_count = step_count + 1
       -- Only a run that is still going may gain a step. Without the status
@@ -179,19 +195,21 @@ export async function appendAgentRunStep(
     INSERT INTO agent_run_steps (id, run_id, workspace_id, seq, kind, tool_name, input_json, output_json, error, duration_ms)
     SELECT ?, ?, ?, bumped.step_count, ?, ?, ?, ?, ?, ? FROM bumped
     RETURNING seq
-  `).get<{ seq: number }>(
-    input.runId,
-    input.workspaceId,
-    id('astep'),
-    input.runId,
-    input.workspaceId,
-    input.kind,
-    input.toolName ?? null,
-    serializePayload(input.input),
-    serializePayload(input.output),
-    input.error ?? null,
-    normalizeDurationMs(input.durationMs)
-  );
+  `
+    )
+    .get<{ seq: number }>(
+      input.runId,
+      input.workspaceId,
+      id('astep'),
+      input.runId,
+      input.workspaceId,
+      input.kind,
+      input.toolName ?? null,
+      serializePayload(input.input),
+      serializePayload(input.output),
+      input.error ?? null,
+      normalizeDurationMs(input.durationMs)
+    );
   if (!row) throw new Error(`Agent run not found: ${input.runId}`);
   return Number(row.seq);
 }
@@ -209,13 +227,21 @@ export async function appendAgentRunStep(
 export async function finishAgentRun(
   db: Db,
   runId: string,
-  outcome: { status: Exclude<AgentRunStatus, 'running'>; summary?: string | null; error?: string | null }
+  outcome: {
+    status: Exclude<AgentRunStatus, 'running'>;
+    summary?: string | null;
+    error?: string | null;
+  }
 ): Promise<void> {
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE agent_runs
     SET status=?, summary=?, error=?, finished_at=CURRENT_TIMESTAMP
     WHERE id=? AND status='running'
-  `).run(outcome.status, outcome.summary ?? null, outcome.error ?? null, runId);
+  `
+    )
+    .run(outcome.status, outcome.summary ?? null, outcome.error ?? null, runId);
 }
 
 export async function listAgentRuns(
@@ -224,10 +250,14 @@ export async function listAgentRuns(
   options: { limit?: number } = {}
 ): Promise<AgentRunRecord[]> {
   const limit = Math.max(1, Math.min(options.limit ?? 50, 200));
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT ${RUN_COLUMNS} FROM agent_runs
     WHERE workspace_id=? ORDER BY started_at DESC, id DESC LIMIT ?
-  `).all<Record<string, unknown>>(workspaceId, limit);
+  `
+    )
+    .all<Record<string, unknown>>(workspaceId, limit);
   return rows.map(serializeRun);
 }
 
@@ -236,14 +266,22 @@ export async function getAgentRun(
   workspaceId: string,
   runId: string
 ): Promise<(AgentRunRecord & { steps: AgentRunStep[] }) | null> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT ${RUN_COLUMNS} FROM agent_runs WHERE workspace_id=? AND id=?
-  `).get<Record<string, unknown>>(workspaceId, runId);
+  `
+    )
+    .get<Record<string, unknown>>(workspaceId, runId);
   if (!row) return null;
-  const steps = await db.prepare(`
+  const steps = await db
+    .prepare(
+      `
     SELECT seq, kind, tool_name, input_json, output_json, error, duration_ms, ${ISO('created_at')} AS created_at
     FROM agent_run_steps WHERE run_id=? ORDER BY seq ASC
-  `).all<Record<string, unknown>>(runId);
+  `
+    )
+    .all<Record<string, unknown>>(runId);
   return { ...serializeRun(row), steps: steps.map(serializeStep) };
 }
 
@@ -270,10 +308,14 @@ export async function getAgentRun(
  * this to stop" survives an impatient second click.
  */
 export async function stopRunningAgentRuns(db: Db, workspaceId: string): Promise<number> {
-  const result = await db.prepare(`
+  const result = await db
+    .prepare(
+      `
     UPDATE agent_runs SET stop_requested_at=CURRENT_TIMESTAMP
     WHERE workspace_id=? AND status='running' AND stop_requested_at IS NULL
-  `).run(workspaceId);
+  `
+    )
+    .run(workspaceId);
   return result.changes;
 }
 
@@ -302,10 +344,14 @@ export async function stopRunningAgentRuns(db: Db, workspaceId: string): Promise
  * the caller decides, and it must not be decided by a silent `false` here.
  */
 export async function isAgentRunStopRequested(db: Db, runId: string): Promise<boolean> {
-  const row = await db.prepare(`
+  const row = await db
+    .prepare(
+      `
     SELECT 1 AS live FROM agent_runs
     WHERE id=? AND status='running' AND stop_requested_at IS NULL
-  `).get<{ live: number }>(runId);
+  `
+    )
+    .get<{ live: number }>(runId);
   return row === undefined;
 }
 
@@ -338,18 +384,17 @@ export async function reapStaleAgentRuns(
   options: { olderThanMinutes?: number; workspaceId?: string } = {}
 ): Promise<number> {
   const minutes = Math.max(1, Math.trunc(options.olderThanMinutes ?? STALE_RUN_MINUTES));
-  const result = await db.prepare(`
+  const result = await db
+    .prepare(
+      `
     UPDATE agent_runs
     SET status='failed', error=?, finished_at=CURRENT_TIMESTAMP
     WHERE status='running'
       AND started_at < now() - make_interval(mins => ?::int)
       AND (?::text IS NULL OR workspace_id = ?::text)
-  `).run(
-    STALE_RUN_ERROR,
-    minutes,
-    options.workspaceId ?? null,
-    options.workspaceId ?? null
-  );
+  `
+    )
+    .run(STALE_RUN_ERROR, minutes, options.workspaceId ?? null, options.workspaceId ?? null);
   return result.changes;
 }
 
@@ -357,6 +402,7 @@ function serializeRun(row: Record<string, unknown>): AgentRunRecord {
   return {
     id: String(row.id),
     workspaceId: String(row.workspace_id),
+    agentId: String(row.agent_id),
     trigger: String(row.trigger) as 'manual' | 'schedule',
     status: String(row.status) as AgentRunStatus,
     goal: String(row.goal),
@@ -365,10 +411,14 @@ function serializeRun(row: Record<string, unknown>): AgentRunRecord {
     summary: row.summary === null || row.summary === undefined ? null : String(row.summary),
     error: row.error === null || row.error === undefined ? null : String(row.error),
     startedAt: String(row.started_at),
-    finishedAt: row.finished_at === null || row.finished_at === undefined ? null : String(row.finished_at),
+    finishedAt:
+      row.finished_at === null || row.finished_at === undefined ? null : String(row.finished_at),
     stopRequestedAt:
-      row.stop_requested_at === null || row.stop_requested_at === undefined ? null : String(row.stop_requested_at),
-    stopReason: row.stop_reason === null || row.stop_reason === undefined ? null : String(row.stop_reason)
+      row.stop_requested_at === null || row.stop_requested_at === undefined
+        ? null
+        : String(row.stop_requested_at),
+    stopReason:
+      row.stop_reason === null || row.stop_reason === undefined ? null : String(row.stop_reason)
   };
 }
 
@@ -383,7 +433,8 @@ function serializeStep(row: Record<string, unknown>): AgentRunStep {
     createdAt: String(row.created_at),
     // Never coerced through `Number(undefined)` -> NaN: an absent duration is
     // the historical case and has to survive the read as null.
-    durationMs: row.duration_ms === null || row.duration_ms === undefined ? null : Number(row.duration_ms)
+    durationMs:
+      row.duration_ms === null || row.duration_ms === undefined ? null : Number(row.duration_ms)
   };
 }
 

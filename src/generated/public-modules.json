@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1.0.0",
-  "generatedAt": "2026-08-20T20:57:22+02:00",
-  "sourceRevision": "eb325e17222d",
+  "generatedAt": "2026-08-20T23:50:05+02:00",
+  "sourceRevision": "144a39af1e87",
   "project": "Trevra",
   "contract": {
     "inputs": "Zod-validated input schema",

@@ -1,4 +1,7 @@
 import { id, type Db } from '../db.js';
+import { normalizeExplicitPhone, resolveContact } from '../lead-capture/people.js';
+import { LeadCaptureError } from '../lead-capture/types.js';
+import { createSuppression, liftSuppressionsBySource } from '../suppressions.js';
 // `LinkedInApiError` and not a bare Error, for `deleteLeadList`'s refusal
 // alone: it is the only thing in this file a route must turn into a 409 rather
 // than a 400, and carrying the status on the error is how every other refusal
@@ -86,6 +89,9 @@ export interface LinkedInLeadContact {
    * column is the list actually being asked about.
    */
   listId: string | null;
+  /** Canonical GTM Person when deterministic identity has been resolved. */
+  personId: string | null;
+  personResolutionStatus: 'unresolved' | 'resolved' | 'insufficient_identity' | 'conflict';
   firstName: string;
   lastName: string;
   company: string;
@@ -118,6 +124,8 @@ interface ContactRow {
   id: string;
   workspace_id: string;
   list_id: string | null;
+  person_id: string | null;
+  person_resolution_status: string;
   first_name: string;
   last_name: string;
   company: string;
@@ -140,9 +148,9 @@ interface ContactRow {
 // being one contact row, and the column only records the list they first
 // landed in.
 const LIST_SELECT = `l.id,l.workspace_id,l.seat_key,l.name,l.source_kind,l.source_ref,l.created_at,l.updated_at,(SELECT COUNT(*)::int FROM linkedin_lead_list_members m WHERE m.list_id=l.id) AS lead_count`;
-const CONTACT_SELECT = `id,workspace_id,list_id,first_name,last_name,company,email,email_source,email_provenance,email_confidence,email_verification_status,phone,country,profile_url,do_not_contact,custom_fields_json,created_at,updated_at`;
+const CONTACT_SELECT = `id,workspace_id,list_id,person_id,person_resolution_status,first_name,last_name,company,email,email_source,email_provenance,email_confidence,email_verification_status,phone,country,profile_url,do_not_contact,custom_fields_json,created_at,updated_at`;
 /** The same columns through the membership join, where `list_id` is the list asked for. */
-const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.first_name,c.last_name,c.company,c.email,c.email_source,c.email_provenance,c.email_confidence,c.email_verification_status,c.phone,c.country,c.profile_url,c.do_not_contact,c.custom_fields_json,c.created_at,c.updated_at`;
+const MEMBER_CONTACT_SELECT = `c.id,c.workspace_id,m.list_id,c.person_id,c.person_resolution_status,c.first_name,c.last_name,c.company,c.email,c.email_source,c.email_provenance,c.email_confidence,c.email_verification_status,c.phone,c.country,c.profile_url,c.do_not_contact,c.custom_fields_json,c.created_at,c.updated_at`;
 
 function toList(row: ListRow): LinkedInLeadList {
   return {
@@ -181,6 +189,9 @@ function toContact(row: ContactRow): LinkedInLeadContact {
     id: row.id,
     workspaceId: row.workspace_id,
     listId: row.list_id,
+    personId: row.person_id,
+    personResolutionStatus:
+      row.person_resolution_status as LinkedInLeadContact['personResolutionStatus'],
     firstName: row.first_name,
     lastName: row.last_name,
     company: row.company,
@@ -362,6 +373,63 @@ export interface LeadInsertOutcome {
   reused: boolean;
 }
 
+async function linkCanonicalPerson(
+  db: Db,
+  workspaceId: string,
+  linkedinContactId: string,
+  lead: NormalizedLeadInput,
+  now: string
+): Promise<string | null> {
+  const email = lead.email?.trim() || null;
+  const linkedinUrl = lead.profileUrl?.trim() || null;
+  const phone = normalizeExplicitPhone(lead.phone);
+  if (!email && !linkedinUrl && !phone) {
+    await db
+      .prepare(
+        `UPDATE linkedin_lead_contacts
+         SET person_resolution_status=CASE WHEN person_id IS NULL THEN 'insufficient_identity' ELSE 'resolved' END,updated_at=?
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(now, workspaceId, linkedinContactId);
+    return null;
+  }
+
+  const name =
+    [lead.firstName, lead.lastName]
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(' ') || null;
+  try {
+    const resolved = await resolveContact(
+      db,
+      workspaceId,
+      { name, email, phone, linkedinUrl },
+      new Date(now)
+    );
+    await db
+      .prepare(
+        `UPDATE linkedin_lead_contacts
+         SET person_id=?,person_resolution_status='resolved',updated_at=?
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(resolved.contact.id, now, workspaceId, linkedinContactId);
+    return resolved.contact.id;
+  } catch (error) {
+    if (error instanceof LeadCaptureError && error.status === 409) {
+      await db
+        .prepare(
+          `UPDATE linkedin_lead_contacts
+           SET person_id=NULL,person_resolution_status='conflict',updated_at=?
+           WHERE workspace_id=? AND id=?`
+        )
+        .run(now, workspaceId, linkedinContactId);
+      return null;
+    }
+    if (error instanceof LeadCaptureError) throw new LinkedInApiError(error.message, error.status);
+    throw error;
+  }
+}
+
 /**
  * Write one lead, or find the row that already is that person -- and put them
  * in this list either way.
@@ -441,6 +509,9 @@ async function insertLead(
     )?.id ??
     '';
   if (!contactId) return { contactId: '', inserted: false, reused: false };
+
+  // LinkedIn keeps channel evidence; canonical People owns human identity.
+  await linkCanonicalPerson(db, workspaceId, contactId, lead, now);
 
   // A person reused from another list keeps one contact row, but new CSV enrichment is not lost.
   // New non-empty custom fields win by key; built-in fields stay governed by their dedicated columns.
@@ -902,7 +973,44 @@ export async function updateLeadContact(
       input.contactId
     );
   if (!row) throw new Error('Lead not found.');
-  return toContact(row);
+  await linkCanonicalPerson(db, input.workspaceId, input.contactId, normalized, now.toISOString());
+  const refreshed = await db
+    .prepare(`SELECT ${CONTACT_SELECT} FROM linkedin_lead_contacts WHERE workspace_id=? AND id=?`)
+    .get<ContactRow>(input.workspaceId, input.contactId);
+  if (!refreshed) throw new Error('Lead disappeared after Person convergence.');
+  const updated = toContact(refreshed);
+  if (input.doNotContact === true) {
+    if (updated.personId || updated.email || updated.profileUrl) {
+      await createSuppression(
+        db,
+        {
+          workspaceId: input.workspaceId,
+          channel: 'linkedin',
+          personId: updated.personId,
+          email: updated.email,
+          linkedinUrl: updated.profileUrl,
+          reason: 'Marked do-not-contact in LinkedIn lead manager',
+          source: 'linkedin_lead',
+          sourceRef: input.contactId,
+          actorType: 'system'
+        },
+        now
+      );
+    }
+  } else if (input.doNotContact === false) {
+    await liftSuppressionsBySource(
+      db,
+      {
+        workspaceId: input.workspaceId,
+        source: 'linkedin_lead',
+        sourceRef: input.contactId,
+        channel: 'linkedin',
+        actorType: 'system'
+      },
+      now
+    );
+  }
+  return updated;
 }
 
 /**

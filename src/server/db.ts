@@ -763,56 +763,84 @@ async function seedDemo(db: Db): Promise<void> {
         iso()
       );
 
-    const clients = [
-      ['cl_acme', 'Acme Labs', 'Maya Chen', 'maya@acme.example', 'prospect', iso(1)],
-      ['cl_orbit', 'Orbit Health', 'Jonas Keller', 'jonas@orbit.example', 'prospect', iso(9)],
-      ['cl_luma', 'Luma Works', 'Sofia Rossi', 'sofia@luma.example', 'prospect', iso(4)]
+    const people = [
+      ['con_acme', 'Maya Chen', 'maya@acme.example', 'acc_acme', 'Acme Labs', 'acme.example'],
+      [
+        'con_orbit',
+        'Jonas Keller',
+        'jonas@orbit.example',
+        'acc_orbit',
+        'Orbit Health',
+        'orbit.example'
+      ],
+      ['con_luma', 'Sofia Rossi', 'sofia@luma.example', 'acc_luma', 'Luma Works', 'luma.example']
     ] as const;
-    for (const client of clients) {
+    for (const person of people) {
       await tx
         .prepare(
-          'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
+          'INSERT INTO contacts (id,workspace_id,name,email,email_normalized,created_at,updated_at) VALUES (?,?,?,?,?,?,?)'
         )
         .run(
-          client[0],
+          person[0],
           DEMO_WORKSPACE_ID,
-          client[1],
-          client[2],
-          client[3],
-          client[4],
-          client[5],
-          iso(80)
+          person[1],
+          person[2],
+          person[2].toLowerCase(),
+          iso(80),
+          iso()
         );
       await tx
         .prepare(
-          'INSERT INTO contact_identities (id,workspace_id,client_id,provider,identity_type,identity_value,created_at) VALUES (?,?,?,?,?,?,?)'
+          "INSERT INTO accounts (id,workspace_id,name,domain,source,status,created_at,updated_at) VALUES (?,?,?,?, 'manual','active',?,?)"
         )
-        .run(id('ident'), DEMO_WORKSPACE_ID, client[0], 'email', 'email', client[3], iso(80));
+        .run(person[3], DEMO_WORKSPACE_ID, person[4], person[5], iso(80), iso());
+      await tx
+        .prepare(
+          "INSERT INTO account_contacts (id,workspace_id,account_id,contact_id,source,confidence,created_at,updated_at) VALUES (?,?,?,?, 'manual','explicit',?,?)"
+        )
+        .run(id('acp'), DEMO_WORKSPACE_ID, person[3], person[0], iso(80), iso());
+      await tx
+        .prepare(
+          'INSERT INTO person_identities (id,workspace_id,person_id,provider,identity_type,identity_value,normalized_value,created_at) VALUES (?,?,?,?,?,?,?,?)'
+        )
+        .run(
+          id('pid'),
+          DEMO_WORKSPACE_ID,
+          person[0],
+          'canonical',
+          'email',
+          person[2],
+          person[2].toLowerCase(),
+          iso(80)
+        );
     }
 
     await tx
       .prepare(
-        'INSERT INTO opportunities (id,workspace_id,client_id,title,status,proposal_sent_at,expected_response_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
+        'INSERT INTO opportunities (id,workspace_id,person_id,account_id,title,stage,proposal_sent_at,expected_response_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
       )
       .run(
         'opp_orbit',
         DEMO_WORKSPACE_ID,
-        'cl_orbit',
+        'con_orbit',
+        'acc_orbit',
         'Brand strategy engagement',
-        'proposal_sent',
+        'proposal',
         iso(9),
         iso(5),
-        iso(14)
+        iso(14),
+        iso(9)
       );
 
     await tx
       .prepare(
-        'INSERT INTO messages (id,workspace_id,client_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
+        'INSERT INTO messages (id,workspace_id,person_id,account_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
       )
       .run(
         'msg_orbit_proposal',
         DEMO_WORKSPACE_ID,
-        'cl_orbit',
+        'con_orbit',
+        'acc_orbit',
         'outbound',
         'Orbit brand strategy proposal',
         'Hi Jonas, attached is the proposal. I can reserve an August start if you confirm this week.',

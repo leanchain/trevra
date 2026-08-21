@@ -1,10 +1,10 @@
 # GTM lead capture into Trevra — design
 
 **Date:** 2026-08-20  
-**Status:** Proposed  
+**Status:** Implemented in Trevra core; live Beseam deployment cutover pending
 **Scope:** Any Trevra customer can connect landing pages, marketing sites, contact/demo/waitlist/signup forms, or the server/edge handlers behind those GTM surfaces to their own Trevra workspace and capture inbound people there. This is not a generic application-event API.
 
-**Related:** `docs/growth-gap-closure-proposal.md`, `docs/source-providers.md`.
+**Related:** `docs/source-providers.md`.
 
 ---
 
@@ -967,23 +967,9 @@ A temporary email notification may coexist during rollout only after Trevra is a
 
 ---
 
-## 24. Relationship to e-commerce `services/growth`
+## 24. Fresh-project boundary
 
-This design moves website-generated inbound leads to Trevra, but it does **not** by itself make `services/growth` deletable.
-
-The old Growth subsystem can be removed after the wider growth-gap plan has moved and cut over all load-bearing behavior:
-
-- canonical People/contacts;
-- legacy Growth lead state that still matters;
-- suppressions;
-- cold-email delivery and ambiguous-send semantics;
-- inbound email replies;
-- outbound/inbound message history and provider IDs;
-- required audit/drafting behavior;
-- final state migration;
-- old Growth admin/proxy/deployment integrations.
-
-Website capture should be cut over before deleting Growth so new inbound people no longer land in a separate GTM silo.
+Trevra is the GTM system of record from day one. External websites may integrate through Capture Sources, but they do not create a second GTM state store or alternate outreach runtime.
 
 ---
 
@@ -1015,22 +1001,22 @@ Preserve canonical operator-owned values, preserve the new source submission, an
 
 ## 26. Security requirements
 
-- [ ] Workspace is derived only from authenticated `capture_source_id`.
-- [ ] A request body cannot choose or override workspace.
-- [ ] Capture secrets are never exposed to browser code.
-- [ ] Secrets use Trevra's secret-custody/KMS boundary.
-- [ ] HMAC verification covers exact raw bytes.
-- [ ] HMAC comparison is constant-time.
-- [ ] Timestamp replay window is enforced.
-- [ ] Source-scoped idempotency claim is transactional.
-- [ ] Same idempotency key + different payload returns `409`.
-- [ ] Request/body/property sizes are bounded.
-- [ ] Custom JSON depth/value types are bounded.
-- [ ] Every contact/submission/account-association query is workspace-scoped.
-- [ ] Cross-workspace IDs cannot create associations.
-- [ ] Capture never directly executes outreach.
-- [ ] Analytics payloads contain no message/body content.
-- [ ] Secret create/rotate/revoke is audited without secret values.
+- [x] Workspace is derived only from authenticated `capture_source_id`.
+- [x] A request body cannot choose or override workspace.
+- [x] Capture secrets are never exposed to the public landing-page browser; the Trevra owner UI may reveal a newly generated secret once on create/rotate.
+- [x] Secrets use Trevra's secret-custody/KMS boundary and participate in master-key custody reporting/reseal.
+- [x] HMAC verification covers exact raw bytes.
+- [x] HMAC comparison is constant-time.
+- [x] Timestamp replay window is enforced.
+- [x] Source-scoped idempotency claim is transactional.
+- [x] Same idempotency key + different payload returns `409`.
+- [x] Request/body/property sizes are bounded.
+- [x] Custom JSON depth/value types are bounded.
+- [x] Every contact/submission/account-association query is workspace-scoped.
+- [x] Cross-workspace IDs cannot create associations.
+- [x] Capture never directly executes outreach.
+- [x] Analytics/health and GTM event payloads contain no message/body content.
+- [x] Secret create/rotate/disable is audited without secret values.
 
 ---
 
@@ -1038,123 +1024,111 @@ Preserve canonical operator-owned values, preserve the new source submission, an
 
 ### Phase A — shared People spine
 
-- [ ] Add forward-only PostgreSQL migration for `contacts`.
-- [ ] Add `contact_external_identities`.
-- [ ] Add deterministic contact normalize/match/create service.
-- [ ] Add workspace-isolation and dedupe tests.
-- [ ] Refine `account_contacts` into an optional association rather than a prerequisite for Person existence.
-- [ ] Connect folder-import contact evidence to the shared Person model when explicit identities are present.
+- [x] Add forward-only PostgreSQL migration for `contacts`.
+- [x] Add `contact_external_identities`.
+- [x] Add deterministic contact normalize/match/create service.
+- [x] Add workspace-isolation and dedupe tests.
+- [x] Refine `account_contacts` into an optional association rather than a prerequisite for Person existence.
+- [x] Connect folder-import contact evidence to the shared Person model when explicit identities are present.
 
 ### Phase B — Capture Sources
 
-- [ ] Add `capture_sources` migration/store.
-- [ ] Add source create/list/disable/rotate operations.
-- [ ] Store signing secrets through secret custody.
-- [ ] Add short previous-secret overlap for rotation.
-- [ ] Add source audit events.
+- [x] Add `capture_sources` migration/store.
+- [x] Add source create/list/disable/rotate operations.
+- [x] Store signing secrets through secret custody.
+- [x] Add short previous-secret overlap for rotation.
+- [x] Add source audit events.
 
 ### Phase C — Inbound Submissions
 
-- [ ] Add `inbound_submissions` migration/store.
-- [ ] Add source-scoped idempotency + payload hash.
-- [ ] Add bounded attribution/consent/properties schemas.
-- [ ] Add immutable provenance fields.
-- [ ] Add optional explicit Account association.
+- [x] Add `inbound_submissions` migration/store.
+- [x] Add source-scoped idempotency + payload hash.
+- [x] Add bounded attribution/consent/properties schemas.
+- [x] Add immutable provenance fields.
+- [x] Add optional explicit Account association.
 
 ### Phase D — signed intake API
 
-- [ ] Add `POST /api/intake/v1/submissions` using raw body bytes.
-- [ ] Verify HMAC + timestamp before accepting the payload.
-- [ ] Derive workspace only from Capture Source.
-- [ ] Implement stable duplicate/retry responses.
-- [ ] Add request-size/source-rate guards.
-- [ ] Emit append-only intake/contact/submission events.
+- [x] Add `POST /api/intake/v1/submissions` using raw body bytes.
+- [x] Verify HMAC + timestamp before accepting the payload.
+- [x] Derive workspace only from Capture Source.
+- [x] Implement stable duplicate/retry responses.
+- [x] Add request-size/source-rate guards.
+- [x] Emit append-only intake/contact/submission events.
 
 ### Phase E — Trevra setup/operator UX
 
-- [ ] Add `Setup -> Lead capture`.
-- [ ] Create source wizard with one-time secret reveal.
-- [ ] Add Cloudflare Worker recipe.
-- [ ] Add Next.js/Vercel recipe.
-- [ ] Add raw HTTP/curl recipe.
-- [ ] Add test-event flow.
-- [ ] Show source health/last received without exposing content in analytics.
-- [ ] Add inbound People/Submission operator view.
+- [x] Add `Setup -> Lead capture`.
+- [x] Create source wizard with one-time secret reveal.
+- [x] Add Cloudflare Worker recipe.
+- [x] Add Next.js/Vercel recipe.
+- [x] Add raw HTTP/curl recipe.
+- [x] Add test-event flow.
+- [x] Show source health/last received without exposing content in analytics.
+- [x] Add inbound People/Submission operator view.
 
 ### Phase F — Beseam landing cutover
 
-- [ ] Create Beseam Capture Source in the Beseam Trevra workspace.
-- [ ] Change `ecom-clean-lp /api/lead` to forward signed Trevra submissions.
-- [ ] Keep Cloudflare Worker edge validation/honeypot/rate limiting.
-- [ ] Keep answer-check/image/product proxying outside Trevra.
-- [ ] Make Trevra the canonical lead write.
-- [ ] Remove direct SendPulse lead storage from Worker after verification.
-- [ ] Move any retained newsletter sync behind explicit Trevra integration behavior.
-- [ ] Remove notification-email-as-record behavior after Trevra operator notifications are live.
-
-### Phase G — Growth retirement gate
-
-- [ ] Migrate remaining useful Growth people/state/suppressions/messages.
-- [ ] Enable Trevra-only cold send/reply paths.
-- [ ] Pause old Growth sender/reply/discovery jobs.
-- [ ] Run a Trevra-only verification window.
-- [ ] Remove e-commerce Growth admin UI/proxy/config/deployment references.
-- [ ] Delete `services/growth` only after all cutover gates pass.
-
----
+- [ ] Create Beseam Capture Source in the Beseam Trevra workspace and provision Worker secrets.
+- [x] Change `ecom-clean-lp /api/lead` to support signed Trevra submissions as the canonical path when configured.
+- [x] Keep Cloudflare Worker origin validation, honeypot and body limits.
+- [ ] Add an edge rate-limit binding if a second pre-Trevra throttle is desired; the previous Worker had no edge rate limiter.
+- [x] Keep answer-check/image/product proxying outside Trevra.
+- [ ] Verify live Trevra acceptance, then remove the legacy SendPulse fallback.
+- [ ] Remove notification-email-as-record fallback after live Trevra operator handling is verified.
 
 ## 28. Required tests
 
 ### Tenant routing
 
-- [ ] Source A always writes into workspace A.
-- [ ] Body `workspaceId` is rejected/ignored and cannot redirect a request.
-- [ ] Source A cannot link to a Person/Account from workspace B.
-- [ ] Disabling a source immediately stops new captures.
+- [x] Source A always writes into workspace A.
+- [x] Body `workspaceId` is rejected and cannot redirect a request.
+- [x] Source A cannot link to a Person/Account from workspace B.
+- [x] Disabling a source immediately stops new captures.
 
 ### Authentication/replay
 
-- [ ] Correct HMAC succeeds.
-- [ ] Bad HMAC fails.
-- [ ] Stale timestamp fails.
-- [ ] Active secret works during rotation.
-- [ ] Previous secret works only during configured overlap.
-- [ ] Revoked/expired previous secret fails.
+- [x] Correct HMAC succeeds.
+- [x] Bad HMAC fails.
+- [x] Stale timestamp fails.
+- [x] Active secret works during rotation.
+- [x] Previous secret works only during configured overlap.
+- [x] Expired previous secret fails.
 
 ### Idempotency
 
-- [ ] First delivery creates one submission.
-- [ ] Exact retry creates no duplicate.
-- [ ] Same key/different body returns `409`.
-- [ ] Concurrent identical deliveries create exactly one submission.
+- [x] First delivery creates one submission.
+- [x] Exact retry creates no duplicate.
+- [x] Same key/different body returns `409`.
+- [x] Concurrent identical deliveries create exactly one submission.
 
 ### Person behavior
 
-- [ ] New email creates a Person without requiring an Account.
-- [ ] Same normalized email matches the same workspace Person.
-- [ ] Same email in another workspace creates/uses a different Person.
-- [ ] Explicit source external ID matches deterministically.
-- [ ] Fuzzy names never auto-merge.
-- [ ] Conflicting source field does not overwrite operator-owned canonical value.
-- [ ] Explicit company domain may link an Account but is optional.
-- [ ] Email domain alone never creates an Account.
+- [x] New email creates a Person without requiring an Account.
+- [x] Same normalized email matches the same workspace Person.
+- [x] Same email in another workspace creates/uses a different Person.
+- [x] Explicit source external ID matches deterministically.
+- [x] Name alone never creates or fuzzy-merges a Person.
+- [x] Conflicting source field does not overwrite canonical non-empty value.
+- [x] Explicit company domain may link an Account but is optional.
+- [x] Email domain alone never creates an Account.
 
 ### Payload safety
 
-- [ ] Oversized body rejected before expensive work.
-- [ ] Deep/unbounded custom properties rejected.
-- [ ] Reserved property keys cannot mutate system state.
-- [ ] Honeypot/internal transport data is not persisted by Trevra.
-- [ ] Message/body content never enters analytics events.
+- [x] Oversized body is rejected before application work with `413`.
+- [x] Deep/unbounded custom properties are rejected.
+- [x] Reserved-looking property keys cannot mutate workspace/system state.
+- [x] Unknown honeypot/internal transport fields are rejected by the strict canonical schema.
+- [x] Message/body content never enters health or GTM event payloads.
 
 ### Beseam adapter
 
-- [ ] Existing contact form maps into a Person + Inbound Submission.
-- [ ] Store-review form may additionally resolve explicit company domain.
-- [ ] Worker retry reuses one idempotency key.
-- [ ] `/api/answer-check` is unaffected.
-- [ ] `/api/product-image` is unaffected.
-- [ ] SendPulse outage is irrelevant once Trevra is canonical.
+- [ ] Live contact form creates a Person + Inbound Submission in the Beseam Trevra workspace.
+- [ ] Live store-review form may additionally resolve explicit company domain.
+- [x] Browser retries of the same unchanged form submission and Worker transient retries reuse one idempotency key; Worker retries also reuse the exact signed body.
+- [x] `/api/answer-check` code path is untouched and the landing production build passes.
+- [x] `/api/product-image` code path is untouched and the landing production build passes.
+- [ ] SendPulse outage is irrelevant in production once Trevra credentials are provisioned and verified.
 
 ---
 

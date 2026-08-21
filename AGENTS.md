@@ -18,6 +18,21 @@ Trevra is the evidence-backed ledger and control plane for agent-operated go-to-
 - `docs/integration-contracts.md`: normalized Nango records and actions.
 - `infra/gcp`: Cloud Run, Cloud SQL, Secret Manager, and self-hosted Nango deployment material.
 
+## Client UI system
+
+- `src/client/ui/primitives.tsx` is the default entry point for ordinary form controls. Use `Button`, `Field`, `Input`, `Select`, and `Textarea` instead of inventing a new local skin for standard controls.
+- The authenticated app shell carries the shared polished-control scope. New screens must visually fit that system by default; a feature-specific stylesheet may change layout, not redefine the base appearance of text inputs, selects, textareas, or primary/secondary buttons.
+- Use the existing token layer in `src/client/styles.css` (`--t-*`). Do not introduce arbitrary hex colors, one-off radii, shadows, font sizes, or tap heights when an existing token expresses the role.
+- Standard controls are at least `--t-tap` high, keyboard focus must remain visible, labels stay attached to their controls, disabled state must be obvious, and icon-only buttons require an accessible name.
+- Buttons have semantic hierarchy: one primary action per local task, secondary for normal alternatives, ghost for low-emphasis chrome, danger only for destructive actions. Do not make every action visually primary.
+- Native `<select>` is acceptable when styled through the shared primitive. Do not build a custom combobox unless the interaction genuinely needs search, async loading, grouping, or multi-select behavior; custom widgets must preserve keyboard and screen-reader behavior.
+- Prefer progressive disclosure over dense forms. Put rare or advanced settings behind an existing details/drawer pattern instead of exposing every field at once.
+- Reuse existing structural patterns (`page-panel`, `section-heading`, `panel-footer`, `li-table`, `ConfirmDrawer`, action/choice menus) before adding another card, modal, table, or menu implementation.
+- Feature CSS should own composition (grid, spacing between sections, responsive behavior). Shared UI CSS owns the visual language of controls. If a feature stylesheet contains a full button/input/select skin, that is usually a design-system bug.
+- Avoid inline `style` for reusable presentation. Add a named class or shared primitive instead.
+- Touch and pointer targets must respect `--t-tap`; do not shrink actionable controls below it just to make a table or toolbar denser.
+- Validate UI changes in both light and dark themes and at narrow/mobile widths. Keep `prefers-reduced-motion` behavior intact when adding animation.
+
 ## Client routing
 
 - **Screens are addressed by PATH, never by hash.** `/outreach/inbox`, not `#/outreach/inbox`. `src/client/ui/route.ts` is the only router; it reads `location.pathname` and moves with `history.pushState`.

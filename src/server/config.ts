@@ -231,8 +231,6 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       INDEXNOW_KEY: z.string().optional(),
       NANGO_API_KEY: z.string().optional(),
       NANGO_WEBHOOK_SIGNING_KEY: z.string().optional(),
-      STRIPE_SECRET_KEY: z.string().optional(),
-      STRIPE_WEBHOOK_SECRET: z.string().optional(),
       // Opt-OUT for the local LinkedIn worker. Absent means on, except when this
       // SAME process is a hosted deployment with no remote browser provider,
       // where the gate below is unconditional -- see `linkedInWorkerConfig`.
@@ -452,8 +450,6 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       problems.push(
         'TREVRA_REDDIT_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted; the local Reddit worker drives a browser signed into one human account and is self-hosted only'
       );
-    if (base.STRIPE_SECRET_KEY && !base.STRIPE_WEBHOOK_SECRET)
-      problems.push('STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is configured');
     if (base.TREVRA_ORCHESTRATOR === 'temporal' && !base.TEMPORAL_ADDRESS)
       problems.push('TEMPORAL_ADDRESS is required when TREVRA_ORCHESTRATOR=temporal');
     if (

@@ -1,10 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Copy, LoaderCircle, Trash2, UserPlus } from 'lucide-react';
-import { ApiError, addTeamMember } from './api';
+import { Bot, Copy, LoaderCircle, Pause, Play, Trash2, UserPlus } from 'lucide-react';
+import {
+  ApiError,
+  addTeamMember,
+  createAgent,
+  getAgents,
+  getAgentTokens,
+  updateAgent
+} from './api';
+import type { AgentPrincipal, AgentTokenSummary } from '../shared/types';
 import { authClient, useIsWorkspaceOwner } from './auth-client';
 import { relativeTime } from './LinkedInScreen';
 import { reloadOutreach } from './LinkedInSafety';
 import { ConfirmDrawer } from './ui/dialog';
+import { Button, Field, Input, Select } from './ui/primitives';
 import type { Route } from './ui/route';
 
 /**
@@ -115,10 +124,236 @@ export function TeamSettingsView({
       />
     );
   }
-  return <TeamMembersPanel setToast={setToast} />;
+  return <TeamMembersPanel setToast={setToast} onNavigate={onNavigate} />;
 }
 
-function TeamMembersPanel({ setToast }: { setToast: (message: string) => void }) {
+function AgentTeamPanel({
+  isOwner,
+  setToast,
+  onNavigate
+}: {
+  isOwner: boolean;
+  setToast: (message: string) => void;
+  onNavigate: (path: string) => void;
+}) {
+  const [agents, setAgents] = useState<AgentPrincipal[]>([]);
+  const [tokens, setTokens] = useState<AgentTokenSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [name, setName] = useState('');
+  const [purpose, setPurpose] = useState('');
+  const [busy, setBusy] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [nextAgents, nextTokens] = await Promise.all([getAgents(), getAgentTokens()]);
+      setAgents(nextAgents);
+      setTokens(nextTokens);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to read Agents.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const create = async () => {
+    const agentName = name.trim();
+    const agentPurpose = purpose.trim();
+    if (!agentName || !agentPurpose) return;
+    setBusy('create');
+    setError('');
+    try {
+      const created = await createAgent({ name: agentName, purpose: agentPurpose });
+      setName('');
+      setPurpose('');
+      setToast(`${created.name} joined the GTM team.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to create that Agent.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const setStatus = async (agent: AgentPrincipal, status: AgentPrincipal['status']) => {
+    setBusy(agent.id);
+    setError('');
+    try {
+      const updated = await updateAgent(agent.id, { status });
+      setToast(
+        status === 'active'
+          ? `${updated.name} can accept GTM work again.`
+          : `${updated.name} is ${status}. Existing credentials can no longer act as this Agent.`
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to change that Agent.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const authorityFor = (agentId: string): string => {
+    const scopes = [
+      ...new Set(
+        tokens
+          .filter((token) => token.agentId === agentId && !token.revokedAt)
+          .flatMap((token) => token.scopes)
+      )
+    ];
+    return scopes.length ? scopes.join(', ') : 'No active credential scopes';
+  };
+
+  return (
+    <section className="page-panel" id="agent-team">
+      <div className="section-heading">
+        <div>
+          <h3>Agents</h3>
+          <p>
+            Durable GTM workers. Credentials authenticate an Agent; runs record what that Agent did.
+          </p>
+        </div>
+        {!loading && <span className="status-pill">{agents.length} on team</span>}
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+      {loading ? (
+        <p className="empty-copy">
+          <LoaderCircle className="spin" size={14} /> Reading Agents…
+        </p>
+      ) : agents.length === 0 ? (
+        <p className="empty-copy">No Agents yet.</p>
+      ) : (
+        <div className="li-table-scroll compact">
+          <table className="li-table">
+            <thead>
+              <tr>
+                <th>Agent</th>
+                <th>Purpose</th>
+                <th>Status</th>
+                <th>Capabilities</th>
+                <th>Activity</th>
+                {isOwner && <th />}
+              </tr>
+            </thead>
+            <tbody>
+              {agents.map((agent) => (
+                <tr key={agent.id}>
+                  <td>
+                    <strong>{agent.name}</strong>
+                    {agent.isDefault && <div className="empty-copy">Default</div>}
+                  </td>
+                  <td>{agent.purpose}</td>
+                  <td>{agent.status}</td>
+                  <td>
+                    <span className="empty-copy">{authorityFor(agent.id)}</span>
+                  </td>
+                  <td>
+                    <div>
+                      {agent.runCount} run{agent.runCount === 1 ? '' : 's'} ·{' '}
+                      {agent.activeTokenCount} active credential
+                      {agent.activeTokenCount === 1 ? '' : 's'}
+                    </div>
+                    <div className="empty-copy">
+                      {agent.scheduleEnabled ? 'Scheduled work on' : 'No schedule'}
+                    </div>
+                    {agent.latestRunId && (
+                      <button
+                        type="button"
+                        className="li-mini-button"
+                        onClick={() => onNavigate(`/ledger/run/${agent.latestRunId}`)}
+                      >
+                        Latest run · {agent.latestRunStatus ?? 'unknown'}
+                      </button>
+                    )}
+                  </td>
+                  {isOwner && (
+                    <td>
+                      {agent.status === 'active' ? (
+                        <button
+                          type="button"
+                          className="li-mini-button"
+                          disabled={busy === agent.id}
+                          onClick={() => void setStatus(agent, 'paused')}
+                        >
+                          {busy === agent.id ? (
+                            <LoaderCircle className="spin" size={13} />
+                          ) : (
+                            <Pause size={13} />
+                          )}{' '}
+                          Pause
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="li-mini-button"
+                          disabled={busy === agent.id}
+                          onClick={() => void setStatus(agent, 'active')}
+                        >
+                          {busy === agent.id ? (
+                            <LoaderCircle className="spin" size={13} />
+                          ) : (
+                            <Play size={13} />
+                          )}{' '}
+                          Resume
+                        </button>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {isOwner && (
+        <div className="li-filter-row" style={{ marginTop: 16 }}>
+          <Field label="Agent name">
+            <Input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="Scout"
+            />
+          </Field>
+          <Field label="Purpose">
+            <Input
+              value={purpose}
+              onChange={(event) => setPurpose(event.target.value)}
+              placeholder="Research and qualify target accounts"
+            />
+          </Field>
+          <Button
+            variant="primary"
+            disabled={busy === 'create' || !name.trim() || !purpose.trim()}
+            onClick={() => void create()}
+          >
+            {busy === 'create' ? <LoaderCircle className="spin" size={14} /> : <Bot size={14} />}
+            Add Agent
+          </Button>
+        </div>
+      )}
+      <p className="empty-copy">
+        Agents cannot approve their own consequential external actions. Workspace policy,
+        suppressions, channel limits, and provider Connections remain authoritative.
+      </p>
+    </section>
+  );
+}
+
+function TeamMembersPanel({
+  setToast,
+  onNavigate
+}: {
+  setToast: (message: string) => void;
+  onNavigate: (path: string) => void;
+}) {
   const { data: activeOrg, isPending, refetch: refetchOrg } = authClient.useActiveOrganization();
   const isOwner = useIsWorkspaceOwner();
   const { members } = useWorkspaceMembers();
@@ -243,6 +478,8 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
 
   return (
     <div className="page-stack">
+      <AgentTeamPanel isOwner={isOwner} setToast={setToast} onNavigate={onNavigate} />
+
       <section className="page-panel" id="team">
         <div className="section-heading">
           <div>
@@ -306,34 +543,31 @@ function TeamMembersPanel({ setToast }: { setToast: (message: string) => void })
           {addError && <div className="error-banner">{addError}</div>}
 
           <div className="li-filter-row">
-            <label>
-              Email
-              <input
+            <Field label="Email">
+              <Input
                 type="email"
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
                 placeholder="teammate@example.com"
               />
-            </label>
-            <label>
-              Role
-              <select
+            </Field>
+            <Field label="Role">
+              <Select
                 value={role}
                 onChange={(event) => setRole(event.target.value as 'owner' | 'member')}
               >
                 <option value="member">Member</option>
                 <option value="owner">Owner</option>
-              </select>
-            </label>
-            <button
-              className="primary-button"
-              type="button"
+              </Select>
+            </Field>
+            <Button
+              variant="primary"
               disabled={addBusy || !email.trim()}
               onClick={() => void addTeammate()}
             >
-              {addBusy ? <LoaderCircle className="spin" size={14} /> : <UserPlus size={14} />} Add
-              teammate
-            </button>
+              {addBusy ? <LoaderCircle className="spin" size={14} /> : <UserPlus size={14} />}
+              Add teammate
+            </Button>
           </div>
         </section>
       )}

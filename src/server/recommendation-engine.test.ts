@@ -22,7 +22,7 @@ describe('GTM recommendation engine on PostgreSQL', () => {
     expect(recommendations).toHaveLength(1);
     expect(recommendations[0]).toMatchObject({
       type: 'stale_proposal',
-      clientName: 'Orbit Health',
+      personName: 'Jonas Keller',
       status: 'ready'
     });
     expect(recommendations[0].evidence.length).toBeGreaterThan(0);
@@ -40,57 +40,57 @@ describe('GTM recommendation engine on PostgreSQL', () => {
 describe('workspace attribution on GTM recommendation evidence', () => {
   const created: string[] = [];
 
-  async function seedTenant(label: string): Promise<{ workspaceId: string; clientId: string }> {
+  async function seedTenant(label: string): Promise<{ workspaceId: string; personId: string }> {
     const now = new Date().toISOString();
     const workspaceId = id('ws');
-    const clientId = id('cl');
+    const personId = id('con');
     created.push(workspaceId);
     await db
       .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
       .run(workspaceId, label, now);
     await db
       .prepare(
-        'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
+        'INSERT INTO contacts (id,workspace_id,name,email,email_normalized,created_at,updated_at) VALUES (?,?,?,?,?,?,?)'
       )
       .run(
-        clientId,
+        personId,
         workspaceId,
-        `${label} account`,
         'Contact Person',
-        `${clientId}@example.test`,
-        'prospect',
+        `${personId}@example.test`,
+        `${personId}@example.test`,
         now,
         now
       );
-    return { workspaceId, clientId };
+    return { workspaceId, personId };
   }
 
-  async function seedStaleOpportunity(workspaceId: string, clientId: string): Promise<string> {
+  async function seedStaleOpportunity(workspaceId: string, personId: string): Promise<string> {
     const now = Date.now();
     const iso = (daysAgo: number) => new Date(now - daysAgo * 86_400_000).toISOString();
     const opportunityId = id('opp');
     await db
       .prepare(
-        'INSERT INTO opportunities (id,workspace_id,client_id,title,status,proposal_sent_at,expected_response_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
+        'INSERT INTO opportunities (id,workspace_id,person_id,title,stage,proposal_sent_at,expected_response_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)'
       )
       .run(
         opportunityId,
         workspaceId,
-        clientId,
+        personId,
         'GTM opportunity',
-        'proposal_sent',
+        'proposal',
         iso(8),
         iso(3),
-        iso(10)
+        iso(10),
+        iso(8)
       );
     await db
       .prepare(
-        'INSERT INTO messages (id,workspace_id,client_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
+        'INSERT INTO messages (id,workspace_id,person_id,direction,subject,body,occurred_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
       )
       .run(
         id('msg'),
         workspaceId,
-        clientId,
+        personId,
         'outbound',
         'Proposal',
         'Following up on our GTM discussion.',
@@ -108,7 +108,7 @@ describe('workspace attribution on GTM recommendation evidence', () => {
 
   it('stamps the recommendation workspace on evidence, proof pack, and proof items', async () => {
     const tenant = await seedTenant('Attribution tenant');
-    await seedStaleOpportunity(tenant.workspaceId, tenant.clientId);
+    await seedStaleOpportunity(tenant.workspaceId, tenant.personId);
     await runRecommendationEngine(db, tenant.workspaceId);
 
     const evidence = await db
@@ -152,8 +152,8 @@ describe('workspace attribution on GTM recommendation evidence', () => {
   it('does not surface another workspace opportunity', async () => {
     const first = await seedTenant('First tenant');
     const second = await seedTenant('Second tenant');
-    const firstOpp = await seedStaleOpportunity(first.workspaceId, first.clientId);
-    const secondOpp = await seedStaleOpportunity(second.workspaceId, second.clientId);
+    const firstOpp = await seedStaleOpportunity(first.workspaceId, first.personId);
+    const secondOpp = await seedStaleOpportunity(second.workspaceId, second.personId);
 
     await runRecommendationEngine(db, first.workspaceId);
     const keys = await db

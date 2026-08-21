@@ -512,6 +512,13 @@ export interface LocalWorkerStore {
     now: Date,
     exclude?: readonly string[]
   ): Promise<DueLinkedInAction | null>;
+  /**
+   * Re-check a claimed managed-campaign action at the last possible moment.
+   * `defer` is reversible state (campaign/member pause); `retire` means the
+   * member replied/ended or moved to another workflow node, so this queued row
+   * must never execute later.
+   */
+  actionExecutionState(action: DueLinkedInAction): Promise<'execute' | 'defer' | 'retire'>;
   /** Nothing was sent: put the action back in the queue, recording why. */
   releaseClaim(actionId: string, failureKind: LinkedInFailureKind | null): Promise<void>;
   /**
@@ -1264,6 +1271,28 @@ export async function runLinkedInLocalBatch(
     // and still runs.
     await arriveFromSource(store, deps.page, action.targetRef, `${batchId}:${action.id}`);
 
+    // A reply/pause/branch can land after the SQL claim, during the action gap,
+    // during safety evaluation, or even while the source page is being opened.
+    // Re-read the authoritative campaign/member cursor NOW, immediately before
+    // the driver can create an external side effect.
+    const executionState = await store.actionExecutionState(action);
+    if (executionState === 'defer') {
+      await store.releaseClaim(action.id, null);
+      deferred.push(action.id);
+      result.branchPending += 1;
+      log(`LinkedIn local worker deferred stale claim ${action.id}: campaign/member is paused.`);
+      continue;
+    }
+    if (executionState === 'retire') {
+      await store.settleBranchSkipped(
+        action.id,
+        'The campaign member replied, ended, or moved to another workflow node before execution.',
+        now()
+      );
+      result.branchSkipped += 1;
+      continue;
+    }
+
     // One seed per (batch, action), the same string the inter-action gap is
     // drawn from, so the whole of a batch's timing -- between actions and
     // within one -- is reproducible from two ids in the ledger.
@@ -1912,6 +1941,13 @@ export function postgresLocalWorkerStore(
                   AND m.id=linkedin_actions.campaign_member_id
                   AND c.status='running'
                   AND m.status IN ('active','waiting')
+                  AND m.current_step_id=linkedin_actions.workflow_step_id
+                  AND NOT EXISTS (
+                    SELECT 1 FROM linkedin_actions r
+                    WHERE r.workspace_id=linkedin_actions.workspace_id
+                      AND r.campaign_member_id=linkedin_actions.campaign_member_id
+                      AND r.status='replied'
+                  )
               )
             )
             -- Rows this pass already deferred on a branch that has no answer
@@ -2002,6 +2038,40 @@ export function postgresLocalWorkerStore(
             : null;
         })()
       };
+    },
+
+    async actionExecutionState(action) {
+      const row = await db
+        .prepare(
+          `SELECT a.campaign_member_id,a.workflow_step_id,c.status AS campaign_status,
+                  m.status AS member_status,m.current_step_id,
+                  EXISTS (
+                    SELECT 1 FROM linkedin_actions r
+                    WHERE r.workspace_id=a.workspace_id AND r.campaign_member_id=a.campaign_member_id
+                      AND r.status='replied'
+                  ) AS has_reply
+           FROM linkedin_actions a
+           LEFT JOIN linkedin_campaign_members m
+             ON m.workspace_id=a.workspace_id AND m.id=a.campaign_member_id
+           LEFT JOIN linkedin_campaigns c
+             ON c.workspace_id=a.workspace_id AND c.id=m.campaign_id
+           WHERE a.workspace_id=? AND a.id=? AND a.seat_key=?`
+        )
+        .get<{
+          campaign_member_id: string | null;
+          workflow_step_id: string | null;
+          campaign_status: string | null;
+          member_status: string | null;
+          current_step_id: string | null;
+          has_reply: boolean;
+        }>(workspaceId, action.id, seatKey);
+      if (!row) return 'retire';
+      if (!row.campaign_member_id) return 'execute';
+      if (row.campaign_status !== 'running' || row.member_status === 'paused') return 'defer';
+      if (row.has_reply) return 'retire';
+      if (!['active', 'waiting'].includes(row.member_status ?? '')) return 'retire';
+      if (!row.workflow_step_id || row.current_step_id !== row.workflow_step_id) return 'retire';
+      return 'execute';
     },
 
     async hasUnacceptedInvite(action) {

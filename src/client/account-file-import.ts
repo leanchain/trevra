@@ -6,10 +6,19 @@ export interface AccountImportFileLike {
   text(): Promise<string>;
 }
 
+export interface PreparedPersonEvidence {
+  name?: string;
+  email?: string;
+  phone?: string;
+  role?: string;
+  sourceField: string;
+}
+
 export interface PreparedContactEvidence {
   names: string[];
   emails: string[];
   phones: string[];
+  people: PreparedPersonEvidence[];
 }
 
 export interface PreparedAccountRow {
@@ -131,6 +140,44 @@ export function reviewDomainKey(raw: string): string | null {
   }
 }
 
+function explicitPeopleFrom(record: Record<string, unknown>): PreparedPersonEvidence[] {
+  const people: PreparedPersonEvidence[] = [];
+  const contacts = record.contacts;
+  if (Array.isArray(contacts)) {
+    contacts.forEach((entry, index) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+      const contact = entry as Record<string, unknown>;
+      const name = pickString(contact, ['name', 'full_name', 'fullName']);
+      const email = pickString(contact, ['email', 'email_address', 'emailAddress']);
+      const phone = pickString(contact, ['phone', 'phone_number', 'phoneNumber']);
+      const role = pickString(contact, ['role', 'title', 'job_title', 'jobTitle']);
+      if (!email && !phone) return;
+      people.push({
+        ...(name ? { name: name.value } : {}),
+        ...(email ? { email: email.value } : {}),
+        ...(phone ? { phone: phone.value } : {}),
+        ...(role ? { role: role.value } : {}),
+        sourceField: `contacts[${index}]`
+      });
+    });
+  }
+
+  const singularEmail = pickString(record, ['email', 'contact_email', 'contactEmail']);
+  const singularPhone = pickString(record, ['phone', 'phone_number', 'phoneNumber']);
+  const singularName = pickString(record, ['contact_name', 'contactName']);
+  const singularRole = pickString(record, ['contact_role', 'contactRole']);
+  if (singularEmail || singularPhone) {
+    people.push({
+      ...(singularName ? { name: singularName.value } : {}),
+      ...(singularEmail ? { email: singularEmail.value } : {}),
+      ...(singularPhone ? { phone: singularPhone.value } : {}),
+      ...(singularRole ? { role: singularRole.value } : {}),
+      sourceField: singularEmail?.field ?? singularPhone?.field ?? 'contact'
+    });
+  }
+  return people;
+}
+
 function compactRow(value: unknown, sourcePath: string, index: number): PreparedAccountRow | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
@@ -163,9 +210,10 @@ function compactRow(value: unknown, sourcePath: string, index: number): Prepared
       ...(tagResult.field ? { tags: tagResult.field } : {})
     },
     contactEvidence: {
-      names: stringsFrom(record, ['contact_names', 'contactNames', 'contacts']),
+      names: stringsFrom(record, ['contact_names', 'contactNames']),
       emails: stringsFrom(record, ['emails', 'contact_emails', 'contactEmails', 'email']),
-      phones: stringsFrom(record, ['phones', 'phone_numbers', 'phoneNumbers', 'phone'])
+      phones: stringsFrom(record, ['phones', 'phone_numbers', 'phoneNumbers', 'phone']),
+      people: explicitPeopleFrom(record)
     },
     issues: key ? [] : ['Domain could not be recognized as a public company domain.']
   };
@@ -236,6 +284,62 @@ export function reviewPreparedRows(rows: readonly PreparedAccountRow[]): Prepare
     }
     firstByDomain.set(key, row.id);
     return { ...row, issues: [] };
+  });
+}
+
+export interface PreparedImportedPerson {
+  accountDomain: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  role?: string;
+  sourcePath: string;
+}
+
+function normalizedExplicitPhone(value: string): string | null {
+  const trimmed = value.trim();
+  return /^\+[1-9]\d{7,14}$/.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * Convert reviewed contact evidence into Person writes without guessing which
+ * parallel name/email/phone arrays belong together. Structured contact objects
+ * keep their pairing; flat identities are persisted independently.
+ */
+export function collectPreparedPeople(
+  rows: readonly PreparedAccountRow[]
+): PreparedImportedPerson[] {
+  const people: PreparedImportedPerson[] = [];
+  for (const row of rows) {
+    if (!row.included) continue;
+    for (const person of row.contactEvidence.people) {
+      const phone = person.phone ? normalizedExplicitPhone(person.phone) : null;
+      if (!person.email?.trim() && !phone) continue;
+      people.push({
+        accountDomain: row.domain,
+        ...(person.name?.trim() ? { name: person.name.trim() } : {}),
+        ...(person.email?.trim() ? { email: person.email.trim() } : {}),
+        ...(phone ? { phone } : {}),
+        ...(person.role?.trim() ? { role: person.role.trim() } : {}),
+        sourcePath: `${row.sourcePath}#${person.sourceField}`
+      });
+    }
+    for (const email of row.contactEvidence.emails) {
+      if (!email.trim()) continue;
+      people.push({ accountDomain: row.domain, email: email.trim(), sourcePath: row.sourcePath });
+    }
+    for (const rawPhone of row.contactEvidence.phones) {
+      const phone = normalizedExplicitPhone(rawPhone);
+      if (!phone) continue;
+      people.push({ accountDomain: row.domain, phone, sourcePath: row.sourcePath });
+    }
+  }
+  const seen = new Set<string>();
+  return people.filter((person) => {
+    const key = `${reviewDomainKey(person.accountDomain) ?? person.accountDomain}|${person.email?.toLowerCase() ?? ''}|${person.phone ?? ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 

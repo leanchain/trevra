@@ -682,6 +682,8 @@ export async function createManagedCampaign(
     schedule?: Partial<CampaignSchedule>;
     inmailCreditCap?: number | null;
     enrichmentCreditCap?: number | null;
+    /** Narrow intent-preparation correlation; never controls campaign execution. */
+    preparationId?: string | null;
   },
   now: Date = new Date()
 ): Promise<{
@@ -735,9 +737,9 @@ export async function createManagedCampaign(
       INSERT INTO linkedin_campaigns (
         id,workspace_id,owner_user_id,name,status,sequence_json,playbook_run_id,seat_key,sender_keys_json,mailbox_assignments_json,lead_list_id,workflow_id,
         priority,admission_policy_json,exclusion_policy_json,scheduled_start_at,scheduled_end_at,schedule_days_json,
-        schedule_start_minute,schedule_end_minute,end_behavior,inmail_credit_cap,enrichment_credit_cap,created_at,updated_at
+        schedule_start_minute,schedule_end_minute,end_behavior,inmail_credit_cap,enrichment_credit_cap,preparation_id,created_at,updated_at
       )
-      VALUES (?,?,?,?,'draft',?::jsonb,NULL,?,?::jsonb,?::jsonb,?,?,?,?::jsonb,?::jsonb,?,?,?::jsonb,?,?,?,?, ?,?,?)
+      VALUES (?,?,?,?,'draft',?::jsonb,NULL,?,?::jsonb,?::jsonb,?,?,?,?::jsonb,?::jsonb,?,?,?::jsonb,?,?,?,?,?,?,?,?)
     `
       )
       .run(
@@ -767,6 +769,7 @@ export async function createManagedCampaign(
         input.schedule?.endBehavior ?? 'finish_waves',
         input.inmailCreditCap ?? null,
         input.enrichmentCreditCap ?? null,
+        input.preparationId ?? null,
         timestamp,
         timestamp
       );
@@ -879,6 +882,18 @@ export async function reevaluateCampaignExclusions(
     .prepare(
       `SELECT m.id,m.status,m.exclusion_reason,c.email,c.company,c.profile_url,c.do_not_contact,
               EXISTS (
+                SELECT 1 FROM suppressions s
+                WHERE s.workspace_id=m.workspace_id AND s.lifted_at IS NULL
+                  AND s.channel IN ('all','linkedin')
+                  AND (
+                    (s.person_id IS NOT NULL AND s.person_id=c.person_id)
+                    OR (s.email_normalized IS NOT NULL AND c.email IS NOT NULL
+                        AND s.email_normalized=LOWER(BTRIM(c.email)))
+                    OR (s.linkedin_url IS NOT NULL AND pk.profile_key IS NOT NULL
+                        AND LOWER(RTRIM(SPLIT_PART(SPLIT_PART(s.linkedin_url, chr(63),1),'#',1),'/'))=pk.profile_key)
+                  )
+              ) AS global_suppression,
+              EXISTS (
                 SELECT 1 FROM linkedin_campaign_members other
                 WHERE other.workspace_id=m.workspace_id AND other.contact_id=m.contact_id
                   AND other.campaign_id<>m.campaign_id
@@ -940,6 +955,7 @@ export async function reevaluateCampaignExclusions(
       company: string;
       profile_url: string | null;
       do_not_contact: boolean;
+      global_suppression: boolean;
       other_live: boolean;
       existing_conversation: boolean;
       recent_contact: boolean;
@@ -966,7 +982,11 @@ export async function reevaluateCampaignExclusions(
     )
       continue;
     let reason: string | null = null;
-    if (policy.excludeDoNotContact !== false && row.do_not_contact) reason = 'Do not contact';
+    // Global suppression is a workspace authority boundary. Campaign policy may
+    // relax local eligibility heuristics, but it cannot opt a suppressed Person
+    // back into outreach.
+    if (row.global_suppression) reason = 'Workspace suppression';
+    else if (policy.excludeDoNotContact !== false && row.do_not_contact) reason = 'Do not contact';
     else if (policy.excludeMissingProfile !== false && !row.profile_url?.trim())
       reason = 'Missing LinkedIn profile URL';
     else if (companies.has(row.company.trim().toLowerCase())) reason = 'Suppressed company';
@@ -1694,6 +1714,10 @@ export interface SeatWorkRelease {
   actionsSkipped: number;
   /** Pending manual tasks moved to 'cancelled'. */
   tasksCancelled: number;
+  /** Unstarted API-backed channel actions retired with the disconnected sender. */
+  channelActionsSkipped: number;
+  /** Provider actions already claimed when the sender was disconnected. */
+  channelActionsInFlight: number;
   /**
    * Rows a worker had already claimed and this call deliberately did not
    * touch. Zero in every ordinary case; non-zero means a batch was in flight
@@ -1726,6 +1750,33 @@ export async function releaseSeatWork(
     `
       )
       .run(timestamp, workspaceId, seatKey);
+    const channelActions = await tx
+      .prepare(
+        `
+      UPDATE linkedin_campaign_channel_actions AS a
+      SET status='skipped',claimed_at=NULL,updated_at=?::timestamptz
+      WHERE a.workspace_id=?
+        AND (a.status='planned' OR (a.status='failed' AND a.outcome_known=TRUE))
+        AND EXISTS (
+          SELECT 1 FROM linkedin_campaign_members m
+          WHERE m.workspace_id=a.workspace_id AND m.id=a.member_id AND m.assigned_seat_key=?
+        )
+    `
+      )
+      .run(timestamp, workspaceId, seatKey);
+    const channelInFlight = await tx
+      .prepare(
+        `
+      SELECT COUNT(*)::int AS total
+      FROM linkedin_campaign_channel_actions a
+      WHERE a.workspace_id=? AND a.status='claimed'
+        AND EXISTS (
+          SELECT 1 FROM linkedin_campaign_members m
+          WHERE m.workspace_id=a.workspace_id AND m.id=a.member_id AND m.assigned_seat_key=?
+        )
+    `
+      )
+      .get<{ total: number }>(workspaceId, seatKey);
     // Counted AFTER the skip, so it is exactly the set the skip refused to
     // touch rather than a number that includes rows this call has just cleared.
     const inFlight = await tx
@@ -1740,6 +1791,8 @@ export async function releaseSeatWork(
       seatKey,
       actionsSkipped: actions.changes,
       tasksCancelled: tasks.changes,
+      channelActionsSkipped: channelActions.changes,
+      channelActionsInFlight: Number(channelInFlight?.total ?? 0),
       actionsInFlight: Number(inFlight?.total ?? 0)
     };
   });

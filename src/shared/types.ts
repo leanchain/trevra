@@ -25,8 +25,8 @@ export interface Recommendation {
   type: RecommendationType;
   title: string;
   summary: string;
-  clientId: string;
-  clientName: string;
+  personId: string;
+  personName: string;
   confidence: number;
   urgency: number;
   priorityScore: number;
@@ -41,16 +41,6 @@ export interface Recommendation {
 
 export interface DashboardMetrics {
   connectedSources: number;
-}
-
-export interface ClientSummary {
-  id: string;
-  name: string;
-  contactName: string;
-  email: string;
-  status: string;
-  lastInteractionAt: string;
-  nextAction?: string | null;
 }
 
 export interface ConnectionSummary {
@@ -231,8 +221,30 @@ export interface InstalledCommunityModule {
   publisher: { id: string; slug: string; keyFingerprint: string; verified: boolean };
 }
 
+export type AgentStatus = 'active' | 'paused' | 'disabled';
+
+export interface AgentPrincipal {
+  id: string;
+  workspaceId: string;
+  name: string;
+  purpose: string;
+  status: AgentStatus;
+  isDefault: boolean;
+  createdByUserId: string | null;
+  activeTokenCount: number;
+  runCount: number;
+  latestRunId: string | null;
+  latestRunStatus: string | null;
+  latestRunAt: string | null;
+  scheduleEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AgentTokenSummary {
   id: string;
+  agentId: string;
+  agentName: string;
   name: string;
   prefix: string;
   scopes: AgentScope[];
@@ -240,6 +252,30 @@ export interface AgentTokenSummary {
   expiresAt: string | null;
   revokedAt: string | null;
   createdAt: string;
+}
+
+export type OpportunityStage = 'new' | 'qualified' | 'meeting' | 'proposal' | 'won' | 'lost';
+export type OpportunityOwnerType = 'user' | 'agent' | 'system';
+export interface OpportunityRecord {
+  id: string;
+  workspaceId: string;
+  personId: string | null;
+  personName: string | null;
+  personEmail: string | null;
+  accountId: string | null;
+  accountName: string | null;
+  title: string;
+  stage: OpportunityStage;
+  ownerType: OpportunityOwnerType | null;
+  ownerId: string | null;
+  ownerName: string | null;
+  nextAction: string | null;
+  nextActionAt: string | null;
+  proposalSentAt: string | null;
+  expectedResponseAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  closedAt: string | null;
 }
 
 export interface PreparedAction {
@@ -278,6 +314,7 @@ export interface AgentRunStep {
 export interface AgentRunSummary {
   id: string;
   workspaceId?: string;
+  agentId: string;
   trigger: 'manual' | 'schedule';
   status: AgentRunStatus;
   goal: string;
@@ -336,6 +373,7 @@ export interface AgentBudget {
 }
 
 export interface AgentSchedule {
+  agentId: string;
   enabled: boolean;
   goal: string;
   intervalMinutes: number;
@@ -398,9 +436,4 @@ export interface SkillRun {
   startedAt: string;
   finishedAt: string;
   durationMs: number;
-}
-
-export interface ClientDetail {
-  client: Record<string, unknown>;
-  messages: Array<Record<string, unknown>>;
 }

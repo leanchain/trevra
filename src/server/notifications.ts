@@ -103,14 +103,7 @@ export async function notifyActionFailure(
   const name = await workspaceName(db, input.workspaceId);
   const reviewUrl = appBaseUrl();
   const reason = safeOperationalReason(input.error);
-  const label =
-    input.actionType === 'email_draft'
-      ? 'Send email'
-      : input.actionType === 'invoice_draft'
-        ? 'Create invoice'
-        : input.actionType === 'change_order_draft'
-          ? 'Create change order'
-          : input.actionType;
+  const label = input.actionType === 'email_draft' ? 'Send email' : input.actionType;
 
   await deliverOwners(owners, (owner) =>
     sendActionFailureEmail({

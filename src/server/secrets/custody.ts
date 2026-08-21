@@ -153,6 +153,12 @@ const SEAT_PROXY_ROWS = `
   WHERE (?::text IS NULL OR workspace_id = ?::text)
   ORDER BY workspace_id, seat_key
 `;
+const CAPTURE_SOURCE_SECRET_ROWS = `
+  SELECT id, workspace_id, capture_source_id AS seat_key, slot AS kind, key_version, key_id
+  FROM capture_source_secrets
+  WHERE (?::text IS NULL OR workspace_id = ?::text)
+  ORDER BY workspace_id, capture_source_id, slot
+`;
 
 /**
  * WHICH ROWS ARE STILL ON THE OLD KEY -- the question the rotation runbook
@@ -170,7 +176,13 @@ export async function secretsCustodyReport(
 ): Promise<SecretsCustodyReport> {
   const ids = configuredKeyIds(env);
   const rows = await loadCustodyRows(db, options.workspaceId);
-  const counts: Record<SecretCustody, number> = { current: 0, previous: 0, legacy: 0, unknown: 0, unsealed: 0 };
+  const counts: Record<SecretCustody, number> = {
+    current: 0,
+    previous: 0,
+    legacy: 0,
+    unknown: 0,
+    unsealed: 0
+  };
   const outstanding: SecretCustodyRow[] = [];
 
   for (const row of rows) {
@@ -200,7 +212,8 @@ export async function secretsCustodyReport(
     unreadable: counts.unknown,
     // 'unsealed' rows are counted too: with no key configured, "complete"
     // would be a lie about a deployment that cannot open anything.
-    complete: ids.current !== null && pending === 0 && counts.unknown === 0 && counts.unsealed === 0,
+    complete:
+      ids.current !== null && pending === 0 && counts.unknown === 0 && counts.unsealed === 0,
     outstanding
   };
 }
@@ -288,8 +301,9 @@ function custodyRefusal(
   // Password/email custody is gated by per-workspace hosted execution. A proxy
   // credential is different: the hosted runner must be able to use and rotate
   // it, and it is stored in its own sealed table precisely for that purpose.
-  const isLinkedInCredential = row.store === 'linkedin_seat_credentials'
-    || (row.store === 'workspace_secrets' && row.kind.startsWith('linkedin.'));
+  const isLinkedInCredential =
+    row.store === 'linkedin_seat_credentials' ||
+    (row.store === 'workspace_secrets' && row.kind.startsWith('linkedin.'));
   if (isLinkedInCredential && hosted.linkedInHosted) {
     return 'This deployment is hosted, so it will not open a LinkedIn credential -- not even to re-encrypt it.';
   }
@@ -306,35 +320,82 @@ function contextFor(row: CustodyRowData): SecretContext {
   if (row.store === 'linkedin_seat_proxy_secrets') {
     return seatProxySecretContext(row.workspace_id, row.seat_key);
   }
-  return seatCredentialContext(row.workspace_id, row.seat_key, row.kind as 'linkedin.email' | 'linkedin.password');
+  if (row.store === 'capture_source_secrets') {
+    return {
+      store: 'capture_source_secrets',
+      workspaceId: row.workspace_id,
+      seatKey: row.seat_key,
+      kind: row.kind
+    };
+  }
+  return seatCredentialContext(
+    row.workspace_id,
+    row.seat_key,
+    row.kind as 'linkedin.email' | 'linkedin.password'
+  );
 }
 
 async function loadCustodyRows(db: Db, workspaceId?: string): Promise<CustodyRowData[]> {
   const scope = workspaceId ?? null;
-  const [workspaceRows, seatRows, proxyRows] = await Promise.all([
+  const [workspaceRows, seatRows, proxyRows, captureRows] = await Promise.all([
     db.prepare(WORKSPACE_SECRET_ROWS).all<{
-      id: string; workspace_id: string; kind: string; key_version: number; key_id: string | null;
+      id: string;
+      workspace_id: string;
+      kind: string;
+      key_version: number;
+      key_id: string | null;
     }>(scope, scope),
     db.prepare(SEAT_CREDENTIAL_ROWS).all<{
-      id: string; workspace_id: string; seat_key: string; kind: string; key_version: number; key_id: string | null;
+      id: string;
+      workspace_id: string;
+      seat_key: string;
+      kind: string;
+      key_version: number;
+      key_id: string | null;
     }>(scope, scope),
     db.prepare(SEAT_PROXY_ROWS).all<{
-      id: string; workspace_id: string; seat_key: string; kind: string; key_version: number; key_id: string | null;
+      id: string;
+      workspace_id: string;
+      seat_key: string;
+      kind: string;
+      key_version: number;
+      key_id: string | null;
+    }>(scope, scope),
+    db.prepare(CAPTURE_SOURCE_SECRET_ROWS).all<{
+      id: string;
+      workspace_id: string;
+      seat_key: string;
+      kind: string;
+      key_version: number;
+      key_id: string | null;
     }>(scope, scope)
   ]);
   return [
     // `workspace_secrets` rows are the owner seat by definition -- see
     // `store.ts` `workspaceSecretContext` and migration 049.
-    ...workspaceRows.map((row) => ({ store: 'workspace_secrets' as const, ...row, seat_key: OWNER_SEAT_COMPONENT })),
+    ...workspaceRows.map((row) => ({
+      store: 'workspace_secrets' as const,
+      ...row,
+      seat_key: OWNER_SEAT_COMPONENT
+    })),
     ...seatRows.map((row) => ({ store: 'linkedin_seat_credentials' as const, ...row })),
-    ...proxyRows.map((row) => ({ store: 'linkedin_seat_proxy_secrets' as const, ...row }))
+    ...proxyRows.map((row) => ({ store: 'linkedin_seat_proxy_secrets' as const, ...row })),
+    ...captureRows.map((row) => ({ store: 'capture_source_secrets' as const, ...row }))
   ];
 }
 
 async function readSealed(db: Db, row: CustodyRowData) {
   const stored = await db
-    .prepare(`SELECT ciphertext, iv, auth_tag, key_version, key_id FROM ${table(row.store)} WHERE id=?`)
-    .get<{ ciphertext: Buffer; iv: Buffer; auth_tag: Buffer; key_version: number; key_id: string | null }>(row.id);
+    .prepare(
+      `SELECT ciphertext, iv, auth_tag, key_version, key_id FROM ${table(row.store)} WHERE id=?`
+    )
+    .get<{
+      ciphertext: Buffer;
+      iv: Buffer;
+      auth_tag: Buffer;
+      key_version: number;
+      key_id: string | null;
+    }>(row.id);
   if (!stored) return null;
   return {
     ciphertext: stored.ciphertext,
@@ -348,12 +409,20 @@ async function readSealed(db: Db, row: CustodyRowData) {
 async function writeSealed(
   db: Db,
   row: CustodyRowData,
-  sealed: { ciphertext: Buffer; iv: Buffer; authTag: Buffer; keyVersion: number; keyId: string | null }
+  sealed: {
+    ciphertext: Buffer;
+    iv: Buffer;
+    authTag: Buffer;
+    keyVersion: number;
+    keyId: string | null;
+  }
 ): Promise<void> {
   // `updated_at` is deliberately NOT touched: it means "when did the operator
   // last change this secret", and a maintenance pass did not.
   await db
-    .prepare(`UPDATE ${table(row.store)} SET ciphertext=?, iv=?, auth_tag=?, key_version=?, key_id=? WHERE id=?`)
+    .prepare(
+      `UPDATE ${table(row.store)} SET ciphertext=?, iv=?, auth_tag=?, key_version=?, key_id=? WHERE id=?`
+    )
     .run(sealed.ciphertext, sealed.iv, sealed.authTag, sealed.keyVersion, sealed.keyId, row.id);
 }
 
@@ -377,5 +446,6 @@ function table(store: SecretStore): string {
   if (store === 'workspace_secrets') return 'workspace_secrets';
   if (store === 'linkedin_seat_sessions') return 'linkedin_seat_sessions';
   if (store === 'linkedin_seat_proxy_secrets') return 'linkedin_seat_proxy_secrets';
+  if (store === 'capture_source_secrets') return 'capture_source_secrets';
   return 'linkedin_seat_credentials';
 }

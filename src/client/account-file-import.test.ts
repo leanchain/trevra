@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  collectPreparedPeople,
   prepareAccountFiles,
   reviewDomainKey,
   serializePreparedAccountRows,
@@ -65,6 +66,42 @@ describe('prepareAccountFiles', () => {
     });
     expect(prepared.accountCount).toBe(2);
     expect(prepared.ignoredFiles).toBe(1);
+  });
+
+  it('preserves structured explicit Person evidence without guessing flat name/phone pairing', async () => {
+    const prepared = await prepareAccountFiles(
+      [
+        file(
+          'company.json',
+          JSON.stringify({
+            domain: 'acme.com',
+            contacts: [
+              { name: 'Ada Founder', email: 'ada@acme.com', role: 'Founder' },
+              { phone: '+41 44 123 45 67', title: 'Formatted evidence only' },
+              { phone: '+41441234567', title: 'Sales' }
+            ],
+            contact_names: ['Unpaired Name'],
+            phones: ['044 999 99 99']
+          })
+        )
+      ],
+      'folder'
+    );
+    expect(collectPreparedPeople(prepared.rows)).toEqual([
+      {
+        accountDomain: 'acme.com',
+        name: 'Ada Founder',
+        email: 'ada@acme.com',
+        role: 'Founder',
+        sourcePath: 'company.json#contacts[0]'
+      },
+      {
+        accountDomain: 'acme.com',
+        phone: '+41441234567',
+        role: 'Sales',
+        sourcePath: 'company.json#contacts[2]'
+      }
+    ]);
   });
 
   it('also recognizes generic company manifests and account envelopes', async () => {

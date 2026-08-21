@@ -120,13 +120,19 @@ describe('parseRoute', () => {
     expect(parseRoute('/').path).toBe('/loop');
   });
 
-  it('parses the two setup screens', () => {
+  it('parses the three setup screens', () => {
     expect(parseRoute('/setup').sub).toBe('');
     expect(parseRoute('/setup/workspace')).toEqual({
       section: 'setup',
       sub: 'workspace',
       id: null,
       path: '/setup/workspace'
+    });
+    expect(parseRoute('/setup/capture')).toEqual({
+      section: 'setup',
+      sub: 'capture',
+      id: null,
+      path: '/setup/capture'
     });
   });
 
@@ -158,6 +164,7 @@ describe('parseRoute', () => {
       path: '/outreach'
     });
     expect(parseRoute('/outreach/new')).toMatchObject({ section: 'outreach', sub: 'new' });
+    expect(parseRoute('/outreach/inbound')).toMatchObject({ section: 'outreach', sub: 'inbound' });
     expect(parseRoute('/outreach/inbox')).toMatchObject({ section: 'outreach', sub: 'inbox' });
     expect(parseRoute('/outreach/posts')).toMatchObject({ section: 'outreach', sub: 'posts' });
     expect(parseRoute('/outreach/settings')).toMatchObject({

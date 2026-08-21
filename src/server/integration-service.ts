@@ -4,13 +4,29 @@ import { z } from 'zod';
 import { notifyIntegrationNeedsReauth } from './notifications.js';
 import type { AvailableIntegration } from '../shared/types.js';
 import { id, type Db } from './db.js';
+import { resolveContact } from './lead-capture/people.js';
+import { accountForPerson, upsertPersonIdentity } from './person-identities.js';
+import { projectCanonicalMessage } from './conversations.js';
+import { assertNotSuppressed } from './suppressions.js';
+import {
+  assertEmailDeliveryCapacity,
+  claimEmailDelivery,
+  markEmailDeliveryFailure,
+  markEmailDeliverySent
+} from './email-deliveries.js';
+import {
+  classifyDeliveryFailure,
+  classifyVerifiedInboundEmail,
+  type VerifiedEmailOutcome
+} from './email-outcomes.js';
+
 const canonicalRecordSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('message'),
     id: z.string(),
-    clientName: z.string(),
-    contactName: z.string().optional(),
-    clientEmail: z.string().email().optional(),
+    accountName: z.string().optional(),
+    personName: z.string().optional(),
+    personEmail: z.string().email().optional(),
     direction: z.enum(['inbound', 'outbound']),
     subject: z.string().default(''),
     body: z.string(),
@@ -20,9 +36,9 @@ const canonicalRecordSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('opportunity'),
     id: z.string(),
-    clientName: z.string(),
-    contactName: z.string().optional(),
-    clientEmail: z.string().email().optional(),
+    accountName: z.string().optional(),
+    personName: z.string().optional(),
+    personEmail: z.string().email().optional(),
     title: z.string(),
     status: z.string(),
     proposalSentAt: z.string().datetime().optional(),
@@ -482,6 +498,13 @@ export async function executeConnectedAction(
   if (actionType !== 'email_draft') {
     throw new Error(`Unsupported connected action type: ${actionType}`);
   }
+  const recipient = String(action.recipient ?? '').trim();
+  if (!recipient) throw new Error('Email action requires recipient.');
+  // This is the last shared boundary before Gmail/Microsoft side effects. Every
+  // email path reaches this function, so a campaign, playbook, agent, or legacy
+  // recommendation cannot route around a workspace suppression.
+  await assertNotSuppressed(db, workspaceId, { channel: 'email', email: recipient });
+
   let connection = action.connection_id
     ? ((await db
         .prepare("SELECT * FROM connections WHERE id=? AND workspace_id=? AND status='connected'")
@@ -507,21 +530,74 @@ export async function executeConnectedAction(
     }
   }
   if (!connection) throw new Error('Connect Gmail or Microsoft 365 before executing this action');
-  if (Boolean(connection.is_demo)) {
-    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_SIMULATED_EXECUTION !== 'true') {
-      throw new Error('A live provider connection is required in production');
-    }
-    return { provider: 'simulation', externalRef: `sim_${id('delivery')}` };
-  }
 
   const provider = String(connection.provider);
   const providerConfigKey = String(connection.provider_config_key);
   const connectionId = String(connection.external_connection_id);
-  const nango = getNango();
   const structuredPayload = JSON.parse(String(action.structured_payload_json ?? '{}')) as Record<
     string,
     unknown
   >;
+  const idempotencyKey = String(action.payload_hash ?? '').trim();
+  if (!idempotencyKey) throw new Error('Email action requires an idempotency key.');
+  const purpose =
+    structuredPayload.deliveryPurpose === 'reply' || structuredPayload.deliveryPurpose === 'other'
+      ? structuredPayload.deliveryPurpose
+      : ('outreach' as const);
+  const sourceType =
+    typeof structuredPayload.deliverySourceType === 'string' &&
+    structuredPayload.deliverySourceType.trim()
+      ? structuredPayload.deliverySourceType.trim()
+      : 'email_action';
+  const sourceId =
+    typeof structuredPayload.deliverySourceId === 'string' &&
+    structuredPayload.deliverySourceId.trim()
+      ? structuredPayload.deliverySourceId.trim()
+      : idempotencyKey;
+  const localConnectionId = String(connection.id);
+  const claimed = await claimEmailDelivery(db, {
+    workspaceId,
+    connectionId: localConnectionId,
+    purpose,
+    recipient,
+    sourceType,
+    sourceId,
+    idempotencyKey
+  });
+  if (claimed.replayed) {
+    if (!claimed.delivery.provider || !claimed.delivery.externalRef)
+      throw new Error('Stored sent email delivery is missing its provider result.');
+    return {
+      provider: claimed.delivery.provider,
+      externalRef: claimed.delivery.externalRef
+    };
+  }
+  const deliveryId = claimed.delivery.id;
+  try {
+    await assertEmailDeliveryCapacity(db, {
+      workspaceId,
+      connectionId: localConnectionId,
+      purpose
+    });
+  } catch (error) {
+    await markEmailDeliveryFailure(db, deliveryId, error);
+    throw error;
+  }
+  if (Boolean(connection.is_demo)) {
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_SIMULATED_EXECUTION !== 'true') {
+      const error = new Error('A live provider connection is required in production');
+      await markEmailDeliveryFailure(db, deliveryId, error);
+      throw error;
+    }
+    const outcome = {
+      provider: 'simulation',
+      externalRef: `sim_${id('delivery')}`,
+      internetMessageId: `<${idempotencyKey}@trevra.app>`
+    };
+    await markEmailDeliverySent(db, deliveryId, outcome);
+    return { provider: outcome.provider, externalRef: outcome.externalRef };
+  }
+  const nango = getNango();
 
   const threadExternalRef =
     structuredPayload.threaded === true && typeof structuredPayload.threadExternalRef === 'string'
@@ -532,85 +608,381 @@ export async function executeConnectedAction(
     typeof structuredPayload.threadIdempotencyKey === 'string'
       ? structuredPayload.threadIdempotencyKey.trim()
       : '';
+  const htmlBody =
+    typeof structuredPayload.htmlBody === 'string' && structuredPayload.htmlBody.trim()
+      ? structuredPayload.htmlBody
+      : '';
 
-  if (provider === 'microsoft' || provider === 'outlook') {
+  try {
+    if (provider === 'microsoft' || provider === 'outlook') {
+      if (threadExternalRef) {
+        const replyDraft = await nango.post<{ id?: string; internetMessageId?: string }>({
+          endpoint: `/v1.0/me/messages/${encodeURIComponent(threadExternalRef)}/createReply`,
+          providerConfigKey,
+          connectionId,
+          retries: 0,
+          data: {
+            message: {
+              body: {
+                contentType: htmlBody ? 'HTML' : 'Text',
+                content: htmlBody || String(action.body)
+              }
+            }
+          }
+        });
+        const replyId = String(replyDraft.data.id ?? '').trim();
+        if (!replyId) throw new Error('Microsoft reply draft returned no message id.');
+        await nango.post({
+          endpoint: `/v1.0/me/messages/${encodeURIComponent(replyId)}/send`,
+          providerConfigKey,
+          connectionId,
+          retries: 0
+        });
+        const outcome = {
+          provider: 'microsoft',
+          externalRef: replyId,
+          internetMessageId: replyDraft.data.internetMessageId ?? null
+        };
+        await markEmailDeliverySent(db, deliveryId, outcome);
+        return { provider: outcome.provider, externalRef: outcome.externalRef };
+      }
+
+      const draft = await nango.post<{ id?: string; internetMessageId?: string }>({
+        endpoint: '/v1.0/me/messages',
+        providerConfigKey,
+        connectionId,
+        retries: 0,
+        data: {
+          subject: String(action.subject),
+          body: {
+            contentType: htmlBody ? 'HTML' : 'Text',
+            content: htmlBody || String(action.body)
+          },
+          toRecipients: [{ emailAddress: { address: String(action.recipient) } }],
+          internetMessageHeaders: [
+            { name: 'x-trevra-idempotency-key', value: String(action.payload_hash) }
+          ]
+        }
+      });
+      const draftId = String(draft.data.id ?? '').trim();
+      if (!draftId) throw new Error('Microsoft message draft returned no message id.');
+      await nango.post({
+        endpoint: `/v1.0/me/messages/${encodeURIComponent(draftId)}/send`,
+        providerConfigKey,
+        connectionId,
+        retries: 0
+      });
+      const outcome = {
+        provider: 'microsoft',
+        externalRef: draftId,
+        internetMessageId: draft.data.internetMessageId ?? null
+      };
+      await markEmailDeliverySent(db, deliveryId, outcome);
+      return { provider: outcome.provider, externalRef: outcome.externalRef };
+    }
+
+    if (!['gmail', 'google-mail'].includes(provider))
+      throw new Error(`Provider ${provider} cannot execute ${actionType}`);
+    let threadId = '';
     if (threadExternalRef) {
-      const replyDraft = await nango.post<{ id?: string }>({
-        endpoint: `/v1.0/me/messages/${encodeURIComponent(threadExternalRef)}/createReply`,
+      const previous = await nango.get<{ threadId?: string }>({
+        endpoint: `/gmail/v1/users/me/messages/${encodeURIComponent(threadExternalRef)}`,
         providerConfigKey,
         connectionId,
         retries: 3,
-        data: {
-          message: {
-            body: { contentType: 'Text', content: String(action.body) }
-          }
-        }
+        params: { format: 'minimal' }
       });
-      const replyId = String(replyDraft.data.id ?? '').trim();
-      if (!replyId) throw new Error('Microsoft reply draft returned no message id.');
-      await nango.post({
-        endpoint: `/v1.0/me/messages/${encodeURIComponent(replyId)}/send`,
-        providerConfigKey,
-        connectionId,
-        retries: 3
-      });
-      return { provider: 'microsoft', externalRef: replyId };
+      threadId = String(previous.data.threadId ?? '').trim();
+      if (!threadId) throw new Error('Gmail previous message returned no thread id.');
     }
-
-    const draft = await nango.post<{ id?: string }>({
-      endpoint: '/v1.0/me/messages',
+    const raw = createMimeMessage(
+      String(action.recipient),
+      String(action.subject),
+      String(action.body),
+      String(action.payload_hash),
+      threadIdempotencyKey || null,
+      htmlBody || null
+    );
+    const response = await nango.post<{ id?: string; threadId?: string }>({
+      endpoint: '/gmail/v1/users/me/messages/send',
       providerConfigKey,
       connectionId,
-      retries: 3,
-      data: {
-        subject: String(action.subject),
-        body: { contentType: 'Text', content: String(action.body) },
-        toRecipients: [{ emailAddress: { address: String(action.recipient) } }],
-        internetMessageHeaders: [
-          { name: 'x-trevra-idempotency-key', value: String(action.payload_hash) }
-        ]
-      }
+      retries: 0,
+      data: { raw, ...(threadId ? { threadId } : {}) }
     });
-    const draftId = String(draft.data.id ?? '').trim();
-    if (!draftId) throw new Error('Microsoft message draft returned no message id.');
-    await nango.post({
-      endpoint: `/v1.0/me/messages/${encodeURIComponent(draftId)}/send`,
-      providerConfigKey,
-      connectionId,
-      retries: 3
-    });
-    return { provider: 'microsoft', externalRef: draftId };
+    const outcome = {
+      provider: 'gmail',
+      externalRef: String(response.data.id ?? id('gmail')),
+      internetMessageId: `<${idempotencyKey}@trevra.app>`
+    };
+    await markEmailDeliverySent(db, deliveryId, outcome);
+    return { provider: outcome.provider, externalRef: outcome.externalRef };
+  } catch (error) {
+    await markEmailDeliveryFailure(db, deliveryId, error);
+    throw error;
   }
+}
 
-  if (!['gmail', 'google-mail'].includes(provider))
-    throw new Error(`Provider ${provider} cannot execute ${actionType}`);
-  let threadId = '';
-  if (threadExternalRef) {
-    const previous = await nango.get<{ threadId?: string }>({
-      endpoint: `/gmail/v1/users/me/messages/${encodeURIComponent(threadExternalRef)}`,
+export interface ConnectedEmailThreadEvent {
+  kind: VerifiedEmailOutcome;
+  providerEventId: string;
+  occurredAt?: string;
+  subject?: string;
+  sender?: string;
+  /** Present only when the provider returned verified message content. */
+  body?: string;
+}
+
+function headerValue(
+  headers: Array<{ name?: string; value?: string }> | undefined,
+  name: string
+): string {
+  return (
+    headers?.find((header) => String(header.name ?? '').toLowerCase() === name.toLowerCase())
+      ?.value ?? ''
+  );
+}
+
+function addressFromHeader(value: string): string {
+  const bracketed = value.match(/<([^>]+)>/)?.[1];
+  const raw = bracketed ?? value;
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/^mailto:/, '');
+}
+
+function bounceLike(from: string, subject: string): boolean {
+  return (
+    /(?:mailer-daemon|postmaster|mail delivery subsystem|microsoft outlook)/i.test(from) ||
+    /^(?:delivery status notification|undeliverable|delivery has failed|mail delivery failed)/i.test(
+      subject.trim()
+    )
+  );
+}
+
+interface GmailMessagePayload {
+  mimeType?: string;
+  body?: { data?: string };
+  parts?: GmailMessagePayload[];
+  headers?: Array<{ name?: string; value?: string }>;
+}
+
+function decodeBase64UrlText(value: string | undefined): string {
+  if (!value) return '';
+  try {
+    return Buffer.from(value, 'base64url').toString('utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
+function plainTextFromHtml(value: string): string {
+  return value
+    .replace(/<br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/p\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s+/g, '\n')
+    .trim();
+}
+
+function gmailPayloadText(payload: GmailMessagePayload | undefined): string {
+  if (!payload) return '';
+  if (payload.mimeType?.toLowerCase().startsWith('text/plain')) {
+    const text = decodeBase64UrlText(payload.body?.data);
+    if (text) return text;
+  }
+  for (const part of payload.parts ?? []) {
+    if (!part.mimeType?.toLowerCase().startsWith('text/plain')) continue;
+    const text = gmailPayloadText(part);
+    if (text) return text;
+  }
+  for (const part of payload.parts ?? []) {
+    const text = gmailPayloadText(part);
+    if (text) return text;
+  }
+  const raw = decodeBase64UrlText(payload.body?.data);
+  if (!raw) return '';
+  return payload.mimeType?.toLowerCase().startsWith('text/html') ? plainTextFromHtml(raw) : raw;
+}
+
+function providerBodyText(contentType: string | undefined, content: string | undefined): string {
+  const raw = content?.trim() ?? '';
+  if (!raw) return '';
+  return contentType?.toLowerCase() === 'html' ? plainTextFromHtml(raw) : raw;
+}
+/**
+ * Re-read the provider thread for one Trevra-sent campaign email.
+ *
+ * Gmail and Microsoft do not expose reliable open/click state from the mailbox API;
+ * those are recorded by Trevra's opt-in tracking endpoints. They do expose the
+ * conversation, which is the authoritative place to learn that the recipient replied.
+ * Common delivery-status messages are also recognised as bounces when they are visible
+ * in the same provider conversation. Every returned provider message id becomes the
+ * idempotency key of the campaign event, so polling is safe.
+ */
+export async function readConnectedEmailThreadEvents(
+  db: Db,
+  workspaceId: string,
+  input: {
+    localConnectionId: string;
+    externalRef: string;
+    recipient: string;
+  }
+): Promise<ConnectedEmailThreadEvent[]> {
+  const connection = (await db
+    .prepare("SELECT * FROM connections WHERE id=? AND workspace_id=? AND status='connected'")
+    .get(input.localConnectionId, workspaceId)) as Record<string, unknown> | undefined;
+  if (!connection || Boolean(connection.is_demo)) return [];
+
+  const provider = String(connection.provider);
+  const providerConfigKey = String(connection.provider_config_key);
+  const connectionId = String(connection.external_connection_id);
+  const recipient = input.recipient.trim().toLowerCase();
+  if (!recipient || !input.externalRef.trim()) return [];
+  const nango = getNango();
+
+  if (provider === 'gmail' || provider === 'google-mail') {
+    const sent = await nango.get<{ threadId?: string }>({
+      endpoint: `/gmail/v1/users/me/messages/${encodeURIComponent(input.externalRef)}`,
       providerConfigKey,
       connectionId,
       retries: 3,
       params: { format: 'minimal' }
     });
-    threadId = String(previous.data.threadId ?? '').trim();
-    if (!threadId) throw new Error('Gmail previous message returned no thread id.');
+    const threadId = String(sent.data.threadId ?? '').trim();
+    if (!threadId) return [];
+    const thread = await nango.get<{
+      messages?: Array<{
+        id?: string;
+        internalDate?: string;
+        labelIds?: string[];
+        payload?: GmailMessagePayload;
+      }>;
+    }>({
+      endpoint: `/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`,
+      providerConfigKey,
+      connectionId,
+      retries: 3,
+      params: { format: 'full' }
+    });
+    const events: ConnectedEmailThreadEvent[] = [];
+    for (const message of thread.data.messages ?? []) {
+      const messageId = String(message.id ?? '').trim();
+      if (!messageId || messageId === input.externalRef) continue;
+      const headers = message.payload?.headers;
+      const fromRaw = headerValue(headers, 'From');
+      const from = addressFromHeader(fromRaw);
+      const subject = headerValue(headers, 'Subject');
+      const occurredAt = Number.isFinite(Number(message.internalDate))
+        ? new Date(Number(message.internalDate)).toISOString()
+        : undefined;
+      const body = gmailPayloadText(message.payload) || undefined;
+      if (from === recipient) {
+        events.push({
+          kind: classifyVerifiedInboundEmail({
+            subject,
+            body,
+            autoSubmitted: headerValue(headers, 'Auto-Submitted')
+          }),
+          providerEventId: `gmail:${messageId}`,
+          occurredAt,
+          subject: subject || undefined,
+          sender: from || undefined,
+          body
+        });
+      } else if (bounceLike(fromRaw, subject)) {
+        events.push({
+          kind: classifyDeliveryFailure({ subject, body }),
+          providerEventId: `gmail:${messageId}`,
+          occurredAt,
+          subject: subject || undefined,
+          sender: from || undefined,
+          body
+        });
+      }
+    }
+    return events;
   }
-  const raw = createMimeMessage(
-    String(action.recipient),
-    String(action.subject),
-    String(action.body),
-    String(action.payload_hash),
-    threadIdempotencyKey || null
-  );
-  const response = await nango.post<{ id?: string; threadId?: string }>({
-    endpoint: '/gmail/v1/users/me/messages/send',
-    providerConfigKey,
-    connectionId,
-    retries: 3,
-    data: { raw, ...(threadId ? { threadId } : {}) }
-  });
-  return { provider: 'gmail', externalRef: String(response.data.id ?? id('gmail')) };
+
+  if (provider === 'microsoft' || provider === 'outlook') {
+    const sent = await nango.get<{ conversationId?: string }>({
+      endpoint: `/v1.0/me/messages/${encodeURIComponent(input.externalRef)}`,
+      providerConfigKey,
+      connectionId,
+      retries: 3,
+      params: { $select: 'conversationId' }
+    });
+    const conversationId = String(sent.data.conversationId ?? '').trim();
+    if (!conversationId) return [];
+    const escapedConversationId = conversationId.replaceAll("'", "''");
+    const conversation = await nango.get<{
+      value?: Array<{
+        id?: string;
+        receivedDateTime?: string;
+        subject?: string;
+        from?: { emailAddress?: { address?: string; name?: string } };
+        body?: { contentType?: string; content?: string };
+        internetMessageHeaders?: Array<{ name?: string; value?: string }>;
+      }>;
+    }>({
+      endpoint: '/v1.0/me/messages',
+      providerConfigKey,
+      connectionId,
+      retries: 3,
+      params: {
+        $filter: `conversationId eq '${escapedConversationId}'`,
+        $select: 'id,receivedDateTime,subject,from,body,internetMessageHeaders',
+        $top: '50'
+      }
+    });
+    const events: ConnectedEmailThreadEvent[] = [];
+    for (const message of conversation.data.value ?? []) {
+      const messageId = String(message.id ?? '').trim();
+      if (!messageId || messageId === input.externalRef) continue;
+      const from = String(message.from?.emailAddress?.address ?? '')
+        .trim()
+        .toLowerCase();
+      const fromLabel = `${message.from?.emailAddress?.name ?? ''} ${from}`;
+      const subject = String(message.subject ?? '');
+      const occurredAt = message.receivedDateTime
+        ? new Date(message.receivedDateTime).toISOString()
+        : undefined;
+      const body = providerBodyText(message.body?.contentType, message.body?.content) || undefined;
+      const autoSubmitted = message.internetMessageHeaders?.find(
+        (header) => String(header.name ?? '').toLowerCase() === 'auto-submitted'
+      )?.value;
+      if (from === recipient) {
+        events.push({
+          kind: classifyVerifiedInboundEmail({ subject, body, autoSubmitted }),
+          providerEventId: `microsoft:${messageId}`,
+          occurredAt,
+          subject: subject || undefined,
+          sender: from || undefined,
+          body
+        });
+      } else if (bounceLike(fromLabel, subject)) {
+        events.push({
+          kind: classifyDeliveryFailure({ subject, body }),
+          providerEventId: `microsoft:${messageId}`,
+          occurredAt,
+          subject: subject || undefined,
+          sender: from || undefined,
+          body
+        });
+      }
+    }
+    return events;
+  }
+
+  return [];
 }
 export async function syncNangoRecords(
   db: Db,
@@ -697,13 +1069,12 @@ export async function ingestCanonicalRecord(
     'occurredAt' in record ? record.occurredAt : now
   );
 
-  const client = await findOrCreateClient(
+  const identity = await resolveCanonicalRecordIdentity(
     db,
     workspaceId,
     provider,
-    record.clientName,
-    record.contactName,
-    record.clientEmail,
+    record.personName,
+    record.personEmail,
     now
   );
 
@@ -712,28 +1083,32 @@ export async function ingestCanonicalRecord(
       const existing = await db
         .prepare('SELECT id FROM messages WHERE source_record_id=?')
         .get<{ id: string }>(sourceId);
+      const messageId = existing?.id ?? id('msg');
       if (existing) {
         await db
           .prepare(
-            'UPDATE messages SET client_id=?,direction=?,subject=?,body=?,occurred_at=? WHERE id=?'
+            'UPDATE messages SET person_id=?,account_id=?,direction=?,subject=?,body=?,occurred_at=? WHERE id=? AND workspace_id=?'
           )
           .run(
-            client.id,
+            identity.personId,
+            identity.accountId,
             record.direction,
             record.subject,
             record.body,
             record.occurredAt,
-            existing.id
+            messageId,
+            workspaceId
           );
       } else {
         await db
           .prepare(
-            'INSERT INTO messages (id,workspace_id,client_id,direction,subject,body,occurred_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+            'INSERT INTO messages (id,workspace_id,person_id,account_id,direction,subject,body,occurred_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
           )
           .run(
-            id('msg'),
+            messageId,
             workspaceId,
-            client.id,
+            identity.personId,
+            identity.accountId,
             record.direction,
             record.subject,
             record.body,
@@ -742,9 +1117,7 @@ export async function ingestCanonicalRecord(
             now
           );
       }
-      await db
-        .prepare('UPDATE clients SET last_interaction_at=? WHERE id=? AND workspace_id=?')
-        .run(record.occurredAt, client.id, workspaceId);
+      await projectCanonicalMessage(db, workspaceId, messageId, new Date(now));
       break;
     }
     case 'opportunity': {
@@ -754,31 +1127,35 @@ export async function ingestCanonicalRecord(
       if (existing) {
         await db
           .prepare(
-            'UPDATE opportunities SET client_id=?,title=?,status=?,proposal_sent_at=?,expected_response_at=? WHERE id=? AND workspace_id=?'
+            'UPDATE opportunities SET person_id=?,account_id=?,title=?,stage=?,proposal_sent_at=?,expected_response_at=?,updated_at=? WHERE id=? AND workspace_id=?'
           )
           .run(
-            client.id,
+            identity.personId,
+            identity.accountId,
             record.title,
-            record.status,
+            normalizeOpportunityStage(record.status),
             record.proposalSentAt ?? null,
             record.expectedResponseAt ?? null,
+            now,
             existing.id,
             workspaceId
           );
       } else {
         await db
           .prepare(
-            'INSERT INTO opportunities (id,workspace_id,client_id,title,status,proposal_sent_at,expected_response_at,source_record_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+            'INSERT INTO opportunities (id,workspace_id,person_id,account_id,title,stage,proposal_sent_at,expected_response_at,source_record_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
           )
           .run(
             id('opp'),
             workspaceId,
-            client.id,
+            identity.personId,
+            identity.accountId,
             record.title,
-            record.status,
+            normalizeOpportunityStage(record.status),
             record.proposalSentAt ?? null,
             record.expectedResponseAt ?? null,
             sourceId,
+            now,
             now
           );
       }
@@ -825,45 +1202,51 @@ function normalizeNangoRecord(model: string, raw: Record<string, unknown>): Cano
   return canonicalRecordSchema.parse({ ...payload, kind: resolved });
 }
 
-async function findOrCreateClient(
+type OpportunityStage = 'new' | 'qualified' | 'meeting' | 'proposal' | 'won' | 'lost';
+
+function normalizeOpportunityStage(value: string): OpportunityStage {
+  const stage = value.trim().toLowerCase().replaceAll('-', '_');
+  if (stage === 'qualified') return 'qualified';
+  if (stage === 'meeting' || stage === 'meeting_booked') return 'meeting';
+  if (stage === 'proposal' || stage === 'proposal_sent') return 'proposal';
+  if (stage === 'won' || stage === 'closed_won') return 'won';
+  if (stage === 'lost' || stage === 'closed_lost') return 'lost';
+  return 'new';
+}
+
+async function resolveCanonicalRecordIdentity(
   db: Db,
   workspaceId: string,
   provider: string,
-  name: string,
   contactName: string | undefined,
   email: string | undefined,
   now: string
-): Promise<{ id: string }> {
-  const normalizedEmail = email?.toLowerCase();
-  let existing: { id: string } | undefined;
-  if (normalizedEmail) {
-    existing = await db
-      .prepare(
-        'SELECT client_id AS id FROM contact_identities WHERE workspace_id=? AND identity_value=?'
-      )
-      .get<{ id: string }>(workspaceId, normalizedEmail);
-  }
-  if (!existing) {
-    existing = await db
-      .prepare('SELECT id FROM clients WHERE workspace_id=? AND lower(name)=lower(?)')
-      .get<{ id: string }>(workspaceId, name);
-  }
-  if (existing) return existing;
+): Promise<{ personId: string | null; accountId: string | null }> {
+  const normalizedEmail = email?.trim().toLowerCase() || null;
+  if (!normalizedEmail) return { personId: null, accountId: null };
 
-  const clientId = id('cl');
-  const safeEmail =
-    normalizedEmail ?? `import-${sha(`${provider}:${name}`).slice(0, 12)}@trevra.invalid`;
-  await db
-    .prepare(
-      'INSERT INTO clients (id,workspace_id,name,contact_name,email,status,last_interaction_at,created_at) VALUES (?,?,?,?,?,?,?,?)'
-    )
-    .run(clientId, workspaceId, name, contactName ?? name, safeEmail, 'active', now, now);
-  await db
-    .prepare(
-      'INSERT INTO contact_identities (id,workspace_id,client_id,provider,identity_type,identity_value,created_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING'
-    )
-    .run(id('ident'), workspaceId, clientId, provider, 'email', safeEmail, now);
-  return { id: clientId };
+  const canonicalPerson = await resolveContact(
+    db,
+    workspaceId,
+    { name: contactName?.trim() || null, email: normalizedEmail },
+    new Date(now)
+  );
+  const personId = canonicalPerson.contact.id;
+  await upsertPersonIdentity(
+    db,
+    {
+      workspaceId,
+      personId,
+      provider,
+      identityType: 'email',
+      identityValue: normalizedEmail
+    },
+    new Date(now)
+  );
+  return {
+    personId,
+    accountId: await accountForPerson(db, workspaceId, personId)
+  };
 }
 
 async function upsertSourceRecord(
@@ -990,22 +1373,47 @@ function createMimeMessage(
   subject: string,
   body: string,
   idempotencyKey: string,
-  replyToIdempotencyKey: string | null = null
+  replyToIdempotencyKey: string | null = null,
+  htmlBody: string | null = null
 ): string {
   const encodedSubject = `=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`;
   const priorMessageId = replyToIdempotencyKey ? `<${replyToIdempotencyKey}@trevra.app>` : null;
-  const mime = [
+  const headers = [
     `To: ${recipient}`,
     `Subject: ${encodedSubject}`,
     ...(priorMessageId ? [`In-Reply-To: ${priorMessageId}`, `References: ${priorMessageId}`] : []),
     `Message-ID: <${idempotencyKey}@trevra.app>`,
     `X-Trevra-Idempotency-Key: ${idempotencyKey}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
-    '',
-    body
-  ].join('\r\n');
+    'MIME-Version: 1.0'
+  ];
+  const mime = htmlBody
+    ? (() => {
+        const boundary = `trevra-${sha(idempotencyKey).slice(0, 24)}`;
+        return [
+          ...headers,
+          `Content-Type: multipart/alternative; boundary="${boundary}"`,
+          '',
+          `--${boundary}`,
+          'Content-Type: text/plain; charset=UTF-8',
+          'Content-Transfer-Encoding: 8bit',
+          '',
+          body,
+          `--${boundary}`,
+          'Content-Type: text/html; charset=UTF-8',
+          'Content-Transfer-Encoding: 8bit',
+          '',
+          htmlBody,
+          `--${boundary}--`,
+          ''
+        ].join('\r\n');
+      })()
+    : [
+        ...headers,
+        'Content-Type: text/plain; charset=UTF-8',
+        'Content-Transfer-Encoding: 8bit',
+        '',
+        body
+      ].join('\r\n');
   return Buffer.from(mime).toString('base64url');
 }
 

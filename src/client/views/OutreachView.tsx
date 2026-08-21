@@ -3,17 +3,21 @@ import { AccountsScreen } from '../AccountsScreen';
 import { LinkedInAccounts } from '../LinkedInAccounts';
 import { LinkedInCompanionAttention } from '../LinkedInCompanion';
 import { OutreachInbox } from '../LinkedInInbox';
+import { SharedConversations } from '../SharedConversations';
 import { OutreachLeads } from '../LinkedInLeads';
 import { OutreachManagerBuilder } from '../LinkedInManagerBuilder';
 import { OutreachManagerRead } from '../LinkedInManagerRead';
 import { LinkedInManagerWorkflowConfig } from '../LinkedInManagerWorkflowConfig';
 import { LinkedInPosts } from '../LinkedInPosts';
+import { InboundPeople } from '../InboundPeople';
+import { Opportunities } from '../Opportunities';
 import { replaceNavigate, type Route } from '../ui/route';
 import { scrollToId } from '../ui/scrollToId';
-
 const OUTREACH_TABS: ReadonlyArray<{ sub: string; path: string; label: string }> = [
   { sub: '', path: '/outreach', label: 'Campaigns' },
+  { sub: 'inbound', path: '/outreach/inbound', label: 'Inbound' },
   { sub: 'inbox', path: '/outreach/inbox', label: 'Messages' },
+  { sub: 'opportunities', path: '/outreach/opportunities', label: 'Opportunities' },
   { sub: 'posts', path: '/outreach/posts', label: 'Posts' },
   { sub: 'settings', path: '/outreach/settings', label: 'Settings' }
 ];
@@ -78,7 +82,7 @@ export function OutreachView({
 
   return (
     <div className="page-stack outreach-simple li-polished">
-      <LinkedInCompanionAttention setToast={setToast} />
+      {sub !== 'inbound' && <LinkedInCompanionAttention setToast={setToast} />}
       <nav className="outreach-nav" aria-label="Outreach sections">
         {OUTREACH_TABS.map((tab) => (
           <button
@@ -93,7 +97,14 @@ export function OutreachView({
         ))}
       </nav>
 
-      {sub === 'inbox' && <OutreachInbox setToast={setToast} />}
+      {sub === 'inbound' && <InboundPeople setToast={setToast} />}
+      {sub === 'inbox' && (
+        <div className="page-stack">
+          <SharedConversations />
+          <OutreachInbox setToast={setToast} />
+        </div>
+      )}
+      {sub === 'opportunities' && <Opportunities setToast={setToast} />}
       {sub === 'posts' && <LinkedInPosts setToast={setToast} />}
       {sub === 'settings' && <LinkedInAccounts setToast={setToast} />}
       {sub === 'new' && <OutreachManagerBuilder setToast={setToast} onNavigate={onNavigate} />}
