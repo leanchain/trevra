@@ -505,16 +505,13 @@ function reinjectMarketingHead(html: string, verification: string, jsonLdScript:
 }
 
 /**
- * Point the shipped hosted-workspace CTAs at the real destination.
+ * Point every marked workspace CTA at the configured hosted destination.
  *
- * index.html marks each one `data-hosted-cta` and keeps `href="#hosted"` as
- * the degraded fallback. That fallback is what a crawler, a link unfurler and
- * a pre-JS visitor actually get: src/client/main.tsx calls createRoot().render()
- * rather than hydrateRoot(), so React discards the static DOM instead of
- * repairing it, and MarketingScreen's own hostedAppUrl fix never reaches them.
- *
- * With no hosted workspace configured the markup is returned untouched, so the
- * button still scrolls to the deploy card rather than pointing at nothing.
+ * Discovery CTAs fall back to `#hosted`; conversion CTAs fall back to a
+ * pre-addressed email. Those fallbacks are what crawlers, link unfurlers, and
+ * pre-JavaScript visitors receive. With no hosted workspace configured, the
+ * honest fallback is preserved. When one is configured, every marked CTA is
+ * rewritten to that destination before the document is served.
  */
 function withHostedWorkspaceHrefs(html: string, hostedAppUrl: string): string {
   if (!hostedAppUrl) return html;

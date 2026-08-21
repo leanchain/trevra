@@ -4,109 +4,20 @@ RUN npm install --global npm@11.6.2
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Chromium, and ONLY chromium.
+# Browser ownership lives on Companion devices.
 #
-# Without this the container can plan, pace and gate LinkedIn work but cannot
-# perform any of it: `~/.cache/ms-playwright` is empty, so
-# `linkedInBrowserReadiness` and `linkedInHeadlessReadiness` both answer no and
-# every detect is queued for a worker on the operator's own machine.
-#
-# With it, a seat that stored its own LinkedIn sign-in (auth_mode='credentials')
-# is served here, headlessly, with the operator having typed an email and a
-# password once and run nothing (docs/linkedin-outreach-plan.md 4.1, 4.9). A
-# headless browser cannot show a human a login window -- which is exactly why
-# that path needs a password and the manual one does not.
-#
-# `chromium` alone, not `install` bare: firefox and webkit would add ~700MB to
-# an image that will never drive either. `--with-deps` because the slim base is
-# missing the shared libraries Chromium links against, and a browser that fails
-# to start is harder to diagnose than one that was never installed.
-RUN npx playwright install --with-deps chromium
-
-# GOOGLE CHROME, and not as a duplicate of the line above.
-#
-# `chromium` is the open-source build: no Widevine, no proprietary codecs, and
-# -- the one that shows -- `window.chrome` with no `runtime` on it, which is a
-# one-line headless-Chromium check that every detection writeup lists. `chrome`
-# is the consumer binary a member actually browses with. `openBrowser` prefers
-# it (`BROWSER_CHANNELS`) and falls back to chromium when it is absent, so this
-# line is what turns that preference on.
-RUN npx playwright install --with-deps chrome || \
-    echo 'Google Chrome unavailable for this platform; the seat browser falls back to Chromium.'
-
-# Patchright's own copy of the same Chromium.
-#
-# Patchright is a patched Playwright: it never calls `Runtime.enable`, which is
-# the CDP side-channel every serious bot-detection vendor now checks for, and it
-# stops leaking `__pwInitScripts` and `__playwright__binding__` into every page.
-# `loadLinkedInPlaywright` prefers it and falls back to stock playwright, so the
-# image carries both -- the fallback is worth an image layer, because a seat that
-# cannot open a browser at all is worse than one that opens a detectable one.
-#
-# It pins its own browser revision, so this does not resolve to the download
-# above; both are needed. Same `chromium`-only, same `--with-deps` reasoning.
-RUN npx patchright install --with-deps chromium
-
-# A DISPLAY, BECAUSE HEADLESS IS THE TELL AND A GPU IS NOT.
-#
-# Measured with `scripts/linkedin-fingerprint-probe.mjs` on a host with a real
-# Intel iGPU and an RTX 4090 sitting idle next to it:
-#
-#   headless, real Google Chrome:
-#     renderer  ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)
-#     UA        Mozilla/5.0 (X11; Linux x86_64) ... HeadlessChrome/149.0.0.0 ...
-#
-#   headed under a display, same binary, same machine:
-#     renderer  ANGLE (Intel, Mesa Intel(R) Graphics (RPL-S), OpenGL 4.6)
-#     UA        Mozilla/5.0 (X11; Linux x86_64) ... Chrome/149.0.0.0 ...
-#
-# So headless Chrome reports SwiftShader EVEN WITH A GPU PRESENT, and puts the
-# word "HeadlessChrome" in its own User-Agent. Neither is subtle and neither is
-# fixable by adding hardware. What fixes both is a display -- and Xvfb is a
-# display. It costs ~15MB and it is the difference between a browser that
-# announces itself and one that does not.
-#
-# `libgl1-mesa-dri` is what gives Chrome a real GL driver to talk to: with a
-# GPU device passed into the container it lands on that GPU, and without one it
-# falls back to Mesa's llvmpipe -- which is what a real member on a GPU-less
-# cloud desktop reports too, rather than SwiftShader-behind-headless.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends xvfb libgl1-mesa-dri \
-    && rm -rf /var/lib/apt/lists/*
+# The server keeps the Playwright/Patchright Node packages installed by `npm ci`
+# because it is the remote CDP controller, but this image deliberately installs
+# no Chrome/Chromium binaries, Playwright browser downloads, Xvfb, DISPLAY, or
+# browser-only system dependencies. Every real browser process belongs to a
+# paired Companion, even when that Companion runs on the same physical machine
+# as Docker.
 
 # The subscription CLIs the hosted agent can run instead of a BYOK model key
 # (TREVRA_AGENT_CLI in .env.example). They ship no credential -- the container
-# gets one at runtime through TREVRA_AGENT_CLI_OAUTH_TOKEN, because there is no
-# browser in here to complete an interactive login with.
+# gets one at runtime through TREVRA_AGENT_CLI_OAUTH_TOKEN.
 RUN npm install --global @anthropic-ai/claude-code @openai/codex
 
 COPY . .
 EXPOSE 5173 8787
-
-# The virtual display every browser in this container draws into.
-#
-# `linkedInBrowserReadiness` reads DISPLAY and the socket that serves it to
-# decide whether a headed browser is possible here, so setting this -- and
-# actually running an X server on it -- is the whole switch. No code changes;
-# the worker simply stops taking the headless path.
-ENV DISPLAY=:99
-
-# Xvfb first, then the app, in one shell so the app is PID 1's child and Ctrl-C
-# still reaches it. `-nolisten tcp` because nothing outside this container has
-# any business connecting to this X server.
-#
-# THE STALE LOCK IS DELETED FIRST, and that is not tidiness. `docker restart`
-# keeps the container's filesystem and kills the old Xvfb without letting it
-# clean up, so `/tmp/.X99-lock` and `/tmp/.X11-unix/X99` survive into the next
-# start; Xvfb then refuses with "Server is already active for display 99" and
-# exits. DISPLAY stays set, every readiness probe that only reads DISPLAY still
-# says yes, and the first headed launch dies with Playwright's "you launched a
-# headed browser without having a XServer running" -- surfaced to the operator
-# as "check that Chromium is installed", which is the one thing that was fine.
-# A fresh container start has its own PID namespace, so anything left in /tmp
-# here is by definition the corpse of a previous start.
-#
-# Xvfb's own failure is fatal rather than ignored: a container whose display
-# never came up should say so on the line that started it, not eight hours
-# later through a browser error.
-CMD ["sh", "-c", "rm -f /tmp/.X99-lock /tmp/.X11-unix/X99; Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp >/tmp/xvfb.log 2>&1 & for i in $(seq 50); do [ -S /tmp/.X11-unix/X99 ] && break; sleep 0.1; done; [ -S /tmp/.X11-unix/X99 ] || { echo 'Xvfb failed to start:'; cat /tmp/xvfb.log; exit 1; }; exec npm run dev"]
+CMD ["npm", "run", "dev"]

@@ -3,16 +3,19 @@ import { BrandMark } from './ui/BrandMark';
 import {
   ArrowRight,
   Check,
+  ChevronDown,
   Cloud,
+  Eye,
+  FileCheck2,
   Github,
-  KeyRound,
   LockKeyhole,
   Menu,
-  Play,
-  ScrollText,
+  Puzzle,
   Server,
   ShieldCheck,
-  UsersRound
+  Telescope,
+  UsersRound,
+  Zap
 } from 'lucide-react';
 import moduleCatalog from '../generated/public-modules.json';
 import { getPublicConfig } from './api';
@@ -126,25 +129,11 @@ const byName = (left: PublicModule, right: PublicModule) => left.id.localeCompar
 const STATIC_MODULES = (moduleCatalog.modules as PublicModule[]).slice().sort(byName);
 
 const POLICY_CHECKS = [
-  { policy: 'max_recipients: 5', run: '5 recipients', verdict: 'within', stop: false },
+  { policy: 'max_recipients: 5', run: '1 recipient', verdict: 'within', stop: false },
   { policy: 'confidence_min: 0.84', run: '0.91', verdict: 'above', stop: false },
   { policy: 'delay_minutes: 30', run: '+30 min', verdict: 'set', stop: false },
   { policy: 'default: require_approval', run: 'you', verdict: 'waiting', stop: true }
 ] as const;
-
-const POLICY_FILE = `external_writes:
-  default: require_approval
-
-email.send:
-  max_recipients: 5
-  confidence_min: 0.84
-  delay_minutes: 30
-
-community.reply:
-  approval_required: true
-
-crm.log-activity:
-  approval_required: true`;
 
 function ThemeToggle() {
   return (
@@ -279,6 +268,8 @@ export function MarketingScreen({
   );
   const [liveModules, setLiveModules] = useState<PublicModule[]>(STATIC_MODULES);
   const primaryHref = hostedAppUrl || '#hosted';
+  const primaryLabel = hostedAppUrl ? 'Open workspace' : 'Request hosted access';
+  const navLabel = hostedAppUrl ? 'Workspace' : 'Request access';
   const sourceHref = githubUrl || REPO_URL;
 
   useEffect(() => {
@@ -318,7 +309,7 @@ export function MarketingScreen({
 
   const handlePrimary = (event: React.MouseEvent<HTMLAnchorElement>) => {
     trackEvent('marketing_primary_cta', {
-      destination: hostedAppUrl ? 'hosted_app' : 'workspace_auth'
+      destination: hostedAppUrl ? 'hosted_app' : 'hosted_access'
     });
     if (hostedAppUrl) return;
     event.preventDefault();
@@ -327,6 +318,7 @@ export function MarketingScreen({
 
   const founderHref = `mailto:${supportEmail || FOUNDER_FALLBACK}`;
   const hostedHref = `${founderHref}?subject=${encodeURIComponent('Hosted workspace')}`;
+  const conversionHref = hostedAppUrl || hostedHref;
 
   return (
     <main className="static-launch" id="main" tabIndex={-1}>
@@ -372,101 +364,121 @@ export function MarketingScreen({
           >
             <Github size={16} /> Source
           </a>
-          {/* The nav button says Login and its fallback is the ADDRESS of the
-              login screen, not `#hosted` -- this component is the source
-              scripts/prerender-marketing.tsx renders into index.html, not a
-              copy of it. `handlePrimary` still decides: a configured hosted
-              workspace wins, and on the marketing-only build it scrolls to
-              the deploy card. */}
-          <a
-            className="launch-nav-cta"
-            data-hosted-cta
-            href={hostedAppUrl ? `${hostedAppUrl}/login` : '/login'}
-            onClick={handlePrimary}
-          >
-            Login <ArrowRight size={16} />
+          <a className="launch-nav-cta" data-hosted-cta href={primaryHref} onClick={handlePrimary}>
+            {navLabel} <ArrowRight size={16} />
           </a>
         </div>
       </header>
 
       <section className="launch-hero" id="top">
         <div className="hero-copy">
-          <h1>Run GTM with Claude Code or Codex.</h1>
+          <h1>The Agentic GTM Engine for Claude Code and Codex.</h1>
           <p className="hero-lede">
-            Trevra gives agents tools for research, scoring, outreach, conversations, and pipeline
-            work. External actions wait for your approval. Every run is logged. The runtime is open
-            source.
+            Trevra combines public signals into sourced findings, scores leads, and drafts
+            multichannel outreach—operating as your standalone GTM workspace or an overlay on your
+            existing CRM, behind exact human approval.
           </p>
           <div className="launch-actions">
             <a className="launch-button" data-hosted-cta href={primaryHref} onClick={handlePrimary}>
-              <Play size={17} fill="currentColor" /> Open Trevra
+              {primaryLabel} <ArrowRight size={17} />
             </a>
             <a className="launch-secondary" href="#approval">
-              <ShieldCheck size={17} /> See approvals
+              <ShieldCheck size={17} /> See the approval boundary
             </a>
           </div>
-          <p className="hero-facts">
-            <a href="/catalog/modules.json" onClick={() => trackEvent('marketing_catalog_json')}>
-              {liveModules.length} modules in the catalog
-            </a>
+          <p className="hero-facts" aria-label="Product facts">
+            <span>Open source</span>
             <span aria-hidden="true">·</span>
-            <a href="/catalog/trevra.sbom.cdx.json">Software bill of materials</a>
+            <span>Standalone or CRM Overlay</span>
+            <span aria-hidden="true">·</span>
+            <span>Operated via MCP</span>
+            <span aria-hidden="true">·</span>
+            <span>{liveModules.length} public GTM modules</span>
           </p>
         </div>
-
-        {/* The hero artifact is the policy file, not a terminal mock: it is the
-            one object on this page a competitor cannot ship by Friday. */}
-        <figure className="hero-policy">
-          <div className="policy-card">
-            <div className="policy-head">
-              <ShieldCheck size={20} />
-              <span>workspace.policy.yaml</span>
-              <em>enforced</em>
-            </div>
-            <pre>
-              <code>{POLICY_FILE}</code>
-            </pre>
-            <div className="policy-foot">
-              <Check size={16} /> Checked before external actions
-            </div>
-          </div>
-          <figcaption>This file controls what agents can do without approval.</figcaption>
-        </figure>
       </section>
 
-      {/* The gate. A native disclosure: in the DOM for a crawler, announced as a
-          disclosure to a screen reader, operable from the keyboard, and it works
-          with the script tag removed. */}
+      {/* WHY: The problem this solves */}
+      <section className="launch-section" id="why" aria-labelledby="why-title">
+        <div className="split-heading">
+          <h2 id="why-title">Your GTM agent is already running. Who controls it?</h2>
+          <p>
+            Agents are commoditised. The gap is governance: what signals justify action, what the
+            exact payload is, who approved it, and whether the result was logged. Without that, your
+            agent is a liability, not an asset.
+          </p>
+        </div>
+        <div className="gate-points">
+          <div>
+            <Telescope aria-hidden="true" />
+            <span>
+              <strong>No audit trail, no accountability</strong>
+              <small>
+                When your agent fires outreach, can you replay exactly which signals triggered it,
+                what was sent, and who reviewed it? Trevra logs every run with its full evidence
+                chain and policy verdict—immutably, in order.
+              </small>
+            </span>
+          </div>
+          <div>
+            <Zap aria-hidden="true" />
+            <span>
+              <strong>Unreviewed sends compound fast</strong>
+              <small>
+                One wrong send is a mistake. A sequence of unreviewed agent actions at scale is a
+                brand problem. Trevra holds every external action at an exact-payload gate before
+                anything leaves your workspace.
+              </small>
+            </span>
+          </div>
+          <div>
+            <Puzzle aria-hidden="true" />
+            <span>
+              <strong>Your CRM records state. It doesn't govern execution.</strong>
+              <small>
+                HubSpot, Salesforce, and Attio know what happened after the fact. Trevra is the
+                control plane that decides what the agent is allowed to do, enforces it, and proves
+                it.
+              </small>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      {/* HOW: The approval gate mechanism */}
       <section className="gate" id="approval" aria-labelledby="gate-title">
         <div className="gate-inner">
           <div className="gate-head" id="security">
-            <h2 id="gate-title">External actions require approval.</h2>
+            <h2 id="gate-title">How it works: agent runs, you approve.</h2>
             <p>
-              Trevra checks <code>workspace.policy.yaml</code> before acting. This run is prepared
-              and waiting for approval.
-            </p>
-            <p>
-              Research, scoring, sequencing, and drafting can run automatically. Trevra records each
-              run, its inputs, evidence, and result.
+              Point Claude Code at Trevra over MCP. The agent researches, scores leads, and drafts
+              outreach. Every external action stops at the workspace policy gate—nothing is sent
+              until you review the exact payload and sign off.
             </p>
           </div>
 
           <div className="gate-body">
             <figure className="gate-run">
               <figcaption>
-                <span>
-                  <code>run_8f2e</code> · approve-outreach
-                </span>
-                <em>prepared</em>
+                <span>Step 1 — Agent finds intent signal</span>
+                <em>research</em>
               </figcaption>
               <p className="gate-what">
-                5 personalized emails · one recipient each · scheduled +30 min after approval
+                Composite: 3 AI roles posted · LLM SDK added to stack · CTO discussion on agent
+                safety
+              </p>
+              <figcaption style={{ marginTop: '1rem' }}>
+                <span>Step 2 — Draft prepared, policy checked</span>
+                <em>prepared · not sent</em>
+              </figcaption>
+              <p className="gate-what">
+                1 personalized email · 1 recipient · scheduled +30 min after approval
               </p>
               <table className="gate-checks">
-                <caption>What the policy file said about this run.</caption>
+                <caption>Policy verdict before anything can leave your workspace.</caption>
                 <thead>
                   <tr>
-                    <th scope="col">policy</th>
+                    <th scope="col">rule</th>
                     <th scope="col">this run</th>
                     <th scope="col">result</th>
                   </tr>
@@ -485,71 +497,98 @@ export function MarketingScreen({
               </table>
               <p className="gate-hash">
                 <code>sha256:4f21b8…c7e0</code>{' '}
-                <span>pins this exact payload. Edited work cannot reuse the approval.</span>
+                <span>
+                  Step 3 — Payload locked. You approve this exact draft. Edits after approval are
+                  rejected.
+                </span>
               </p>
             </figure>
 
             <div className="gate-decide">
               <p className="gate-line">
-                <span>Nothing past this line has been sent</span>
+                <span>Prepared, not sent</span>
               </p>
-              <p className="gate-brief">The draft is stored in the ledger and has not been sent.</p>
-              <details className="gate-decision">
+              <p className="gate-brief">
+                The agent prepares the work. You keep the decision. Nothing in this example can
+                approve or send it.
+              </p>
+              <p className="gate-demo-note" id="gate-demo-note">
+                Interactive example. Revealing the exact payload cannot trigger an external action.
+              </p>
+              <details className="gate-decision" aria-describedby="gate-demo-note">
                 <summary className="gate-summary">
                   <ShieldCheck size={18} aria-hidden="true" />
-                  <span className="when-closed">Approve this run</span>
-                  <span className="when-open">Approved — released to you</span>
+                  <span className="when-closed">See the exact payload</span>
+                  <span className="when-open">Hide the exact payload</span>
                 </summary>
                 <div className="gate-release">
-                  <p className="release-label">
-                    Released: 1 of 5 drafts, as <code>gtm.outreach-draft</code> wrote it.
-                  </p>
                   <div className="release-mail">
                     <p className="release-meta">
-                      Subject: the tier table your docs are still serving
+                      Subject: agentic execution safety and GTM governance
                     </p>
                     <p>
-                      You moved Standard to usage-based pricing on the 28th. The old tier table is
-                      still in your docs sitemap, so that is the version the answer engines are
-                      quoting back.
+                      I saw you're hiring 3 AI Engineers and added LLM orchestration SDKs to your
+                      stack this week. Your CTO's discussion on agent safety caught my attention—are
+                      you putting a hard approval boundary around agentic GTM actions?
                     </p>
                     <p>
-                      Worth fifteen minutes? I will bring what four assistants currently say your
-                      pricing is.
+                      Worth fifteen minutes? I can show you the exact-payload approval model we use
+                      so you can evaluate the boundary directly.
                     </p>
                   </div>
                   <p className="release-ledger">
-                    <code>run_8f2e</code> approved · <code>send-outreach</code> released · hash
-                    verified · written to the ledger
+                    <code>run_8f2e</code> payload preview revealed · hash unchanged · no action
+                    executed
                   </p>
                   <p className="release-note">
-                    In a workspace, approval releases the send. This demo only reveals the draft.
+                    In a workspace, your approval releases this exact action. Here, this control
+                    only opens and closes the prepared draft.
                   </p>
                 </div>
               </details>
             </div>
           </div>
 
+          {/* WHAT: Product capability summary */}
           <div className="gate-points">
             <div>
-              <ScrollText />
+              <Telescope aria-hidden="true" />
               <span>
-                <strong>Full run ledger</strong>
-                <small>Inputs, outputs, evidence, failures, and results.</small>
+                <strong>Research & Signal Detection</strong>
+                <small>
+                  Watch target account lists for composite intent signals—hiring, tech stack
+                  changes, and site diffs—sourced and timestamped, never a black-box score.
+                </small>
               </span>
             </div>
             <div>
-              <KeyRound />
+              <Eye aria-hidden="true" />
               <span>
-                <strong>Exact-payload approval</strong>
-                <small>Changes after approval are rejected.</small>
+                <strong>Outreach & LinkedIn Execution</strong>
+                <small>
+                  Draft email and LinkedIn sequences from real findings. Enforce daily limits,
+                  warm-up ramps, cooldowns, and seat pacing via a local browser worker.
+                </small>
               </span>
             </div>
             <div>
-              <LockKeyhole />
+              <FileCheck2 aria-hidden="true" />
               <span>
-                <strong>Set hard limits</strong>
-                <small>Control action types, confidence, amounts, volume, and timing.</small>
+                <strong>Evidence Ledger & Approval Gate</strong>
+                <small>
+                  Every run is logged with its inputs, evidence, and result. External actions are
+                  sha256-locked—modified drafts cannot reuse an old approval.
+                </small>
+              </span>
+            </div>
+            <div>
+              <LockKeyhole aria-hidden="true" />
+              <span>
+                <strong>Workspace Policy Controls</strong>
+                <small>
+                  Set hard limits on recipient volume, confidence thresholds, send pacing, and
+                  action types per workspace. Claude Code operates only within what you permit.
+                </small>
               </span>
             </div>
           </div>
@@ -558,95 +597,124 @@ export function MarketingScreen({
 
       <section className="launch-section deploy-section" id="deploy">
         <div className="split-heading">
-          <h2>Hosted or self-hosted.</h2>
-          <p>Same product. Different infrastructure.</p>
+          <h2>Start hosted. Keep the option to self-host.</h2>
+          <p>One product and one approval boundary. Choose who runs the infrastructure.</p>
         </div>
-        <div className="deploy-grid">
-          {/* This card is where every degraded #hosted CTA lands, so its own action
-              is a real one rather than a fourth copy of the button that sent the
-              reader here. */}
-          <article className="deploy-card featured" id="hosted">
-            <div className="deploy-icon">
-              <Cloud />
+
+        <article className="hosted-path" id="hosted">
+          <div className="hosted-copy">
+            <div className="deploy-title-row">
+              <h3>
+                {hostedAppUrl ? 'Open your managed workspace.' : 'Request a managed workspace.'}
+              </h3>
+              <span className="deploy-status">Recommended start</span>
             </div>
-            <span className="deploy-label">Trevra hosted</span>
-            <h3>Managed Trevra.</h3>
             <p>
-              We run PostgreSQL, authentication, integrations, backups, the ledger, and the approval
-              queue.
+              Trevra runs PostgreSQL, authentication, integrations, backups, the ledger, and the
+              approval queue. You bring Claude Code or Codex.
             </p>
-            <ul>
+            <ul className="hosted-benefits">
               <li>
-                <Check /> Managed PostgreSQL, secrets and updates
+                <Check aria-hidden="true" /> Managed database, secrets, and updates
               </li>
               <li>
-                <Check /> Catalog releases synced from GitHub
+                <Check aria-hidden="true" /> Evidence and prepared actions stay in one ledger
               </li>
               <li>
-                <Check /> Bring Claude Code or Codex as the operator
+                <Check aria-hidden="true" /> External actions keep the exact approval boundary
               </li>
             </ul>
+          </div>
+          <div className="hosted-action">
             <p className="deploy-price">
               {hostedAppUrl
-                ? 'Self-serve. Sign in or create a workspace.'
+                ? 'Your hosted workspace is ready.'
                 : 'Hosted access is opening in batches.'}
             </p>
-            {hostedAppUrl ? (
+            <a
+              className="launch-button"
+              data-hosted-cta
+              href={conversionHref}
+              onClick={() =>
+                trackEvent(hostedAppUrl ? 'marketing_hosted_cta' : 'marketing_founder_cta')
+              }
+            >
+              {hostedAppUrl ? (
+                <Cloud size={17} aria-hidden="true" />
+              ) : (
+                <UsersRound size={17} aria-hidden="true" />
+              )}
+              {primaryLabel}
+            </a>
+            <p className="hosted-action-note">
+              {hostedAppUrl
+                ? 'Opens your hosted Trevra workspace.'
+                : 'Opens an email to the founder with the request subject filled in.'}
+            </p>
+          </div>
+        </article>
+
+        <p className="hosted-trust">
+          Hosted and self-hosted deployments enforce the same exact-payload approval boundary. Read
+          the <a href="/privacy">privacy policy</a> and <a href="/security">security overview</a>.
+        </p>
+
+        <details className="self-host-disclosure">
+          <summary>
+            <span>
+              <Server size={19} aria-hidden="true" /> Run Trevra in your own infrastructure
+            </span>
+            <small>PostgreSQL · your providers · full source</small>
+            <ChevronDown className="disclosure-chevron" size={18} aria-hidden="true" />
+          </summary>
+          <div className="self-host-body">
+            <div className="self-host-copy">
+              <p>
+                Use your own PostgreSQL and providers. Keep the ledger in your environment and
+                retain the same approval model.
+              </p>
               <a
-                className="launch-button"
-                href={`${hostedAppUrl}/login`}
-                onClick={() => trackEvent('marketing_hosted_cta')}
+                className="launch-secondary"
+                href={`${sourceHref}#readme`}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => trackEvent('marketing_self_host_cta')}
               >
-                <Play size={17} fill="currentColor" /> Launch managed workspace
+                <Github size={17} /> Read the deployment guide
               </a>
-            ) : (
-              <a
-                className="launch-button"
-                href={hostedHref}
-                onClick={() => trackEvent('marketing_founder_cta')}
-              >
-                <UsersRound size={17} /> Ask the founder for a workspace
-              </a>
-            )}
-          </article>
-          <article className="deploy-card">
-            <div className="deploy-icon">
-              <Server />
             </div>
-            <span className="deploy-label">Self-hosted</span>
-            <h3>Run Trevra yourself.</h3>
-            <p>Use your own PostgreSQL and providers. Keep the ledger in your environment.</p>
-            <pre className="deploy-code">
-              <code>{`git clone https://github.com/leanchain/trevra
+            <div>
+              <pre className="deploy-code">
+                <code>{`git clone https://github.com/leanchain/trevra
 cd trevra
 cp .env.example .env.dev
 docker compose --env-file .env.dev \\
   -f compose.dev.yml up --build`}</code>
-            </pre>
-            <p className="deploy-code-note">
-              Runs on <code>localhost:43173</code> with PostgreSQL.
-            </p>
-            <a
-              className="launch-secondary"
-              href={`${sourceHref}#readme`}
-              target="_blank"
-              rel="noreferrer"
-              onClick={() => trackEvent('marketing_self_host_cta')}
-            >
-              <Github size={17} /> Read the deployment guide
-            </a>
-          </article>
-        </div>
+              </pre>
+              <p className="deploy-code-note">
+                Runs on <code>localhost:43173</code> with PostgreSQL.
+              </p>
+            </div>
+          </div>
+        </details>
+
         <details className="deploy-modules">
-          <summary>See the {liveModules.length} modules</summary>
+          <summary>
+            <span>See all {liveModules.length} public modules</span>
+            <ChevronDown className="disclosure-chevron" size={18} aria-hidden="true" />
+          </summary>
           <ul className="module-list">
             {liveModules.map((module) => (
               <ModuleRow module={module} key={module.id} />
             ))}
           </ul>
         </details>
+
         <details className="deploy-faq">
-          <summary>Questions</summary>
+          <summary>
+            <span>Answers about access, data, and deployment</span>
+            <ChevronDown className="disclosure-chevron" size={18} aria-hidden="true" />
+          </summary>
           <div className="deploy-faq-list">
             {FAQ_ITEMS.map(({ question, answer }) => (
               <div className="deploy-faq-item" key={question}>
@@ -656,17 +724,23 @@ docker compose --env-file .env.dev \\
             ))}
           </div>
         </details>
+
         <div className="deploy-close">
-          <div className="launch-actions">
-            <a
-              className="launch-button light"
-              data-hosted-cta
-              href={primaryHref}
-              onClick={handlePrimary}
-            >
-              Open Trevra <ArrowRight size={17} />
-            </a>
-          </div>
+          <h3>Your agent prepares the work. You keep the decision.</h3>
+          <p>
+            Start with a managed workspace, or inspect the source and run the same approval model
+            yourself.
+          </p>
+          <a
+            className="launch-button"
+            data-hosted-cta
+            href={conversionHref}
+            onClick={() =>
+              trackEvent(hostedAppUrl ? 'marketing_hosted_cta' : 'marketing_founder_cta')
+            }
+          >
+            {primaryLabel} <ArrowRight size={17} />
+          </a>
         </div>
       </section>
 
@@ -678,7 +752,7 @@ docker compose --env-file .env.dev \\
             </span>
             <strong>Trevra</strong>
           </a>
-          <p>Open-source GTM infrastructure for AI agents.</p>
+          <p>Evidence-backed pure GTM OS. Exact approval before external action.</p>
         </div>
         <div>
           <strong>Product</strong>
@@ -701,6 +775,7 @@ docker compose --env-file .env.dev \\
           <strong>Company</strong>
           <a href="/how-it-works">How it works</a>
           <a href="/privacy">Privacy</a>
+          <a href="/security">Security</a>
           <a href="/terms">Terms</a>
           <a href={founderHref} onClick={() => trackEvent('marketing_founder_cta')}>
             Talk to the founder

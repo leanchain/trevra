@@ -76,11 +76,11 @@ export interface RuntimeConfig {
   /**
    * LinkedIn browser execution.
    *
-   * A local deployment may open its own browser. A hosted deployment may use
-   * either an explicitly configured cloud provider or the paired member
-   * computer from `docs/linkedin-companion.md`; without either, its bundled
-   * worker stays off. `TREVRA_LINKEDIN_LOCAL=false` remains the explicit master
-   * off switch on every execution home.
+   * The server never launches Chrome locally. It may attach either to an
+   * explicitly configured remote browser provider or to the paired Companion
+   * computer from `docs/linkedin-companion.md`. The Companion may run on the
+   * same physical machine as Docker; it still owns the Chrome process/profile.
+   * `TREVRA_LINKEDIN_LOCAL=false` remains the explicit master off switch.
    */
   linkedinLocalWorker: {
     enabled: boolean;
@@ -91,17 +91,11 @@ export interface RuntimeConfig {
     headless: boolean;
   };
   /**
-   * The self-hosted Reddit worker, on exactly the terms above.
+   * Reddit browser execution.
    *
-   * A SECOND FIELD RATHER THAN A SECOND USE OF THE FIRST. The two workers sign
-   * into two different accounts, keep two different browser profiles, and get
-   * banned independently -- so a self-hoster who wants LinkedIn off and Reddit
-   * on (or the reverse) must be able to say so, and `TREVRA_LINKEDIN_LOCAL`
-   * cannot be the switch for a platform it does not name.
-   *
-   * `hosted` is the same unconditional gate, read from the same deployment
-   * mode: no environment variable turns Reddit custody back on in a
-   * multi-tenant deployment.
+   * The legacy server-local Reddit browser worker is disabled. Reddit must not
+   * make Docker download or launch Chromium; it remains off until its browser
+   * session is routed through Companion like LinkedIn.
    */
   redditLocalWorker: { enabled: boolean; profileDir: string | null; hosted: boolean };
   /**
@@ -116,15 +110,7 @@ export interface RuntimeConfig {
   browserProvider: { kind: 'local' | 'remote'; provider: string | null };
 }
 
-/**
- * Just the LinkedIn worker's slice of the environment.
- *
- * Split out because the host-side CLI (`npm run linkedin:worker`) needs this
- * rule and nothing else: making an operator supply a DATABASE_URL before they
- * are allowed to open a browser at all would be a config error standing
- * between them and the one thing they are trying to do. ONE definition of the
- * gate, read from two places.
- */
+/** The server-side LinkedIn worker only attaches to browsers outside this process. */
 export function linkedInWorkerConfig(
   env: NodeJS.ProcessEnv = process.env
 ): RuntimeConfig['linkedinLocalWorker'] {
@@ -138,21 +124,10 @@ export function linkedInWorkerConfig(
     })
     .parse(env);
   const hosted = parsed.TREVRA_DEPLOYMENT_MODE === 'hosted';
-  // Browser HOME and deployment mode are separate facts. A hosted process may
-  // not launch a tenant browser on its own disk, but it may attach to a cloud
-  // browser or to a paired member computer. The latter is intentionally not
-  // reported as `remoteBrowser`: cloud execution has different proxy/session/
-  // consent rules, while the companion uses the member's own network and local
-  // persistent profile.
   const remoteBrowser = browserProviderSettings(env).kind === 'remote';
-  const companionBrowser = hosted && !remoteBrowser && companionBrowserConfigured(env);
+  const companionBrowser = !remoteBrowser && companionBrowserConfigured(env);
   return {
-    // Hosted execution can now have either of two remote homes: a cloud browser
-    // (explicitly authorised per workspace) or the workspace member's paired
-    // computer. The latter is still remote from this process, but LinkedIn
-    // traffic and the persistent browser profile stay on the member's machine.
-    enabled:
-      (!hosted || remoteBrowser || companionBrowser) && parsed.TREVRA_LINKEDIN_LOCAL !== 'false',
+    enabled: (remoteBrowser || companionBrowser) && parsed.TREVRA_LINKEDIN_LOCAL !== 'false',
     profileDir: parsed.TREVRA_LINKEDIN_PROFILE_DIR ?? null,
     hosted,
     remoteBrowser,
@@ -161,7 +136,12 @@ export function linkedInWorkerConfig(
   };
 }
 
-/** The Reddit worker remains local-only; the LinkedIn companion does not widen it. */
+/**
+ * The old Reddit worker launched Chromium inside the server process. That
+ * execution home is intentionally gone: no Docker/service process may own a
+ * browser. Keep the config shape for callers/status while Reddit is moved to
+ * Companion.
+ */
 export function redditWorkerConfig(
   env: NodeJS.ProcessEnv = process.env
 ): RuntimeConfig['redditLocalWorker'] {
@@ -174,8 +154,7 @@ export function redditWorkerConfig(
     })
     .parse(env);
   return {
-    // Hosted is the hard no. Otherwise on, unless explicitly switched off.
-    enabled: parsed.TREVRA_DEPLOYMENT_MODE !== 'hosted' && parsed.TREVRA_REDDIT_LOCAL !== 'false',
+    enabled: false,
     profileDir: parsed.TREVRA_REDDIT_PROFILE_DIR ?? null,
     hosted: parsed.TREVRA_DEPLOYMENT_MODE === 'hosted'
   };
@@ -413,21 +392,13 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     if (base.ALLOW_DEMO_AUTH === 'true') problems.push('ALLOW_DEMO_AUTH cannot be true');
     if (
       base.TREVRA_LINKEDIN_LOCAL === 'true' &&
-      base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
-      !browser.remote
+      !browser.remote &&
+      !companionBrowserConfigured(env)
     ) {
       problems.push(
-        'TREVRA_LINKEDIN_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted and no remote browser is configured; ' +
-          'a hosted container has no display, no Chromium and no browser profile of its own, so there is nothing for it to drive. ' +
-          'Set TREVRA_BROWSER_PROVIDER=remote with TREVRA_BROWSER_CDP_URL to run seats server-side (docs/hosted-execution.md), or leave this unset and run `npm run linkedin:worker` on a machine with a display -- ' +
-          "a workspace's LinkedIn credential itself may still be stored and used there; only THIS process opening a browser of its own is what this refuses"
+        'TREVRA_LINKEDIN_LOCAL=true requires a browser outside the server process. Pair a Companion device, or configure TREVRA_BROWSER_PROVIDER=remote with TREVRA_BROWSER_CDP_URL. Docker/server-local Chrome launches are disabled.'
       );
     }
-    // A REMOTE PROVIDER THAT WAS ASKED FOR AND DOES NOT HOLD TOGETHER stops the
-    // boot, rather than falling back to local. The fallback is the dangerous
-    // outcome here: a hosted deployment that quietly reverts to a local browser
-    // it does not have is a queue that fills up forever with no error anywhere,
-    // which is the exact failure this whole capability exists to end.
     if (browser.problem) problems.push(browser.problem);
     // PLAINTEXT CDP IS NOT ACCEPTABLE IN PRODUCTION. The connect URL carries the
     // provider API key, and on the `{proxyUrl}` form it carries the seat's proxy
@@ -446,9 +417,9 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
         "TREVRA_SECRETS_KEY is required when TREVRA_BROWSER_PROVIDER=remote: a browser attached over CDP has no profile directory, so each seat's signed-in session is stored encrypted and without a key every run would be a new-device sign-in. Generate one with `openssl rand -base64 32`"
       );
     }
-    if (base.TREVRA_REDDIT_LOCAL === 'true' && base.TREVRA_DEPLOYMENT_MODE === 'hosted')
+    if (base.TREVRA_REDDIT_LOCAL === 'true')
       problems.push(
-        'TREVRA_REDDIT_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted; the local Reddit worker drives a browser signed into one human account and is self-hosted only'
+        'TREVRA_REDDIT_LOCAL=true is no longer supported: Docker/server-local Chrome launches are disabled. Reddit browser execution must use Companion.'
       );
     if (base.TREVRA_ORCHESTRATOR === 'temporal' && !base.TEMPORAL_ADDRESS)
       problems.push('TEMPORAL_ADDRESS is required when TREVRA_ORCHESTRATOR=temporal');

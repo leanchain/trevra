@@ -27,7 +27,7 @@ import {
 } from '../api';
 import { useDialog } from '../ui/dialog';
 import {
-  FieldList,
+  ApprovalDecisionProof,
   RunInspector,
   firstLine,
   formatMoment,
@@ -300,24 +300,40 @@ export function LedgerView({
                     <div className="approval-banner">
                       <ShieldCheck size={19} />
                       <p>
-                        <strong>Approval required.</strong> Changes after approval are rejected.
+                        <strong>Your decision controls the exact action below.</strong> Changes
+                        after approval are rejected.
                       </p>
                     </div>
-                    <FieldList value={approval.input} />
-                    <div>
+                    <ApprovalDecisionProof step={approval} />
+                    <p
+                      className={
+                        'approval-proof-status' +
+                        (approval.approvalPayloadHash ? ' is-ready' : ' is-blocked')
+                      }
+                      id={'approval-proof-status-' + approval.id}
+                      role="status"
+                    >
+                      {approval.approvalPayloadHash
+                        ? 'Fingerprint verified. Approving can resume this run with exactly this payload.'
+                        : 'Approval is unavailable until the run records an exact payload fingerprint.'}
+                    </p>
+                    <div className="approval-proof-actions">
                       <button
                         className="secondary-button"
-                        disabled={busy === `${run.id}:${approval.stepId}`}
+                        disabled={busy === run.id + ':' + approval.stepId}
                         onClick={() => void decide(run, approval.stepId, 'reject')}
                       >
                         Reject
                       </button>
                       <button
                         className="primary-button"
-                        disabled={busy === `${run.id}:${approval.stepId}`}
+                        aria-describedby={'approval-proof-status-' + approval.id}
+                        disabled={
+                          busy === run.id + ':' + approval.stepId || !approval.approvalPayloadHash
+                        }
                         onClick={() => void decide(run, approval.stepId, 'approve')}
                       >
-                        {busy === `${run.id}:${approval.stepId}` ? (
+                        {busy === run.id + ':' + approval.stepId ? (
                           <LoaderCircle className="spin" size={16} />
                         ) : (
                           <Check size={16} />

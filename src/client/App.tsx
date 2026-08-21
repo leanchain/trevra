@@ -1012,6 +1012,7 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
   const [busy, setBusy] = useState('');
   const [copiedTarget, setCopiedTarget] = useState<'claude' | 'codex' | ''>('');
   const [confirmRevoke, setConfirmRevoke] = useState<AgentTokenSummary | null>(null);
+  const [confirmHide, setConfirmHide] = useState(false);
 
   const reload = async () => {
     const [nextAgents, nextTokens] = await Promise.all([getAgents(), getAgentTokens()]);
@@ -1033,18 +1034,26 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
       .catch(() => setApiBaseUrl(window.location.origin));
   }, []);
 
+  useEffect(() => {
+    if (!revealed) return;
+    const protectReveal = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', protectReveal);
+    return () => window.removeEventListener('beforeunload', protectReveal);
+  }, [revealed]);
+
   const active = tokens.filter((token) => !token.revokedAt);
 
   const create = async () => {
     setBusy('create');
     try {
-      // Auto-named. Asking a founder to invent a token name before they can
-      // connect anything was a question with no useful answer. One stable
-      // name either way: the same token backs both commands below.
       const created = await createAgentToken({
         agentId: agentId || undefined,
-        name: `Agent access · ${new Date().toLocaleDateString()}`
+        name: 'Agent access · ' + new Date().toLocaleDateString()
       });
+      setCopiedTarget('');
       setRevealed(created.token);
       await reload();
     } catch (error) {
@@ -1072,16 +1081,21 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
     }
   };
 
-  const mcpUrl = `${apiBaseUrl || window.location.origin}/api/agent/mcp`;
-  const secret = revealed || '<your-token>';
-  const claudeCommand = `claude mcp add trevra --scope project --transport http ${mcpUrl} --header "Authorization: Bearer ${secret}"`;
-  const codexCommand = `export TREVRA_AGENT_TOKEN=${secret}\ncodex mcp add trevra --url ${mcpUrl} --bearer-token-env-var TREVRA_AGENT_TOKEN`;
+  const mcpUrl = (apiBaseUrl || window.location.origin) + '/api/agent/mcp';
+  const claudeCommand =
+    'claude mcp add trevra --scope project --transport http ' +
+    mcpUrl +
+    ' --header "Authorization: Bearer ' +
+    revealed +
+    '"';
+  const codexCommand =
+    'export TREVRA_AGENT_TOKEN=' +
+    revealed +
+    '\ncodex mcp add trevra --url ' +
+    mcpUrl +
+    ' --bearer-token-env-var TREVRA_AGENT_TOKEN';
 
   const copy = async (which: 'claude' | 'codex', command: string) => {
-    if (!revealed) {
-      setToast('Click "Create access" first to generate your command');
-      return;
-    }
     try {
       await navigator.clipboard.writeText(command);
       setToast('Command copied — paste it in your terminal');
@@ -1092,17 +1106,38 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
     }
   };
 
+  const hideReveal = () => {
+    setRevealed('');
+    setCopiedTarget('');
+    setConfirmHide(false);
+    setToast('One-time token hidden. The saved access remains active.');
+  };
+
   return (
     <section className="page-panel agent-panel" id="setup-agent">
       <div className="section-heading">
         <div>
-          {/* aria-level, not <h2>: the page title is the topbar's h1, so a bare
-            h3 here skips a level. The element stays h3 because that is what
-            styles.css paints. */}
           <h3 aria-level={2}>
             <Terminal size={18} /> Connect Claude Code or Codex
           </h3>
+          <p>
+            Create one workspace-scoped token, then paste the generated command in your terminal.
+          </p>
         </div>
+      </div>
+
+      <div className="agent-access-intro">
+        <p>
+          The token appears only once. Trevra stores its hash, so it cannot show the plaintext again
+          after you dismiss these commands.
+        </p>
+        {active.length > 0 && (
+          <p>
+            This workspace already has {active.length} active{' '}
+            {active.length === 1 ? 'access token' : 'access tokens'}. Their plaintext cannot be
+            recovered; create new access only when another agent needs it.
+          </p>
+        )}
       </div>
 
       {agents.length > 0 && (
@@ -1112,39 +1147,61 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
             {agents.map((agent) => (
               <option key={agent.id} value={agent.id} disabled={agent.status !== 'active'}>
                 {agent.name}
-                {agent.status === 'active' ? '' : ` · ${agent.status}`}
+                {agent.status === 'active' ? '' : ' · ' + agent.status}
               </option>
             ))}
           </select>
         </label>
       )}
 
-      {!revealed && (
-        <button
-          className="primary-button agent-create"
-          onClick={() => void create()}
-          disabled={busy === 'create'}
-        >
-          {busy === 'create' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
-          Create access
-        </button>
+      {!revealed ? (
+        <div className="agent-reveal-actions">
+          <button
+            className="primary-button agent-create"
+            onClick={() => void create()}
+            disabled={busy === 'create'}
+          >
+            {busy === 'create' ? (
+              <LoaderCircle className="spin" size={16} />
+            ) : (
+              <KeyRound size={16} />
+            )}
+            Create access
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="agent-access-reveal" role="status">
+            <ShieldCheck size={18} />
+            <div>
+              <strong>Access created — save a command now</strong>
+              <p>Leaving this page or hiding the reveal permanently removes the token from view.</p>
+            </div>
+          </div>
+
+          <AgentCommandBox
+            label="Claude Code"
+            command={claudeCommand}
+            copied={copiedTarget === 'claude'}
+            onCopy={() => void copy('claude', claudeCommand)}
+          />
+
+          <AgentCommandBox
+            label="Codex"
+            command={codexCommand}
+            copied={copiedTarget === 'codex'}
+            onCopy={() => void copy('codex', codexCommand)}
+          />
+
+          <div className="agent-reveal-actions">
+            <button className="secondary-button" type="button" onClick={() => setConfirmHide(true)}>
+              I saved these commands
+            </button>
+          </div>
+        </>
       )}
 
-      <AgentCommandBox
-        label="Claude Code"
-        command={claudeCommand}
-        copied={copiedTarget === 'claude'}
-        onCopy={() => void copy('claude', claudeCommand)}
-      />
-
-      <AgentCommandBox
-        label="Codex"
-        command={codexCommand}
-        copied={copiedTarget === 'codex'}
-        onCopy={() => void copy('codex', codexCommand)}
-      />
-
-      {active.length > 0 && (
+      {tokens.length > 0 && (
         <div className="agent-token-list">
           {tokens.map((token) => (
             <article key={token.id} className={token.revokedAt ? 'is-revoked' : undefined}>
@@ -1157,7 +1214,7 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
                 {token.revokedAt
                   ? 'Revoked'
                   : token.lastUsedAt
-                    ? `Last used ${new Date(token.lastUsedAt).toLocaleString()}`
+                    ? 'Last used ' + new Date(token.lastUsedAt).toLocaleString()
                     : 'Not used yet'}
               </span>
               {!token.revokedAt && (
@@ -1177,6 +1234,25 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
             </article>
           ))}
         </div>
+      )}
+
+      {confirmHide && (
+        <ConfirmDrawer
+          title="Hide this one-time token?"
+          tone="caution"
+          body={
+            <>
+              <p>
+                Confirm only after you have pasted every command you need. Trevra cannot reveal this
+                token again after it leaves the screen.
+              </p>
+              <p>The access stays active until you revoke it.</p>
+            </>
+          }
+          confirmLabel="I saved it — hide token"
+          onCancel={() => setConfirmHide(false)}
+          onConfirm={hideReveal}
+        />
       )}
 
       {confirmRevoke && (
@@ -1205,7 +1281,6 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
     </section>
   );
 }
-
 /**
  * Turn a failure from the setup routes into something a founder can act on.
  *
@@ -2734,15 +2809,22 @@ function NavButton({
 function viewTitle(route: Route): string {
   if (route.section === 'loop') return route.sub === 'cost' ? 'What this cost' : 'Your loop';
   if (route.section === 'outreach') {
+    if (route.sub === 'inbound') return 'Inbound';
     if (route.sub === 'inbox') return 'Messages';
+    if (route.sub === 'opportunities') return 'Opportunities';
     if (route.sub === 'posts') return 'Scheduled posts';
     if (route.sub === 'settings') return 'Outreach settings';
     if (route.sub === 'new') return 'New campaign';
+    if (route.sub === 'campaign') return 'Campaign';
+    if (route.sub === 'workflow') return 'Campaign workflow';
     return 'Campaigns';
   }
   if (route.section === 'ledger') return 'Run ledger';
   if (route.section === 'research') return 'Research';
-  if (route.section === 'setup')
-    return route.sub === 'workspace' ? 'Setup · Workspace' : 'Setup · Access';
+  if (route.section === 'setup') {
+    if (route.sub === 'workspace') return 'Setup · Workspace';
+    if (route.sub === 'capture') return 'Setup · Lead capture';
+    return 'Setup · Access';
+  }
   return 'Setup';
 }

@@ -4785,193 +4785,31 @@ export async function openBrowser(
     seatKey,
     options.timezone ?? null
   );
-
-  // WHERE THE BROWSER IS, DECIDED HERE AND NOWHERE ELSE.
-  if (providerSettings.kind === 'remote' || providerSettings.problem) {
-    return openRemoteSeatHandle({
-      settings: providerSettings,
-      playwright,
-      db: options.db,
-      workspaceId: options.workspaceId,
-      seatKey,
-      handleKey,
-      headless,
-      profileDir,
-      fingerprint,
-      proxy,
-      env: options.env ?? process.env,
-      log
-    });
-  }
-
-  try {
-    const contextOptions = (channel: string): Record<string, unknown> => ({
-      headless,
-      channel,
-      // THE FULL CHROMIUM BUILD, NEVER `chrome-headless-shell`. Omitting this
-      // is how a headless launch silently became the headless SHELL binary --
-      // a different product from Chrome that ships without the PDF viewer,
-      // without `chrome.runtime`, with an empty `navigator.plugins`, with
-      // SwiftShader as its WebGL renderer and with scrollbars switched off. It
-      // announces itself to any fingerprinting script in the first frame, and
-      // it was doing so while the user agent claimed to be desktop Chrome.
-      // `channel: 'chromium'` is Playwright's opt-in to the real build running
-      // `--headless=new`, which shares the headed browser's surface -- and
-      // `'chrome'`, tried first, is better still: it is GOOGLE Chrome, the
-      // actual consumer binary, with Widevine, the proprietary codecs and the
-      // `chrome.runtime` object that Chromium builds simply do not have. See
-      // {@link BROWSER_CHANNELS}.
-      // TWO OF PLAYWRIGHT'S OWN DEFAULTS, REMOVED.
-      //
-      // `--enable-automation` is Chromium's "this browser is being controlled"
-      // switch. It is readable from the page and it is the first thing every
-      // published detection writeup checks; shipping it while also passing
-      // `--disable-blink-features=AutomationControlled` was answering the same
-      // question twice, once truthfully.
-      //
-      // `--hide-scrollbars` zeroes the scrollbar width, which a page measures in
-      // one line (`innerWidth === documentElement.clientWidth`) and which no
-      // desktop Chrome on Linux or Windows would ever report.
-      ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
-      // ANGLE OVER EGL, AND ONLY WHERE THE DEFAULT PRODUCES NOTHING.
-      //
-      // Measured with `scripts/linkedin-fingerprint-probe.mjs`, headed Chrome
-      // on an X display inside this container:
-      //
-      //   default                          -> getContext('webgl') returns NULL
-      //   --use-gl=angle --use-angle=gl-egl -> ANGLE (Intel, Mesa Intel(R)
-      //                                        Graphics (RPL-S), OpenGL ES 3.2)
-      //
-      // A browser with NO WebGL AT ALL is rarer than one with a software
-      // renderer, so the default was the worse of the two. With a render node
-      // passed in (compose.dev.yml `devices: /dev/dri`) these two flags reach
-      // the host's real GPU; without one they land on Mesa's llvmpipe, which is
-      // what a GPU-less cloud desktop reports.
-      //
-      // NOT ON THE OPERATOR'S OWN MACHINE. There the default already works and
-      // reports desktop GL ('OpenGL 4.6'), which is exactly what every other
-      // Chrome on that desktop reports. Forcing EGL would move it to
-      // 'OpenGL ES 3.2' -- still real, still that GPU, but no longer the same
-      // answer the member's own browser gives, and matching the neighbours is
-      // the whole point.
-      // Headed follows the real window; headless gets the seat's own stable
-      // desktop size rather than Playwright's 1280x720, which is both a known
-      // automation default and identical for every seat on this machine.
-      ...(headless ? { viewport: fingerprint.viewport } : { viewport: null }),
-      // Stable per seat and never the Playwright default -- see
-      // `seatContextFingerprint` for why all three travel together. The user
-      // agent here is the fallback; `alignClientHints` replaces it below with
-      // the launched binary's real version and matching client hints.
-      userAgent: fingerprint.userAgent,
-      locale: fingerprint.locale,
-      timezoneId: fingerprint.timezoneId,
-      // Absent unless the operator configured one. Passed as the context option
-      // rather than as a `--proxy-server` arg so Chromium can also answer the
-      // proxy's auth challenge, and so nothing here can accidentally be paired
-      // with a `--no-proxy-server` that would undo it.
-      ...(proxy ? { proxy } : {}),
-      args: seatLaunchArgs(inContainer())
-    });
-    const context = await launchSeatBrowser(playwright, profileDir, contextOptions, log);
-    // EVERYTHING PAST THE LAUNCH GETS ITS OWN TRY, AND THE CONTEXT IS CLOSED
-    // IF ANY OF IT THROWS.
-    //
-    // This used to be one try around the whole block, with a catch that logged
-    // and returned null -- and the launch is only the FIRST await in it.
-    // `newPage`, `alignClientHints` and its CDP calls all come after, so any
-    // failure there returned null while the context stayed open: a leaked
-    // Chromium with nothing holding a handle to it, and -- much worse -- a
-    // persistent user-data-dir whose exclusive lock that process now holds
-    // forever. The seat it belonged to could not be opened again by anybody,
-    // on this worker or any other, until a human killed the process. A leak
-    // that permanently strands one tenant's account is not a leak, it is an
-    // outage, and the fix is that nothing may return null from here without
-    // closing what it opened.
-    try {
-      const existingPage = context.pages()[0];
-      const page = (existingPage ?? (await context.newPage())) as LinkedInPage;
-      // BEFORE ANY NAVIGATION. The context opens on `about:blank`, so no request
-      // has left the browser yet and the first one LinkedIn sees already carries
-      // a user agent and a `Sec-CH-UA*` set that agree with each other.
-      await alignClientHints(context, page, fingerprint, log);
-      // NO TWO SITTINGS SHARE A RHYTHM. Seeded by the seat and the hour, so a
-      // run is still reproducible from the ledger while a restart -- or the
-      // same profile opened twice -- never replays the same pauses. See
-      // `setHumanSessionSalt`.
-      setHumanSessionSalt(`${handleKey}:${new Date().toISOString().slice(0, 13)}`);
-      // THE ONE FINGERPRINT NO CODE IN THIS FILE CAN FIX, said once per process
-      // so it is on the operator's screen rather than in a document nobody
-      // re-reads. A GPU-less container renders WebGL through SwiftShader and
-      // says so, by name, to anything that asks -- and no consumer machine on
-      // earth answers that. Everything else about this browser now agrees with
-      // a real one; this does not, and only a real display fixes it.
-      if (headless && inContainer() && !swiftShaderWarned) {
-        swiftShaderWarned = true;
-        log(
-          'LinkedIn seat browser is running headless in a container, so its WebGL renderer reports SwiftShader -- a value no consumer machine reports, and the single strongest automation signal left. Run `npm run linkedin:worker` on a machine with a display to give this seat a real GPU string.'
-        );
-      }
-      // AND ONLY THEN, THE FEED. A session whose very first request is
-      // `/in/some-stranger/` or a search URL -- no feed load before it, no
-      // referer, nothing in front of it -- is not a session a person has. A
-      // person opens LinkedIn, lands on the feed, scrolls it, and goes
-      // somewhere from there. This is the cheapest half of that and it costs
-      // one page load per browser open, not per action.
-      await warmUpSession(page, handleKey, log);
-      browserUseSeq += 1;
-      const handle: BrowserHandle = {
-        page,
-        headless,
-        lastUsedAt: Date.now(),
-        usedSeq: browserUseSeq,
-        provider: 'local',
-        // Null on purpose and not an oversight -- see the field's own comment.
-        // The profile directory this context was launched at is the session.
-        exportStorageState: null,
-        close: async () => {
-          await context.close();
-        }
-      };
-      // The cap is enforced BEFORE the insert, so the number of live Chromium
-      // processes this worker owns never exceeds it even momentarily.
-      await evictSurplusBrowsers(handleKey);
-      browsers.set(handleKey, handle);
-      return handle;
-    } catch (cause) {
-      try {
-        await context.close();
-      } catch {
-        // Already closing, already dead, or already gone. Nothing here is a
-        // reason to leave the caller without an answer.
-      }
-      log(
-        `LinkedIn local worker opened and then closed the browser profile at ${profileDir}: it could not be prepared for use (${cause instanceof Error ? cause.message : String(cause)}). Nothing was left holding the profile lock.`
-      );
-      lastBrowserOpenFailure.set(handleKey, cause);
-      return null;
-    }
-  } catch (cause) {
-    // NO RETRY WITHOUT THE PROXY, here or anywhere else. There is exactly one
-    // launch attempt, and if it carried a proxy then every attempt for this
-    // seat carries it.
+  // WHERE THE BROWSER IS, DECIDED HERE AND NOWHERE ELSE. Server-local Chrome
+  // is not an execution home anymore: even a self-hosted Docker deployment
+  // attaches to Companion (which may run on that same physical machine).
+  if (providerSettings.kind !== 'remote') {
     log(
-      `LinkedIn local worker could not open the browser profile at ${profileDir}${proxy ? ` through ${proxy.server}` : ''}: ${cause instanceof Error ? cause.message : String(cause)}.`
+      providerSettings.problem ??
+        `LinkedIn seat ${options.workspaceId}/${seatKey}: no Companion or remote browser is configured. Server-local Chrome launches are disabled.`
     );
-    // WHY, not just that. The caller has only `null` to work with, and the one
-    // thing an operator needs -- what the browser said -- is here.
-    lastBrowserOpenFailure.set(handleKey, cause);
     return null;
   }
+  return openRemoteSeatHandle({
+    settings: providerSettings,
+    playwright,
+    db: options.db,
+    workspaceId: options.workspaceId,
+    seatKey,
+    handleKey,
+    headless,
+    profileDir,
+    fingerprint,
+    proxy,
+    env: options.env ?? process.env,
+    log
+  });
 }
-
-/**
- * Which browser mode this process should use, or the one thing to do about it.
- *
- * HEADED WINS WHEN IT IS AVAILABLE, always. A window the operator can see is
- * strictly better than one they cannot: they can watch it, close it, and clear
- * a captcha in it. Headless is what is left when there is no display -- the
- * container -- and it is usable only by a seat that can sign itself in.
- */
 function seatBrowserMode(config: LinkedInLocalWorkerConfig): {
   headless: boolean;
   blocked: string | null;

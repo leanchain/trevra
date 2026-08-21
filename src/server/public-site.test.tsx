@@ -125,22 +125,17 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
   });
 
   /**
-   * TWO FALLBACKS, AND THEY MEAN DIFFERENT THINGS.
-   *
-   * The hero and closing CTAs say "Launch hosted workspace" and fall back to
-   * `#hosted`, the deploy card. The NAV button says Login and ships with the
-   * live hosted login URL so a pre-JS visitor can sign in immediately. Both
-   * are `data-hosted-cta`: where a different hosted workspace URL is configured
-   * at serve time, it remains the better destination for either.
+   * Discovery CTAs fall back to #hosted; conversion CTAs fall back to a
+   * pre-addressed email. Both are honest before JavaScript runs, and every
+   * marked CTA is rewritten when a hosted workspace is configured.
    */
   it('rewrites every marked CTA the shipped index.html actually carries', () => {
     const shipped = indexHtml.match(/<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi) ?? [];
     expect(shipped.length).toBeGreaterThan(0);
-    for (const tag of shipped)
-      expect(tag).toMatch(/href="(?:#hosted|\/login|https:\/\/app\.usetrevra\.com\/login)"/);
-    expect(
-      shipped.filter((tag) => /href="(?:\/login|https:\/\/app\.usetrevra\.com\/login)"/.test(tag))
-    ).toHaveLength(1);
+    for (const tag of shipped) expect(tag).toMatch(/href="(?:#hosted|mailto:[^"]+)"/);
+    expect(shipped.some((tag) => tag.includes('href="#hosted"'))).toBe(true);
+    expect(shipped.some((tag) => tag.includes('href="mailto:'))).toBe(true);
+    expect(shipped.some((tag) => tag.includes('href="/login"'))).toBe(false);
 
     process.env.VITE_HOSTED_APP_URL = HOSTED;
     const rendered = renderAppIndex(indexHtml, 'test-nonce');
@@ -250,16 +245,12 @@ describe('the hosted-workspace CTA in shipped HTML', () => {
     expect(rendered).toContain('<link rel="canonical" href="https://selfhost.example/" />');
   });
 
-  it('leaves the shipped CTAs on their own fallback when nothing is configured', () => {
+  it('leaves the shipped CTAs on honest access fallbacks when nothing is configured', () => {
     const rendered = renderAppIndex(indexHtml, 'test-nonce');
     const marked = rendered.match(/<a\b[^>]*\bdata-hosted-cta\b[^>]*>/gi) ?? [];
     expect(marked.length).toBeGreaterThan(0);
-    for (const tag of marked)
-      expect(tag).toMatch(/href="(?:#hosted|\/login|https:\/\/app\.usetrevra\.com\/login)"/);
-    // The nav's Login keeps naming the live auth screen rather than a scroll target.
-    expect(
-      marked.filter((tag) => /href="(?:\/login|https:\/\/app\.usetrevra\.com\/login)"/.test(tag))
-    ).toHaveLength(1);
+    for (const tag of marked) expect(tag).toMatch(/href="(?:#hosted|mailto:[^"]+)"/);
+    expect(marked.some((tag) => tag.includes('href="/login"'))).toBe(false);
   });
 
   it('leaves the hosted app shell as an app document rather than marketing it', () => {

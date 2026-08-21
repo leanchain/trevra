@@ -32,9 +32,7 @@ import {
   browserBlockers,
   displayBlocker,
   inContainer,
-  openPersistentBrowser,
-  playwrightBrowsersPath,
-  type BrowserContextLike
+  playwrightBrowsersPath
 } from '../browser/local.js';
 import { redditWorkerConfig } from '../config.js';
 import type { Db } from '../db.js';
@@ -143,22 +141,17 @@ export function redditProfileDirBase(configured?: string | null): string {
  * for is not something a global environment variable should be able to switch
  * back off by accident.
  */
-export function resolveRedditProfileDir(configured: string | null | undefined, workspaceId: string): string {
+export function resolveRedditProfileDir(
+  configured: string | null | undefined,
+  workspaceId: string
+): string {
   const base = configured?.trim() ? configured.trim() : DEFAULT_PROFILE_DIR_BASE;
   return expandHome(`${base}-${pathSafeId(workspaceId)}-profile`);
 }
 
-/**
- * Why Reddit automation is off, in one sentence.
- *
- * TWO KINDS OF OFF, and conflating them is what sends an operator hunting for
- * a switch. Hosted is a decision the deployment made and no environment
- * variable can undo it; anything else is a self-hoster's own setting.
- */
-export function redditOffReason(config: Pick<RedditLocalWorkerConfig, 'hosted'>): string {
-  return config.hosted
-    ? 'This deployment is hosted, so Reddit automation is off and cannot be enabled.'
-    : 'Reddit automation is switched off on this server.';
+/** Why Reddit automation is off, in one sentence. */
+export function redditOffReason(_config: Pick<RedditLocalWorkerConfig, 'hosted'>): string {
+  return 'Reddit browser automation is off because server-local Chrome launches are disabled; Reddit must use Companion.';
 }
 
 export interface RedditBrowserReadiness {
@@ -174,9 +167,6 @@ export interface RedditHeadlessReadiness {
 }
 
 /**
- * Can this process open a headed Chrome, and if not, what is the one thing to
- * do about it?
- *
  * The container line is CONTEXT, not a verdict: a container with a forwarded
  * display can genuinely run this. It is emitted only alongside a real blocker,
  * because it is the fact that explains why the others are true -- an operator
@@ -198,7 +188,10 @@ export function redditBrowserReadiness(
   return {
     canLaunchHeaded: false,
     reasons: inContainer()
-      ? ['This process runs in a container, which has no display and no browser of its own.', ...blockers]
+      ? [
+          'This process runs in a container, which has no display and no browser of its own.',
+          ...blockers
+        ]
       : blockers
   };
 }
@@ -219,8 +212,13 @@ export function redditHeadlessReadiness(
   options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
 ): RedditHeadlessReadiness {
   if (!config.enabled) return { canLaunchHeadless: false, reasons: [redditOffReason(config)] };
-  const blockers = browserBlockers(options.env ?? process.env, options.platform ?? process.platform);
-  return blockers.length === 0 ? { canLaunchHeadless: true, reasons: [] } : { canLaunchHeadless: false, reasons: blockers };
+  const blockers = browserBlockers(
+    options.env ?? process.env,
+    options.platform ?? process.platform
+  );
+  return blockers.length === 0
+    ? { canLaunchHeadless: true, reasons: [] }
+    : { canLaunchHeadless: false, reasons: blockers };
 }
 
 interface BrowserHandle {
@@ -270,7 +268,11 @@ const unreadyLogged = new Map<string, string>();
  * cannot drive a browser for it. This runs on a per-tick loop, and a repeated
  * line is a line nobody reads.
  */
-function reportUnready(workspaceId: string, log: (message: string) => void, reasons: string[]): void {
+function reportUnready(
+  workspaceId: string,
+  log: (message: string) => void,
+  reasons: string[]
+): void {
   const summary = reasons.join(' ');
   if (unreadyLogged.get(workspaceId) === summary) return;
   unreadyLogged.set(workspaceId, summary);
@@ -300,32 +302,14 @@ function reportUnready(workspaceId: string, log: (message: string) => void, reas
  * be a shared browser reintroduced by omission.
  */
 async function openBrowser(
-  config: RedditLocalWorkerConfig,
+  _config: RedditLocalWorkerConfig,
   log: (message: string) => void,
   options: { workspaceId: string; headless?: boolean }
 ): Promise<BrowserHandle | null> {
-  const headless = options.headless ?? false;
-  const existing = browsers.get(options.workspaceId);
-  if (existing && existing.headless === headless) return existing;
-  if (existing) await closeRedditBrowser(options.workspaceId);
-
-  const profileDir = resolveRedditProfileDir(config.profileDir, options.workspaceId);
-  const opened = await openPersistentBrowser(profileDir, { headless, log });
-  if ('failed' in opened) {
-    log(`Reddit local worker could not open a browser: ${opened.failed}`);
-    return null;
-  }
-
-  const context: BrowserContextLike = opened.context;
-  const handle: BrowserHandle = {
-    page: opened.page as RedditPage,
-    headless,
-    close: async () => {
-      await context.close();
-    }
-  };
-  browsers.set(options.workspaceId, handle);
-  return handle;
+  log(
+    `Reddit browser execution is unavailable for ${options.workspaceId}: server-local Chrome launches are disabled. Reddit must use a Companion-backed browser session.`
+  );
+  return null;
 }
 
 /** Reddit handles are unique case-insensitively, so `u/Pankaj` and `u/pankaj` are one account. */
@@ -388,14 +372,20 @@ function confirmSessionIdentity(expected: string | null, live: string | null): R
  * strictly better than one they cannot: they can watch it, close it, and clear
  * a captcha in it. Headless is what is left when there is no display.
  */
-function accountBrowserMode(config: RedditLocalWorkerConfig): { headless: boolean; blocked: string | null } {
+function accountBrowserMode(config: RedditLocalWorkerConfig): {
+  headless: boolean;
+  blocked: string | null;
+} {
   const headed = redditBrowserReadiness(config);
   if (headed.canLaunchHeaded) return { headless: false, blocked: null };
   const headless = redditHeadlessReadiness(config);
   if (headless.canLaunchHeadless) return { headless: true, blocked: null };
   // Neither. The headed reasons are the fuller set and already carry the
   // container line that explains the rest.
-  return { headless: false, blocked: headed.reasons[headed.reasons.length - 1] ?? redditOffReason(config) };
+  return {
+    headless: false,
+    blocked: headed.reasons[headed.reasons.length - 1] ?? redditOffReason(config)
+  };
 }
 
 /** The four answers `POST /api/reddit/login` may give. */
@@ -452,7 +442,10 @@ export async function loginRedditAccount(
   if (!page) {
     const mode = accountBrowserMode(config);
     if (mode.blocked) return { status: 'failed', message: mode.blocked };
-    const handle = await openBrowser(config, log, { workspaceId: options.workspaceId, headless: mode.headless });
+    const handle = await openBrowser(config, log, {
+      workspaceId: options.workspaceId,
+      headless: mode.headless
+    });
     if (!handle) return { status: 'failed', message: BROWSER_OPEN_FAILED_MESSAGE };
     page = handle.page;
   }
@@ -475,7 +468,9 @@ export async function loginRedditAccount(
       await closeRedditBrowser(options.workspaceId);
       return { status: 'failed', message: identity.blocked };
     }
-    const account = await stampRedditSessionValid(db, options.workspaceId, now, { username: handle });
+    const account = await stampRedditSessionValid(db, options.workspaceId, now, {
+      username: handle
+    });
     return {
       status: 'ok',
       message: 'That Reddit session is still live, so nothing had to be signed in.',
@@ -496,7 +491,10 @@ export async function loginRedditAccount(
   });
 
   if ('needsOtp' in result) {
-    return { status: 'otp_required', message: 'Reddit wants your two-factor code; enter it and sign in again.' };
+    return {
+      status: 'otp_required',
+      message: 'Reddit wants your two-factor code; enter it and sign in again.'
+    };
   }
   if (result.ok) {
     const handle = await driver.readHandle(page);
@@ -524,7 +522,8 @@ export async function loginRedditAccount(
   if (result.failureKind === 'challenge') {
     return {
       status: 'challenge',
-      message: 'Reddit wants a human check that only a person at a browser window can finish; run `npm run reddit:worker` on a machine with a display, then complete it in that window.'
+      message:
+        'Reddit wants a human check that only a person at a browser window can finish; run `npm run reddit:worker` on a machine with a display, then complete it in that window.'
     };
   }
 
@@ -545,8 +544,7 @@ export async function loginRedditAccount(
  * can act on.
  */
 export type RedditSessionResult =
-  | { ok: true; page: RedditPage; driver: RedditDriver }
-  | { ok: false; blocked: string };
+  { ok: true; page: RedditPage; driver: RedditDriver } | { ok: false; blocked: string };
 
 export async function openRedditSession(
   db: Db,
@@ -568,8 +566,16 @@ export async function openRedditSession(
   if (!config.enabled) return { ok: false, blocked: redditOffReason(config) };
 
   if (options.page) {
-    const outcome = await loginRedditAccount(db, config, { ...options, now, driver, page: options.page, log });
-    return outcome.status === 'ok' ? { ok: true, page: options.page, driver } : { ok: false, blocked: outcome.message };
+    const outcome = await loginRedditAccount(db, config, {
+      ...options,
+      now,
+      driver,
+      page: options.page,
+      log
+    });
+    return outcome.status === 'ok'
+      ? { ok: true, page: options.page, driver }
+      : { ok: false, blocked: outcome.message };
   }
 
   const mode = accountBrowserMode(config);
@@ -578,10 +584,19 @@ export async function openRedditSession(
     return { ok: false, blocked: mode.blocked };
   }
 
-  const handle = await openBrowser(config, log, { workspaceId: options.workspaceId, headless: mode.headless });
+  const handle = await openBrowser(config, log, {
+    workspaceId: options.workspaceId,
+    headless: mode.headless
+  });
   if (!handle) return { ok: false, blocked: BROWSER_OPEN_FAILED_MESSAGE };
 
-  const outcome = await loginRedditAccount(db, config, { workspaceId: options.workspaceId, now, driver, page: handle.page, log });
+  const outcome = await loginRedditAccount(db, config, {
+    workspaceId: options.workspaceId,
+    now,
+    driver,
+    page: handle.page,
+    log
+  });
   if (outcome.status !== 'ok') return { ok: false, blocked: outcome.message };
 
   return { ok: true, page: handle.page, driver };
@@ -710,18 +725,24 @@ export async function disconnectRedditWorkspace(
     // and the invariant that makes that safe (the target is always a named
     // child, never the configured base and never a filesystem root) is worth
     // one branch rather than one comment.
-    problems.push('Refused to remove that Reddit profile directory because it is not one this worker builds.');
+    problems.push(
+      'Refused to remove that Reddit profile directory because it is not one this worker builds.'
+    );
   } else {
     try {
       profileRemoved = existsSync(profileDir);
       await rm(profileDir, { recursive: true, force: true });
       if (existsSync(profileDir)) {
         profileRemoved = false;
-        problems.push(`Could not remove the Reddit browser profile at ${profileDir}; that session is still signed in until it is deleted by hand.`);
+        problems.push(
+          `Could not remove the Reddit browser profile at ${profileDir}; that session is still signed in until it is deleted by hand.`
+        );
       }
     } catch (cause) {
       profileRemoved = false;
-      problems.push(`Could not remove the Reddit browser profile at ${profileDir}: ${cause instanceof Error ? cause.message : String(cause)}.`);
+      problems.push(
+        `Could not remove the Reddit browser profile at ${profileDir}: ${cause instanceof Error ? cause.message : String(cause)}.`
+      );
     }
   }
 
@@ -730,9 +751,15 @@ export async function disconnectRedditWorkspace(
   // account the customer just disconnected.
   let credentialsRemoved = false;
   try {
-    credentialsRemoved = await deleteRedditCredentials(db, workspaceId, options.actorUserId ?? null);
+    credentialsRemoved = await deleteRedditCredentials(
+      db,
+      workspaceId,
+      options.actorUserId ?? null
+    );
   } catch (cause) {
-    problems.push(`Could not remove the stored Reddit sign-in: ${cause instanceof Error ? cause.message : String(cause)}.`);
+    problems.push(
+      `Could not remove the stored Reddit sign-in: ${cause instanceof Error ? cause.message : String(cause)}.`
+    );
   }
 
   // 4. THE ROW: the handle and the session-validity stamp, which now describe
@@ -741,10 +768,19 @@ export async function disconnectRedditWorkspace(
   try {
     accountRemoved = await deleteRedditAccount(db, workspaceId);
   } catch (cause) {
-    problems.push(`Could not remove the Reddit account record: ${cause instanceof Error ? cause.message : String(cause)}.`);
+    problems.push(
+      `Could not remove the Reddit account record: ${cause instanceof Error ? cause.message : String(cause)}.`
+    );
   }
 
-  return { browserClosed, profileRemoved, profileDir, credentialsRemoved, accountRemoved, problems };
+  return {
+    browserClosed,
+    profileRemoved,
+    profileDir,
+    credentialsRemoved,
+    accountRemoved,
+    problems
+  };
 }
 
 /**
@@ -795,11 +831,18 @@ export async function commentOnRedditThread(
     page?: RedditPage;
     log?: (message: string) => void;
   }
-): Promise<{ ok: true; result: RedditDriverResult } | { ok: false; blocked: string; result?: RedditDriverResult }> {
+): Promise<
+  | { ok: true; result: RedditDriverResult }
+  | { ok: false; blocked: string; result?: RedditDriverResult }
+> {
   const session = await openRedditSession(db, config, options);
   if (!session.ok) return session;
 
-  const result = await session.driver.commentOnThread(session.page, options.threadUrl, options.body);
+  const result = await session.driver.commentOnThread(
+    session.page,
+    options.threadUrl,
+    options.body
+  );
   if (result.ok) return { ok: true, result };
   return { ok: false, blocked: result.detail ?? 'Reddit refused the reply.', result };
 }

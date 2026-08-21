@@ -6,21 +6,27 @@ export interface ActionMenuItem {
   icon?: ReactNode;
   disabled?: boolean;
   danger?: boolean;
+  active?: boolean;
   onSelect: () => void | Promise<void>;
 }
 
 export function ActionMenu({
   label,
   items,
-  compact = false
+  compact = false,
+  className = '',
+  triggerContent
 }: {
   label: string;
   items: readonly ActionMenuItem[];
   compact?: boolean;
+  className?: string;
+  triggerContent?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const selectable = items.some((item) => item.active !== undefined);
 
   useEffect(() => {
     if (!open) return;
@@ -48,7 +54,12 @@ export function ActionMenu({
   }, [open]);
 
   return (
-    <div className={`li-action-menu${compact ? ' is-compact' : ''}`} ref={rootRef}>
+    <div
+      className={
+        'li-action-menu' + (compact ? ' is-compact' : '') + (className ? ' ' + className : '')
+      }
+      ref={rootRef}
+    >
       <button
         className="li-action-menu-trigger"
         type="button"
@@ -58,7 +69,7 @@ export function ActionMenu({
         title={label}
         onClick={() => setOpen((value) => !value)}
       >
-        <MoreVertical size={compact ? 16 : 18} aria-hidden="true" />
+        {triggerContent ?? <MoreVertical size={compact ? 16 : 18} aria-hidden="true" />}
       </button>
       {open && (
         <div
@@ -87,9 +98,14 @@ export function ActionMenu({
           {items.map((item) => (
             <button
               key={item.label}
-              className={item.danger ? 'is-danger' : undefined}
+              className={
+                [item.danger ? 'is-danger' : '', item.active ? 'is-active' : '']
+                  .filter(Boolean)
+                  .join(' ') || undefined
+              }
               type="button"
-              role="menuitem"
+              role={selectable ? 'menuitemradio' : 'menuitem'}
+              aria-checked={selectable ? item.active === true : undefined}
               disabled={item.disabled}
               onClick={() => {
                 setOpen(false);

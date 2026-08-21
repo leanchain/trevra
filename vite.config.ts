@@ -37,6 +37,48 @@ function appShellHtml(mode: string): Plugin {
 }
 
 /**
+ * Serve the landing page at `/` during ordinary development, the way the
+ * production server does: src/server/index.ts hands `/` the prerendered
+ * marketing index.html. Without this, a developer opening the dev server
+ * lands on the app shell's login redirect and never sees the conversion
+ * surface. Skipped in --mode marketing, where index.html already IS the
+ * marketing page.
+ */
+function devHomeMarketing(mode: string): Plugin {
+  return {
+    name: 'trevra-dev-home-marketing',
+    apply: 'serve',
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html, ctx) {
+        // After Vite's html fallback rewrites `/` to `/index.html`, ctx.path
+        // can no longer tell `/` apart from any other app route; only
+        // originalUrl still carries the address the browser asked for.
+        const requested = (ctx?.originalUrl ?? '').split('?')[0];
+        if (mode === 'marketing' || requested !== '/') return html;
+        return `<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trevra — Sign in or open your workspace</title>
+  <meta name="robots" content="noindex,nofollow" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/marketing.css" />
+  <script src="/theme.js"></script>
+</head>
+<body>
+  <div id="root"><main class="center-state">Opening Trevra…</main></div>
+  <noscript>Trevra requires JavaScript to open your workspace.</noscript>
+  <script type="module" src="/src/client/dev-home-entry.tsx"></script>
+</body>
+</html>`;
+      }
+    }
+  };
+}
+
+/**
  * Serve `public/<page>/index.html` at `/<page>` in dev, the way the production
  * server does (src/server/index.ts).
  *
@@ -146,7 +188,20 @@ export default defineConfig(({ mode }) => {
   const hmrClientPort = Number(env.VITE_HMR_CLIENT_PORT ?? webPort);
 
   return {
-    plugins: [appShellHtml(mode), react(), staticDocuments(Object.keys(proxy)), dockerStatHmr()],
+    plugins: [
+      appShellHtml(mode),
+      devHomeMarketing(mode),
+      react(),
+      staticDocuments(Object.keys(proxy)),
+      dockerStatHmr()
+    ],
+    optimizeDeps: {
+      // Scan only the real entry. Vite's default (`**/*.html`) also crawls the
+      // scraped fixtures under spike/workers/fixtures/, whose importmaps
+      // reference packages that exist nowhere in this repo (@dna/*), failing
+      // dependency pre-bundling for the whole dev server.
+      entries: ['index.html']
+    },
     server: {
       host: '0.0.0.0',
       allowedHosts: ['.trycloudflare.com'],

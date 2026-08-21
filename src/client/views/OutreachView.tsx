@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { AccountsScreen } from '../AccountsScreen';
 import { LinkedInAccounts } from '../LinkedInAccounts';
 import { LinkedInCompanionAttention } from '../LinkedInCompanion';
@@ -11,18 +12,29 @@ import { LinkedInManagerWorkflowConfig } from '../LinkedInManagerWorkflowConfig'
 import { LinkedInPosts } from '../LinkedInPosts';
 import { InboundPeople } from '../InboundPeople';
 import { Opportunities } from '../Opportunities';
+import { ActionMenu } from '../ui/action-menu';
 import { replaceNavigate, type Route } from '../ui/route';
 import { scrollToId } from '../ui/scrollToId';
-const OUTREACH_TABS: ReadonlyArray<{ sub: string; path: string; label: string }> = [
-  { sub: '', path: '/outreach', label: 'Campaigns' },
-  { sub: 'inbound', path: '/outreach/inbound', label: 'Inbound' },
-  { sub: 'inbox', path: '/outreach/inbox', label: 'Messages' },
-  { sub: 'opportunities', path: '/outreach/opportunities', label: 'Opportunities' },
-  { sub: 'posts', path: '/outreach/posts', label: 'Posts' },
-  { sub: 'settings', path: '/outreach/settings', label: 'Settings' }
+
+const OUTREACH_TABS: ReadonlyArray<{
+  sub: string;
+  path: string;
+  label: string;
+  mobile: 'main' | 'more';
+}> = [
+  { sub: '', path: '/outreach', label: 'Campaigns', mobile: 'main' },
+  { sub: 'inbound', path: '/outreach/inbound', label: 'Inbound', mobile: 'more' },
+  { sub: 'inbox', path: '/outreach/inbox', label: 'Messages', mobile: 'main' },
+  {
+    sub: 'opportunities',
+    path: '/outreach/opportunities',
+    label: 'Opportunities',
+    mobile: 'main'
+  },
+  { sub: 'posts', path: '/outreach/posts', label: 'Posts', mobile: 'more' },
+  { sub: 'settings', path: '/outreach/settings', label: 'Settings', mobile: 'more' }
 ];
 
-/** Old addresses, and where each one now lives. */
 const OUTREACH_LEGACY_REDIRECTS: Record<string, string> = {
   manager: '/outreach',
   campaigns: '/outreach',
@@ -32,13 +44,11 @@ const OUTREACH_LEGACY_REDIRECTS: Record<string, string> = {
   accounts: '/outreach'
 };
 
-/** Legacy addresses whose content is now a fold on the Campaigns screen. */
 const OUTREACH_LEGACY_ANCHORS: Record<string, string> = {
   leads: 'leads',
   accounts: 'accounts'
 };
 
-/** Which tab owns the screen being shown. Legacy subs are mid-redirect and own none. */
 function activeSub(sub: string): string {
   if (sub === 'new' || sub === 'campaign' || sub === 'workflow') return '';
   return OUTREACH_TABS.some((tab) => tab.sub === sub) ? sub : '';
@@ -66,7 +76,6 @@ export function OutreachView({
     if (!target) return;
     const anchorId = OUTREACH_LEGACY_ANCHORS[sub];
     if (anchorId) setAnchor({ id: anchorId, seq: ++anchorSeq.current });
-    // `/outreach/manager/new` was the builder's address.
     replaceNavigate(sub === 'manager' && route.id === 'new' ? '/outreach/new' : target);
   }, [sub, route.id]);
 
@@ -78,6 +87,8 @@ export function OutreachView({
   }, [anchor]);
 
   const current = activeSub(sub);
+  const moreTabs = OUTREACH_TABS.filter((tab) => tab.mobile === 'more');
+  const activeMore = moreTabs.find((tab) => tab.sub === current) ?? null;
   const [workflowId, campaignId] = sub === 'workflow' ? (route.id ?? '').split('/') : ['', ''];
 
   return (
@@ -88,13 +99,31 @@ export function OutreachView({
           <button
             key={tab.path}
             type="button"
-            className={tab.sub === current ? 'is-active' : undefined}
+            className={
+              'outreach-tab ' +
+              (tab.mobile === 'more' ? 'outreach-tab-more' : 'outreach-tab-main') +
+              (tab.sub === current ? ' is-active' : '')
+            }
             aria-current={tab.sub === current ? 'page' : undefined}
             onClick={() => onNavigate(tab.path)}
           >
             {tab.label}
           </button>
         ))}
+        <ActionMenu
+          className={'outreach-more-menu' + (activeMore ? ' is-active' : '')}
+          label="More outreach sections"
+          triggerContent={
+            <span className="outreach-more-label">
+              {activeMore?.label ?? 'More'} <ChevronDown size={14} aria-hidden="true" />
+            </span>
+          }
+          items={moreTabs.map((tab) => ({
+            label: tab.label,
+            active: tab.sub === current,
+            onSelect: () => onNavigate(tab.path)
+          }))}
+        />
       </nav>
 
       {sub === 'inbound' && <InboundPeople setToast={setToast} />}
@@ -123,7 +152,7 @@ export function OutreachView({
               type="button"
               onClick={() =>
                 onNavigate(
-                  campaignId ? `/outreach/campaign/${encodeURIComponent(campaignId)}` : '/outreach'
+                  campaignId ? '/outreach/campaign/' + encodeURIComponent(campaignId) : '/outreach'
                 )
               }
             >

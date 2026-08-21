@@ -3,11 +3,14 @@ import { CheckCircle2, ChevronRight, Clock3, Inbox, LoaderCircle, Send } from 'l
 import type { DashboardPayload, PlaybookRun } from '../../shared/types';
 import {
   fetchLoopCost,
+  getAgentSetup,
+  getAgentTokens,
   getLinkedInActions,
   getLinkedInAnalytics,
   getLinkedInManagedCampaigns,
   getLinkedInManagerLeadLists,
   getPlaybookRuns,
+  getPolicies,
   getToday,
   planGtmIntent,
   prepareCompiledGtmPlan,
@@ -18,6 +21,7 @@ import {
 import { errorMessage, useOutreachRefresh, useSeatLimits } from '../LinkedInSafety';
 import { DEFAULT_WINDOW_DAYS, LinkedInFunnel } from '../LinkedInAnalyticsScreen';
 import { ConfidenceTag, WindowPicker } from '../LinkedInViz';
+import { ACTIVATION_STEPS, nextActivationStep, type ActivationSignals } from './activation';
 import { money, usd } from './format';
 
 type StageId = 'find' | 'reach' | 'answer';
@@ -39,60 +43,271 @@ interface Block {
 }
 
 interface LoopData {
-  planned: number;
-  /** Of `planned`, the subset that is an invite rather than a follow-up step. */
-  plannedInvites: number;
-  waitingApprovals: PlaybookRun[];
+  planned: number | null;
+  /** Of planned, the subset that is an invite rather than a follow-up step. */
+  plannedInvites: number | null;
+  waitingApprovals: PlaybookRun[] | null;
+}
+
+interface RemoteActivation {
+  agent: boolean | null;
+  policy: boolean | null;
+  work: boolean | null;
+  problems: string[];
+}
+
+function combineChecks(left: boolean | null, right: boolean | null): boolean | null {
+  if (left === true || right === true) return true;
+  if (left === false && right === false) return false;
+  return null;
+}
+
+function useWorkspaceActivation(
+  data: DashboardPayload,
+  limits: LinkedInLimitsReport | null,
+  seatError: string
+) {
+  const [remote, setRemote] = useState<RemoteActivation>({
+    agent: null,
+    policy: null,
+    work: null,
+    problems: []
+  });
+
+  const reload = useCallback(async () => {
+    setRemote({ agent: null, policy: null, work: null, problems: [] });
+    const [tokensResult, setupResult, policiesResult, listsResult, campaignsResult] =
+      await Promise.allSettled([
+        getAgentTokens(),
+        getAgentSetup(),
+        getPolicies(),
+        getLinkedInManagerLeadLists(),
+        getLinkedInManagedCampaigns()
+      ]);
+
+    const problems: string[] = [];
+    if (tokensResult.status === 'rejected') problems.push('agent access');
+    if (setupResult.status === 'rejected') problems.push('hosted agent setup');
+    if (policiesResult.status === 'rejected') problems.push('approval policies');
+    if (listsResult.status === 'rejected') problems.push('People lists');
+    if (campaignsResult.status === 'rejected') problems.push('campaigns');
+
+    const tokenAgent =
+      tokensResult.status === 'fulfilled'
+        ? tokensResult.value.some((token) => !token.revokedAt)
+        : null;
+    const hostedAgent =
+      setupResult.status === 'fulfilled'
+        ? Boolean(
+            setupResult.value &&
+            ((setupResult.value.config && setupResult.value.secret) ||
+              (setupResult.value.cli.config &&
+                setupResult.value.cli.tokenStored &&
+                setupResult.value.cli.riskAccepted))
+          )
+        : null;
+    const policy =
+      policiesResult.status === 'fulfilled'
+        ? policiesResult.value.some((entry) => entry.enabled)
+        : null;
+    const listsHaveWork = listsResult.status === 'fulfilled' ? listsResult.value.length > 0 : null;
+    const campaignsHaveWork =
+      campaignsResult.status === 'fulfilled' ? campaignsResult.value.length > 0 : null;
+
+    setRemote({
+      agent: combineChecks(tokenAgent, hostedAgent),
+      policy,
+      work: combineChecks(listsHaveWork, campaignsHaveWork),
+      problems
+    });
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const hasConnectedSource = data.connections.some(
+    (connection) => connection.status === 'connected'
+  );
+  const source = hasConnectedSource ? true : limits ? Boolean(limits.seat?.configured) : null;
+  const problems =
+    !hasConnectedSource && seatError
+      ? [...remote.problems, 'connected outreach source']
+      : remote.problems;
+
+  return {
+    signals: {
+      agent: remote.agent,
+      source,
+      policy: remote.policy,
+      work: remote.work
+    } satisfies ActivationSignals,
+    problems,
+    reload
+  };
+}
+
+function ActivationGuide({
+  signals,
+  problems,
+  onRetry,
+  onNavigate,
+  onPlan,
+  onExplore
+}: {
+  signals: ActivationSignals;
+  problems: string[];
+  onRetry: () => void;
+  onNavigate: (path: string) => void;
+  onPlan: () => void;
+  onExplore: () => void;
+}) {
+  const resolution = nextActivationStep(signals);
+  const activeId = resolution.step?.id ?? null;
+
+  return (
+    <section className="onboarding-card activation-card" aria-labelledby="activation-title">
+      <div className="onboarding-head">
+        <div>
+          <span className="activation-kicker">Workspace activation</span>
+          <h2 id="activation-title">Get to one evidence-backed job</h2>
+          <p>
+            Trevra checks each prerequisite and gives you one next action. Nothing is sent merely
+            because you finish setup.
+          </p>
+        </div>
+        <span className="status-pill">
+          {ACTIVATION_STEPS.filter((step) => signals[step.id] === true).length} of{' '}
+          {ACTIVATION_STEPS.length}
+        </span>
+      </div>
+
+      <ol className="onboarding-steps activation-steps">
+        {ACTIVATION_STEPS.map((step, index) => {
+          const done = signals[step.id] === true;
+          const active = step.id === activeId;
+          const stateLabel = done
+            ? 'Complete'
+            : active && resolution.state === 'next'
+              ? 'Next'
+              : active
+                ? 'Not verified'
+                : 'Later';
+          return (
+            <li
+              key={step.id}
+              className={done ? 'is-done' : active ? 'is-next' : undefined}
+              aria-current={active && !done ? 'step' : undefined}
+            >
+              <span className="activation-step-index" aria-hidden="true">
+                {done ? <CheckCircle2 size={18} /> : index + 1}
+              </span>
+              <div>
+                <strong>{step.title}</strong>
+                <small>{step.detail}</small>
+                <span className="activation-step-state">{stateLabel}</span>
+              </div>
+              {active && resolution.state === 'next' && (
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={() => (step.href ? onNavigate(step.href) : onPlan())}
+                >
+                  {step.action} <ChevronRight size={15} />
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+
+      {resolution.state === 'unknown' &&
+        (problems.length ? (
+          <div className="activation-problem" role="alert">
+            <p>
+              Trevra could not verify {problems.join(', ')}. Those states remain unknown; they were
+              not treated as empty.
+            </p>
+            <button className="primary-button" type="button" onClick={onRetry}>
+              Check again
+            </button>
+          </div>
+        ) : (
+          <p className="onboarding-loading" role="status">
+            <LoaderCircle className="spin" size={16} /> Checking this workspace…
+          </p>
+        ))}
+
+      <div className="activation-actions">
+        <p>External actions still stop at the approval boundary you set.</p>
+        <button className="ghost-button" type="button" onClick={onExplore}>
+          Explore without finishing setup
+        </button>
+      </div>
+    </section>
+  );
 }
 
 export function LoopView({
-  data: _data,
+  data,
   onNavigate
 }: {
   data: DashboardPayload;
   onNavigate: (path: string) => void;
 }) {
   const { limits, error: seatError } = useSeatLimits();
+  const activation = useWorkspaceActivation(data, limits, seatError);
+  const [explore, setExplore] = useState(false);
+  const [plannerInitiallyOpen, setPlannerInitiallyOpen] = useState(false);
   const [loop, setLoop] = useState<LoopData>({
-    planned: 0,
-    plannedInvites: 0,
-    waitingApprovals: []
+    planned: null,
+    plannedInvites: null,
+    waitingApprovals: null
   });
+  const [loopLoading, setLoopLoading] = useState(true);
+  const [loopError, setLoopError] = useState('');
   const [cost, setCost] = useState<LoopCost | null>(null);
   const [today, setToday] = useState<Awaited<ReturnType<typeof getToday>> | null>(null);
   const [todayError, setTodayError] = useState('');
-
-  // The one operator-controlled window for this page's outreach numbers --
-  // shared by the metric cards below and by <LinkedInFunnel>, so the two can
-  // never disagree about what period they are counting.
   const [days, setDays] = useState(DEFAULT_WINDOW_DAYS);
   const [analytics, setAnalytics] = useState<LinkedInAnalytics | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [analyticsError, setAnalyticsError] = useState('');
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const [planned, waiting] = await Promise.all([
-        getLinkedInActions({ status: 'planned', limit: 200 }).catch(() => []),
-        getPlaybookRuns({ status: 'waiting_approval', limit: 20 }).catch(() => [] as PlaybookRun[])
-      ]);
-      if (!cancelled)
-        setLoop({
-          planned: planned.length,
-          plannedInvites: planned.filter((action) => action.kind === 'invite').length,
-          waitingApprovals: waiting
-        });
-    })();
-    void fetchLoopCost(30)
-      .then((next) => {
-        if (!cancelled) setCost(next);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
+  const loadLoop = useCallback(async () => {
+    setLoopLoading(true);
+    const [plannedResult, waitingResult, costResult] = await Promise.allSettled([
+      getLinkedInActions({ status: 'planned', limit: 200 }),
+      getPlaybookRuns({ status: 'waiting_approval', limit: 20 }),
+      fetchLoopCost(30)
+    ]);
+    const unread: string[] = [];
+    if (plannedResult.status === 'rejected') unread.push('queued outreach');
+    if (waitingResult.status === 'rejected') unread.push('waiting approvals');
+    if (costResult.status === 'rejected') unread.push('cost and activity');
+
+    setLoop({
+      planned: plannedResult.status === 'fulfilled' ? plannedResult.value.length : null,
+      plannedInvites:
+        plannedResult.status === 'fulfilled'
+          ? plannedResult.value.filter((action) => action.kind === 'invite').length
+          : null,
+      waitingApprovals: waitingResult.status === 'fulfilled' ? waitingResult.value : null
+    });
+    setCost(costResult.status === 'fulfilled' ? costResult.value : null);
+    setLoopError(
+      unread.length
+        ? 'Could not read ' +
+            unread.join(', ') +
+            '. Those values remain unknown; nothing was changed.'
+        : ''
+    );
+    setLoopLoading(false);
   }, []);
+
+  useEffect(() => {
+    void loadLoop();
+  }, [loadLoop]);
 
   const loadToday = useCallback(async () => {
     try {
@@ -114,6 +329,7 @@ export function LoopView({
       setAnalytics(await getLinkedInAnalytics(days));
       setAnalyticsError('');
     } catch (err) {
+      setAnalytics(null);
       setAnalyticsError(
         errorMessage(err, 'Unable to read the outreach ledger. Nothing was changed — try again.')
       );
@@ -130,9 +346,9 @@ export function LoopView({
   const seat = limits?.seat ?? null;
   const queued = loop.planned;
   const invitesQueued = loop.plannedInvites;
-  const followUpsQueued = queued - invitesQueued;
+  const followUpsQueued = queued !== null && invitesQueued !== null ? queued - invitesQueued : null;
   const funnel = analytics?.total ?? null;
-  const waitingCount = loop.waitingApprovals.length;
+  const waitingCount = loop.waitingApprovals?.length ?? null;
   const inviteDay =
     limits?.limits.find((limit) => limit.kind === 'invite' && limit.window === 'day') ?? null;
 
@@ -149,20 +365,24 @@ export function LoopView({
       label: 'Reach',
       value: limits
         ? seat?.configured
-          ? String(queued)
+          ? queued === null
+            ? 'Not read'
+            : String(queued)
           : 'No account'
         : seatError
           ? 'Not read'
           : 'Reading…',
       unit: limits
         ? seat?.configured
-          ? 'queued'
+          ? queued === null
+            ? 'unavailable'
+            : 'queued'
           : 'connect an account'
         : seatError
           ? 'unavailable'
           : 'loading',
       href: limits ? (seat?.configured ? '/outreach' : '/outreach/settings') : null,
-      unavailable: !limits
+      unavailable: !limits || queued === null
     },
     {
       id: 'answer',
@@ -179,9 +399,14 @@ export function LoopView({
       return {
         stage: 'reach',
         sentence:
-          queued > 0
-            ? `${queued} scheduled ${queued === 1 ? 'action is' : 'actions are'} paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'}`
-            : `This LinkedIn account is paused${seat.pausedReason ? `: ${seat.pausedReason}` : '.'}`,
+          queued !== null && queued > 0
+            ? String(queued) +
+              ' scheduled ' +
+              (queued === 1 ? 'action is' : 'actions are') +
+              ' paused' +
+              (seat.pausedReason ? ': ' + seat.pausedReason : '.')
+            : 'This LinkedIn account is paused' +
+              (seat.pausedReason ? ': ' + seat.pausedReason : '.'),
         action: 'Open Settings',
         href: '/outreach/settings'
       };
@@ -193,10 +418,14 @@ export function LoopView({
         action: 'Connect an account',
         href: '/outreach/settings'
       };
-    if (waitingCount > 0)
+    if (waitingCount !== null && waitingCount > 0)
       return {
         stage: 'answer',
-        sentence: `${waitingCount} ${waitingCount === 1 ? 'run needs' : 'runs need'} your approval.`,
+        sentence:
+          String(waitingCount) +
+          ' ' +
+          (waitingCount === 1 ? 'run needs' : 'runs need') +
+          ' your approval.',
         action: 'Open ledger',
         href: '/ledger'
       };
@@ -210,19 +439,62 @@ export function LoopView({
     return null;
   }, [limits, seat, queued, waitingCount]);
 
-  const awaitingReply = funnel?.sent ?? 0;
-  const accepted = funnel?.accepted ?? 0;
-  const replied = funnel?.replied ?? 0;
+  if (!explore && activation.signals.work !== true) {
+    return (
+      <ActivationGuide
+        signals={activation.signals}
+        problems={activation.problems}
+        onRetry={() => void activation.reload()}
+        onNavigate={onNavigate}
+        onPlan={() => {
+          setPlannerInitiallyOpen(true);
+          setExplore(true);
+        }}
+        onExplore={() => setExplore(true)}
+      />
+    );
+  }
+
+  const awaitingReply = funnel ? funnel.sent : null;
+  const accepted = funnel ? funnel.accepted : null;
+  const replied = funnel ? funnel.replied : null;
+  const waitingValue = today
+    ? String(today.needsAttention.length)
+    : waitingCount === null
+      ? '—'
+      : String(waitingCount);
 
   return (
     <>
       <TodayAttention today={today} problem={todayError} onNavigate={onNavigate} />
-      <FirstRunJobs limits={limits} onNavigate={onNavigate} />
-      <PlanWork onNavigate={onNavigate} />
+
+      {today && today.needsAttention.length === 0 && block && (
+        <section className="loop-block" aria-label="Current blocker">
+          <div>
+            <strong>Next operational decision</strong>
+            <p>{block.sentence}</p>
+          </div>
+          <button className="primary-button" type="button" onClick={() => onNavigate(block.href)}>
+            {block.action} <ChevronRight size={15} />
+          </button>
+        </section>
+      )}
+
+      {loopError && (
+        <div className="loop-read-error" role="alert">
+          <p>{loopError}</p>
+          <button className="secondary-button" type="button" onClick={() => void loadLoop()}>
+            Retry state
+          </button>
+        </div>
+      )}
 
       <section className="loop-stages" aria-label="The outreach loop, stage by stage">
         {stages.map((stage) => {
-          const className = `loop-stage${block?.stage === stage.id ? ' is-stuck' : ''}${stage.unavailable ? ' is-unavailable' : ''}`;
+          const className =
+            'loop-stage' +
+            (block?.stage === stage.id ? ' is-stuck' : '') +
+            (stage.unavailable ? ' is-unavailable' : '');
           const inner = (
             <>
               <span>{stage.label}</span>
@@ -248,110 +520,119 @@ export function LoopView({
       </section>
 
       <section className="metrics-grid metrics-grid-four">
-        {/* Repurposed from a bare queued count -- the Reach stage tile above
-            already states that number once. This tile instead breaks it down
-            by what it is: an invite vs. a follow-up in an existing sequence. */}
         <Metric
           icon={<Send />}
           label="Going out"
-          value={seat?.configured ? `${invitesQueued} / ${followUpsQueued}` : '—'}
+          value={
+            invitesQueued === null || followUpsQueued === null
+              ? '—'
+              : String(invitesQueued) + ' / ' + String(followUpsQueued)
+          }
           detail={
             !seat?.configured
               ? 'No LinkedIn account connected'
-              : `${invitesQueued} invite${invitesQueued === 1 ? '' : 's'} · ${followUpsQueued} follow-up${followUpsQueued === 1 ? '' : 's'} queued${inviteDay ? ` · ${inviteDay.ceiling}/day invite limit` : ''}`
+              : invitesQueued === null || followUpsQueued === null
+                ? loopLoading
+                  ? 'Reading queued actions…'
+                  : 'Queued actions unavailable'
+                : String(invitesQueued) +
+                  ' invite' +
+                  (invitesQueued === 1 ? '' : 's') +
+                  ' · ' +
+                  String(followUpsQueued) +
+                  ' follow-up' +
+                  (followUpsQueued === 1 ? '' : 's') +
+                  ' queued' +
+                  (inviteDay ? ' · ' + String(inviteDay.ceiling) + '/day invite limit' : '')
           }
         />
         <Metric
           icon={<Inbox />}
           label="Waiting on a reply"
-          value={String(awaitingReply)}
-          detail={`Last ${days} days`}
+          value={awaitingReply === null ? '—' : String(awaitingReply)}
+          detail={analyticsError ? 'Outreach ledger unavailable' : 'Last ' + String(days) + ' days'}
         />
         <Metric
           icon={<CheckCircle2 />}
           label="Accepted / replied"
-          value={String(accepted + replied)}
-          detail={`${accepted} accepted · ${replied} replied`}
+          value={accepted === null || replied === null ? '—' : String(accepted + replied)}
+          detail={
+            accepted === null || replied === null
+              ? 'Outreach ledger unavailable'
+              : String(accepted) + ' accepted · ' + String(replied) + ' replied'
+          }
         />
         <Metric
           icon={<Clock3 />}
           label="Waiting on you"
-          value={String(today?.needsAttention.length ?? waitingCount)}
-          detail={today?.needsAttention.length ? 'Across GTM' : 'Nothing waiting'}
+          value={waitingValue}
+          detail={
+            today
+              ? today.needsAttention.length
+                ? 'Across GTM'
+                : 'Nothing waiting'
+              : 'Attention state unavailable'
+          }
         />
       </section>
 
-      {cost && (
-        <section className="page-panel">
-          <div className="section-heading">
-            <div>
-              <h2>Cost and activity</h2>
-              <p>Last 30 days.</p>
-            </div>
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => onNavigate('/loop/cost')}
-            >
-              View details <ChevronRight size={15} />
-            </button>
-          </div>
-          <div className="run-facts">
-            <div className="run-fact">
-              <span>Spent on models</span>
-              <strong>{usd(cost.spent.costCents)}</strong>
-              <small>USD, billed by your model provider</small>
-            </div>
-            <div className="run-fact">
-              <span>Outreach actions sent</span>
-              <strong>{cost.sent.actionsTotal.toLocaleString('en-US')}</strong>
-            </div>
-          </div>
-        </section>
-      )}
+      <PlanWork onNavigate={onNavigate} initiallyOpen={plannerInitiallyOpen} />
 
-      <LinkedInFunnel
-        analytics={analytics}
-        loading={analyticsLoading}
-        error={analyticsError}
-        reload={loadAnalytics}
-        days={days}
-        onDaysChange={setDays}
-      />
+      <details className="loop-secondary">
+        <summary>
+          <span>
+            <strong>Performance and cost</strong>
+            <small>Outreach outcomes and model spend, when you need the detail.</small>
+          </span>
+          <ChevronRight size={17} aria-hidden="true" />
+        </summary>
+        <div className="loop-secondary-body">
+          <section className="page-panel">
+            <div className="section-heading">
+              <div>
+                <h2>Cost and activity</h2>
+                <p>Last 30 days.</p>
+              </div>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => onNavigate('/loop/cost')}
+              >
+                View details <ChevronRight size={15} />
+              </button>
+            </div>
+            {cost ? (
+              <div className="run-facts">
+                <div className="run-fact">
+                  <span>Spent on models</span>
+                  <strong>{usd(cost.spent.costCents)}</strong>
+                  <small>USD, billed by your model provider</small>
+                </div>
+                <div className="run-fact">
+                  <span>Outreach actions sent</span>
+                  <strong>{cost.sent.actionsTotal.toLocaleString('en-US')}</strong>
+                </div>
+              </div>
+            ) : (
+              <p className="onboarding-loading">
+                {loopLoading ? 'Reading cost and activity…' : 'Cost and activity unavailable.'}
+              </p>
+            )}
+          </section>
 
-      {loop.waitingApprovals.length > 0 && (
-        <section className="recommendations-panel">
-          <div className="section-heading">
-            <div>
-              <h2>What needs you</h2>
-              <p>Runs waiting for your approval.</p>
-            </div>
-            <span className="status-pill">{waitingCount} open</span>
-          </div>
-          {/* The count and the "needs your approval" fact are already stated
-              once each above (status pill; loop-block CTA when this is the
-              loop's top issue) -- this panel's job is the list of runs, not a
-              third restatement of the sentence. */}
-          <div className="workflow-approval">
-            <div>
-              {loop.waitingApprovals.map((run) => (
-                <button
-                  key={run.id}
-                  type="button"
-                  className="secondary-button run-open"
-                  onClick={() => onNavigate(`/ledger/run/${run.id}`)}
-                >
-                  {run.playbookId} <ChevronRight size={15} />
-                </button>
-              ))}
-            </div>
-          </div>
-        </section>
-      )}
+          <LinkedInFunnel
+            analytics={analytics}
+            loading={analyticsLoading}
+            error={analyticsError}
+            reload={loadAnalytics}
+            days={days}
+            onDaysChange={setDays}
+          />
+        </div>
+      </details>
     </>
   );
 }
-
 function Metric({
   icon,
   label,
@@ -450,8 +731,14 @@ function plannerPrepareKey(): string {
   return `gtm-plan-${uuid ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 }
 
-function PlanWork({ onNavigate }: { onNavigate: (path: string) => void }) {
-  const [open, setOpen] = useState(false);
+function PlanWork({
+  onNavigate,
+  initiallyOpen = false
+}: {
+  onNavigate: (path: string) => void;
+  initiallyOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(initiallyOpen);
   const [objective, setObjective] = useState<PlannerObjective>('find_accounts');
   const [audience, setAudience] = useState('');
   const [quantity, setQuantity] = useState(25);
@@ -734,100 +1021,6 @@ function PlanWork({ onNavigate }: { onNavigate: (path: string) => void }) {
     </section>
   );
 }
-
-function FirstRunJobs({
-  limits,
-  onNavigate
-}: {
-  limits: LinkedInLimitsReport | null;
-  onNavigate: (path: string) => void;
-}) {
-  const [workspaceShape, setWorkspaceShape] = useState<{
-    leadLists: number;
-    campaigns: number;
-  } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void Promise.all([
-      getLinkedInManagerLeadLists().catch(() => []),
-      getLinkedInManagedCampaigns().catch(() => [])
-    ]).then(([leadLists, campaigns]) => {
-      if (!cancelled)
-        setWorkspaceShape({ leadLists: leadLists.length, campaigns: campaigns.length });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  if (!workspaceShape) {
-    return (
-      <section className="onboarding-card">
-        <p className="onboarding-loading">
-          <LoaderCircle className="spin" size={16} /> Checking your workspace…
-        </p>
-      </section>
-    );
-  }
-
-  const materiallyEmpty =
-    !limits?.seat?.configured && workspaceShape.leadLists === 0 && workspaceShape.campaigns === 0;
-  if (!materiallyEmpty) return null;
-
-  const jobs = [
-    {
-      title: 'Find prospects',
-      detail: 'Find and rank companies worth investigating.',
-      href: '/research'
-    },
-    {
-      title: 'Prepare outreach',
-      detail: 'Turn known people into a campaign that is ready for review.',
-      href: '/outreach/new'
-    },
-    {
-      title: 'Watch accounts',
-      detail: 'Monitor target companies and surface source-backed reasons to act.',
-      href: '/research'
-    },
-    {
-      title: 'Capture inbound',
-      detail: 'Route demo, contact, waitlist, and signup submissions into Trevra.',
-      href: '/setup/capture'
-    }
-  ] as const;
-
-  return (
-    <section className="onboarding-card">
-      <div className="onboarding-head">
-        <div>
-          <h2>What do you want Trevra to do?</h2>
-          <p>Choose a GTM job. You can inspect the machinery later if you need it.</p>
-        </div>
-      </div>
-      <ol className="onboarding-steps">
-        {jobs.map((job) => (
-          <li key={job.title}>
-            <Send size={19} />
-            <div>
-              <strong>{job.title}</strong>
-              <small>{job.detail}</small>
-            </div>
-            <button className="primary-button" type="button" onClick={() => onNavigate(job.href)}>
-              Start <ChevronRight size={15} />
-            </button>
-          </li>
-        ))}
-      </ol>
-      <p className="onboarding-loading">
-        Nothing is sent just because Trevra prepared it. External actions require approval by
-        default.
-      </p>
-    </section>
-  );
-}
-
 export function LoopCostView({ onNavigate }: { onNavigate: (path: string) => void }) {
   const [days, setDays] = useState(30);
   const [cost, setCost] = useState<LoopCost | null>(null);

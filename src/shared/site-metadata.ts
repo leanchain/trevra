@@ -6,15 +6,15 @@
  */
 
 export const SITE_NAME = 'Trevra';
-export const SITE_TITLE = 'Trevra — GTM infrastructure for AI agents';
+export const SITE_TITLE = 'Trevra — Agentic GTM Engine for Claude Code and Codex';
 export const SITE_DESCRIPTION =
-  'Trevra is open-source GTM infrastructure for Claude Code and Codex. Agents do the work, external actions require approval, and every run is logged.';
+  'Trevra is the open-source GTM engine for Claude Code and Codex. Agents do the work, external actions require approval, and every run is logged.';
 
 export const SOCIAL_IMAGE = {
   path: '/og/trevra-social.png',
   width: 1200,
   height: 630,
-  alt: 'Trevra — GTM infrastructure for AI agents'
+  alt: 'Trevra — Agentic GTM Engine for Claude Code and Codex'
 } as const;
 
 export const PUBLIC_PATHS = ['/', '/how-it-works', '/security', '/privacy', '/terms'] as const;
@@ -28,12 +28,17 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
   {
     question: 'How do I use Trevra?',
     answer:
-      'Point Claude Code or Codex at a Trevra workspace. The agent calls typed modules for research, drafting, and outreach, and Trevra records every run and holds anything that leaves the workspace.'
+      'Connect Claude Code, Codex, or any MCP-enabled AI coding agent to a Trevra workspace. The agent calls typed GTM modules for research, signal watching, lead scoring, and outreach drafting, while Trevra records every run and holds external actions for approval.'
   },
   {
-    question: 'Can an agent send messages on its own?',
+    question: 'Does Trevra replace my existing CRM?',
     answer:
-      'Only inside the policy you set. External actions require approval by default, and the approved payload is hashed before execution, so a modified payload is rejected.'
+      'No. Trevra works out-of-the-box as a standalone GTM workspace for founders, or as a non-invasive AI agent overlay for mid-size teams using HubSpot, Salesforce, or Attio. It handles signal research and outreach drafting without replacing your CRM.'
+  },
+  {
+    question: 'Can an agent send outreach on its own?',
+    answer:
+      'Only inside the workspace policy you set. External actions require approval by default, and the approved payload is sha256-hashed before execution, so a modified payload is rejected.'
   },
   {
     question: 'How are modules shared safely?',
@@ -43,7 +48,7 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
   {
     question: 'Can I self-host Trevra?',
     answer:
-      'Yes. Trevra runs on your own PostgreSQL, the module runner is open source, and the ledger, evidence, and configuration stay in infrastructure you control.'
+      'Yes. Trevra runs on your own PostgreSQL, the module runner is open source, and your GTM ledger, evidence, and configuration stay in infrastructure you control.'
   }
 ];
 
@@ -99,12 +104,14 @@ export function buildStructuredData(config: StructuredDataConfig) {
         operatingSystem: 'Any',
         browserRequirements: 'Requires JavaScript and a modern web browser',
         featureList: [
-          'Typed, versioned GTM modules for Claude Code and Codex',
-          'Public GitHub-synced module catalog',
-          'Approval gate on every external action',
+          'Agentic GTM engine for Claude Code and Codex',
+          'Standalone GTM workspace or non-invasive CRM overlay',
+          'Typed, versioned GTM modules for research, signals, and outreach',
+          'Target account watching & composite intent detection',
+          'Approval gate on every external outreach action',
           'Cryptographic payload hashing between approval and execution',
-          'Full run history with recorded inputs, outputs, and evidence',
-          'Open source and self-hostable on your own PostgreSQL'
+          'Full GTM run history with recorded inputs, outputs, and evidence',
+          'Open source and self-hostable on PostgreSQL'
         ],
         publisher: { '@id': `${config.origin}/#organization` }
       },
@@ -170,7 +177,10 @@ export function renderLlmsText(config: SiteRenderConfig, full: boolean): string 
     '\n\n'
   );
   const fullOnly = `## Product model
-${config.description} Claude Code and Codex are the intended operators: agents call typed modules to do the work, and Trevra is the ledger that records every run and holds anything that leaves the workspace for approval.
+${config.description} Claude Code and Codex are the primary GTM operators: agents call typed modules for research, signal watching, lead scoring, and outreach drafting, while Trevra serves as the pure GTM OS control plane and evidence ledger that holds external actions for approval.
+
+## Pure GTM OS
+Trevra is a pure GTM OS focused exclusively on go-to-market execution. It does not track revenue, invoices, billing, payments, or post-sale project management.
 
 ## Modules
 A module is a versioned, typed unit of go-to-market work: a typed input, a typed output, a declared side-effect class, and an approval requirement. Modules are versioned on GitHub, and installing one never grants it permission to write externally on its own.

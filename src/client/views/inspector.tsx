@@ -532,9 +532,13 @@ export function FieldList({ value, depth = 0 }: { value: unknown; depth?: number
 }
 
 /** Evidence travels in a few shapes across skills; read all of them, dump none. */
-function readEvidence(
-  entry: unknown
-): { label: string; detail: string; url: string | null } | null {
+function readEvidence(entry: unknown): {
+  label: string;
+  detail: string;
+  url: string | null;
+  fact: 'Hard fact' | 'Reported' | null;
+  observedAt: string | null;
+} | null {
   if (!isPlainObject(entry)) return null;
   const pick = (...keys: string[]): string => {
     for (const key of keys) {
@@ -546,8 +550,38 @@ function readEvidence(
   const label = pick('label', 'title', 'name', 'sourceType');
   const detail = pick('detail', 'excerpt', 'summary', 'description', 'value');
   const url = pick('sourceUrl', 'externalUrl', 'url', 'link', 'source_url');
-  if (!label && !detail && !url) return null;
-  return { label: label || 'Evidence', detail, url: url || null };
+  const classification = pick(
+    'classification',
+    'factType',
+    'fact_type',
+    'confidenceType',
+    'evidenceType'
+  ).toLowerCase();
+  const observedAt = pick(
+    'capturedAt',
+    'captured_at',
+    'observedAt',
+    'observed_at',
+    'publishedAt',
+    'published_at',
+    'fetchedAt',
+    'fetched_at',
+    'timestamp',
+    'createdAt'
+  );
+  const fact = /hard[\s_-]*fact/.test(classification)
+    ? 'Hard fact'
+    : /reported/.test(classification)
+      ? 'Reported'
+      : null;
+  if (!label && !detail && !url && !fact && !observedAt) return null;
+  return {
+    label: label || 'Evidence',
+    detail,
+    url: url || null,
+    fact,
+    observedAt: observedAt || null
+  };
 }
 
 export function EvidenceList({ entries }: { entries: unknown[] }) {
@@ -563,12 +597,28 @@ export function EvidenceList({ entries }: { entries: unknown[] }) {
           );
         return (
           <div className="evidence-item" key={index}>
-            <strong>{item.label}</strong>
+            <div className="evidence-item-head">
+              <strong>{item.label}</strong>
+              <span className="evidence-meta">
+                {item.fact && (
+                  <span className={'evidence-fact ' + (item.fact === 'Hard fact' ? 'is-hard' : '')}>
+                    {item.fact}
+                  </span>
+                )}
+                {item.observedAt && (
+                  <time dateTime={item.observedAt}>
+                    {formatMoment(item.observedAt) ?? item.observedAt}
+                  </time>
+                )}
+              </span>
+            </div>
             {item.detail && <p>{item.detail}</p>}
-            {item.url && (
+            {item.url ? (
               <a href={item.url} target="_blank" rel="noreferrer">
                 {item.url} <ExternalLink size={12} />
               </a>
+            ) : (
+              <span className="evidence-source-missing">Source URL not recorded</span>
             )}
           </div>
         );
@@ -648,13 +698,74 @@ function SignedNote({ value }: { value: string }) {
         </button>
       </div>
       <small>
-        Your approval was pinned to this exact wording. If a single character changes afterwards,
+        Your approval is pinned to this exact wording. If a single character changes afterwards,
         Trevra rejects it instead of sending it.
       </small>
     </div>
   );
 }
 
+export function ApprovalDecisionProof({ step }: { step: PlaybookStepRun }) {
+  const policy = readPolicyDecision(step.policyDecision);
+  const evidence = Array.isArray(step.evidence) ? step.evidence : [];
+
+  return (
+    <div className="approval-decision-proof">
+      <section className="approval-proof-section">
+        <h4>Exact prepared action</h4>
+        <p>Review the fields below as the action Trevra will execute.</p>
+        <FieldList value={step.input} />
+      </section>
+
+      <section className="approval-proof-section">
+        <h4>Source evidence</h4>
+        {evidence.length ? (
+          <EvidenceList entries={evidence} />
+        ) : (
+          <div className="approval-proof-gap">
+            No source evidence was attached to this approval record.
+          </div>
+        )}
+      </section>
+
+      <section className="approval-proof-section">
+        <h4>Policy decision</h4>
+        {policy ? (
+          <PolicyNote decision={policy} />
+        ) : (
+          <div className="approval-proof-gap">
+            No policy decision was recorded. Approval can still be rejected, but execution should
+            not proceed without a verifiable payload fingerprint.
+          </div>
+        )}
+      </section>
+
+      <section className="approval-proof-section">
+        <h4>Exact payload fingerprint</h4>
+        {step.approvalPayloadHash ? (
+          <SignedNote value={step.approvalPayloadHash} />
+        ) : (
+          <div className="approval-proof-gap is-blocking" role="alert">
+            Payload fingerprint missing. Trevra cannot prove what would run, so approval is
+            unavailable.
+          </div>
+        )}
+      </section>
+
+      <details className="approval-proof-raw">
+        <summary>Inspect raw approval record</summary>
+        <FieldList
+          value={{
+            input: step.input,
+            evidence: step.evidence,
+            policyDecision: step.policyDecision,
+            approvalPayloadHash: step.approvalPayloadHash
+          }}
+        />
+      </details>
+    </div>
+  );
+}
 function RunSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="run-section">

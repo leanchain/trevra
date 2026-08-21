@@ -121,7 +121,7 @@ docker compose --env-file .env.dev -f compose.dev.yml up --build
 
 Open:
 
-- Trevra: `http://localhost:43173`
+- Trevra: `http://localhost:43173` (`/` is the landing page; app paths open the work console)
 - Trevra API: `http://localhost:43887`
 - Nango API/dashboard: `http://localhost:43003`
 - Nango Connect UI: `http://localhost:43009`
