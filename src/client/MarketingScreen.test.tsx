@@ -1,17 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { FAQ_ITEMS } from '../shared/site-metadata';
 import { MarketingApp } from './MarketingApp';
 import { MarketingScreen } from './MarketingScreen';
-import { FAQ_ITEMS } from '../shared/site-metadata';
 
-// The FAQPage JSON-LD (built from this same FAQ_ITEMS array in
-// src/shared/site-metadata.ts) only counts toward rich results if Google can
-// find matching, visible copy on the page -- so this test is what keeps the
-// structured data honest rather than a claim no one checks.
 describe('MarketingScreen', () => {
-  it('renders every FAQ_ITEMS question and answer visibly on the page', () => {
+  it('renders every FAQ question and answer visibly on the page', () => {
     const html = renderToStaticMarkup(<MarketingApp />);
-    expect(html).toContain('class="deploy-faq"');
+    expect(html).toContain('class="landing-faq"');
+    expect(html).not.toContain('class="deploy-faq"');
     for (const { question, answer } of FAQ_ITEMS) {
       expect(html).toContain(question);
       expect(html).toContain(answer);
@@ -27,6 +24,16 @@ describe('MarketingScreen', () => {
     expect(html).toContain('cannot trigger an external action');
     expect(html).not.toContain('Approve this run');
     expect(html).not.toContain('Approved — released to you');
+  });
+
+  it('keeps the landing message narrow', () => {
+    const html = renderToStaticMarkup(<MarketingApp />);
+    expect(html).toContain('Your GTM agent does the work. You approve what happens.');
+    expect(html).toContain('Agent works. Trevra checks. You decide.');
+    expect(html).toContain('Let the agent work. Keep the final say.');
+    expect(html).not.toContain('public modules');
+    expect(html).not.toContain('module-row');
+    expect(html).not.toContain('Every consequential action travels');
   });
 
   it('names the real conversion state', () => {

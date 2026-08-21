@@ -6,15 +6,15 @@
  */
 
 export const SITE_NAME = 'Trevra';
-export const SITE_TITLE = 'Trevra — Agentic GTM Engine for Claude Code and Codex';
+export const SITE_TITLE = 'Trevra — Agent-Run GTM With Human Approval';
 export const SITE_DESCRIPTION =
-  'Trevra is the open-source GTM engine for Claude Code and Codex. Agents do the work, external actions require approval, and every run is logged.';
+  'Trevra lets Claude Code and Codex research and prepare GTM work. You approve consequential actions before they execute, and every outcome is recorded.';
 
 export const SOCIAL_IMAGE = {
   path: '/og/trevra-social.png',
   width: 1200,
   height: 630,
-  alt: 'Trevra — Agentic GTM Engine for Claude Code and Codex'
+  alt: 'Trevra — Agent-Run GTM With Human Approval'
 } as const;
 
 export const PUBLIC_PATHS = ['/', '/how-it-works', '/security', '/privacy', '/terms'] as const;
@@ -26,29 +26,32 @@ export interface FaqItem {
 
 export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
   {
-    question: 'How do I use Trevra?',
+    question: 'What is Trevra?',
     answer:
-      'Connect Claude Code, Codex, or any MCP-enabled AI coding agent to a Trevra workspace. The agent calls typed GTM modules for research, signal watching, lead scoring, and outreach drafting, while Trevra records every run and holds external actions for approval.'
+      'Trevra sits between your GTM agent and the systems it can affect. The agent does the research and preparation; Trevra holds consequential actions for your decision.'
   },
   {
-    question: 'Does Trevra replace my existing CRM?',
+    question: 'What can my agent do?',
     answer:
-      'No. Trevra works out-of-the-box as a standalone GTM workspace for founders, or as a non-invasive AI agent overlay for mid-size teams using HubSpot, Salesforce, or Attio. It handles signal research and outreach drafting without replacing your CRM.'
+      'It can research accounts and people, score evidence, plan work, and prepare outreach or CRM activity through MCP. Agent tokens cannot approve or execute consequential actions.'
   },
   {
-    question: 'Can an agent send outreach on its own?',
+    question: 'Can it send outreach without me?',
     answer:
-      'Only inside the workspace policy you set. External actions require approval by default, and the approved payload is sha256-hashed before execution, so a modified payload is rejected.'
+      'No. Trevra checks workspace policy and locks the exact action. A human must approve it before a named execution adapter can run.'
   },
   {
-    question: 'How are modules shared safely?',
-    answer:
-      'Modules are versioned on GitHub and declare their input and output schemas, side-effect class, and approval requirement. Installing one never grants it permission to write externally.'
+    question: 'Do I need a CRM?',
+    answer: 'No. Trevra can be your founder GTM workspace or work alongside an existing CRM.'
   },
   {
-    question: 'Can I self-host Trevra?',
+    question: 'What gets recorded?',
     answer:
-      'Yes. Trevra runs on your own PostgreSQL, the module runner is open source, and your GTM ledger, evidence, and configuration stay in infrastructure you control.'
+      'Sources, inputs, policy decisions, approvals, execution attempts, and outcomes stay in the ledger.'
+  },
+  {
+    question: 'Can I self-host?',
+    answer: 'Yes. Trevra is open source, PostgreSQL-only, and can run in your own infrastructure.'
   }
 ];
 
@@ -104,13 +107,15 @@ export function buildStructuredData(config: StructuredDataConfig) {
         operatingSystem: 'Any',
         browserRequirements: 'Requires JavaScript and a modern web browser',
         featureList: [
-          'Agentic GTM engine for Claude Code and Codex',
-          'Standalone GTM workspace or non-invasive CRM overlay',
-          'Typed, versioned GTM modules for research, signals, and outreach',
-          'Target account watching & composite intent detection',
-          'Approval gate on every external outreach action',
-          'Cryptographic payload hashing between approval and execution',
-          'Full GTM run history with recorded inputs, outputs, and evidence',
+          'Ledger and deterministic control plane for agent-run GTM',
+          'MCP tools for Claude Code, Codex, and compatible agents',
+          'Account and people research with source provenance',
+          'Outreach campaigns, inbox work, and opportunity state',
+          'Durable GTM playbooks with resumable step history',
+          'Workspace policy evaluation before consequential actions',
+          'Exact-payload approval with cryptographic hashing',
+          'Named, idempotent execution adapters for external writes',
+          'Append-only events and inspectable run outcomes',
           'Open source and self-hostable on PostgreSQL'
         ],
         publisher: { '@id': `${config.origin}/#organization` }
@@ -177,22 +182,22 @@ export function renderLlmsText(config: SiteRenderConfig, full: boolean): string 
     '\n\n'
   );
   const fullOnly = `## Product model
-${config.description} Claude Code and Codex are the primary GTM operators: agents call typed modules for research, signal watching, lead scoring, and outreach drafting, while Trevra serves as the pure GTM OS control plane and evidence ledger that holds external actions for approval.
+${config.description} Claude Code and Codex can research, interpret commercial content, and prepare bounded GTM work over MCP. Trevra deterministically controls permissions, policy, approvals, state transitions, external execution, and the durable outcome record.
 
-## Pure GTM OS
-Trevra is a pure GTM OS focused exclusively on go-to-market execution. It does not track revenue, invoices, billing, payments, or post-sale project management.
+## Product boundary
+Trevra is focused on go-to-market operations: research, outreach, conversations, opportunity state, and the evidence-backed playbooks that connect them. It is not an accounting, project-management, billing, or generic automation system.
 
-## Modules
-A module is a versioned, typed unit of go-to-market work: a typed input, a typed output, a declared side-effect class, and an approval requirement. Modules are versioned on GitHub, and installing one never grants it permission to write externally on its own.
+## Modules and playbooks
+A module is a versioned, typed unit of GTM work with declared inputs, outputs, side effects, and approval requirements. Durable playbooks persist step state, attempts, evidence, policy decisions, retries, and outcomes. Installing a module never grants permission to write externally.
 
 ## Approval and evidence
-External actions require approval by default. The approved payload is cryptographically hashed before execution, so a modified payload is rejected. Every run is logged with its inputs, outputs, and evidence.
+Agent tokens cannot approve or execute consequential actions. Trevra freezes the complete prepared payload behind a cryptographic hash; human approval applies only to that exact payload. Named execution adapters use deterministic idempotency keys, and every attempt and outcome is appended to the ledger.
 
 ## Integrations
-Integration plumbing is delegated to Nango or official provider SDKs for GTM systems such as Gmail, Microsoft 365, Google Calendar, HubSpot, Attio, Reddit, and research providers. Trevra does not ingest customer payment, accounting, project, or contract systems as owned product state.
+Integration plumbing is delegated to Nango or official provider SDKs for GTM systems such as Gmail, Microsoft 365, CRM providers, public communities, and research sources. Trevra owns normalization, source provenance, policy, approvals, and outcomes rather than rebuilding OAuth or token storage.
 
 ## Ownership
-Trevra is open source and self-hostable. It runs on your own PostgreSQL, the module runner is open source, and the ledger, evidence, and configuration stay in infrastructure you control.
+Trevra is open source, PostgreSQL-only, and self-hostable. The workspace, playbook state, ledger, evidence, and configuration can stay in infrastructure you control.
 
 ## Questions
 ${questions}

@@ -141,7 +141,7 @@ export const BUILT_IN_AGENT_TOOLS: readonly AgentToolDefinition[] = [
     name: 'trevra_list_opportunities',
     title: 'List GTM Opportunities',
     description:
-      'List minimal native GTM opportunity state. Trevra stores stages and next actions, never revenue.',
+      'List minimal native GTM opportunity state. Trevra stores stages and next actions.',
     scope: 'workspace:read',
     inputSchema: {
       type: 'object',

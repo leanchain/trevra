@@ -781,7 +781,7 @@ function AuthScreen({
           </a>
           <div>
             <h1>Run GTM with Claude Code or Codex.</h1>
-            <p>Research, outreach, revenue actions, approvals, and run history in one workspace.</p>
+            <p>Research, inbound, outreach, approvals, and run history in one workspace.</p>
           </div>
           <div className="auth-proof-list">
             <span>
