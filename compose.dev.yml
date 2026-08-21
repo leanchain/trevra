@@ -90,39 +90,16 @@ services:
       NANGO_WEBHOOK_SIGNING_KEY: ${NANGO_WEBHOOK_SIGNING_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       TREVRA_DEPLOYMENT_MODE: ${TREVRA_DEPLOYMENT_MODE:-local}
-      # LinkedIn automation is ON here.
+      # LinkedIn automation is controlled by this server but Chrome lives on an
+      # external browser host. In the normal self-hosted path that host is the
+      # paired Companion app, which may run on this same physical machine or on
+      # another one. Docker never downloads, launches, profiles, or displays Chrome.
       #
-      # This container has a headless Chromium (see Dockerfile.dev) but no
-      # display, so it can drive a browser and cannot show you one. Every seat
-      # signs itself in: save your own LinkedIn email and password once, on the
-      # seat screen. They are AES-256-GCM sealed with TREVRA_SECRETS_KEY below,
-      # and this container signs in headlessly when the stored session has
-      # expired (docs/linkedin-outreach-plan.md 4.9). Nothing to run, nothing on
-      # your machine.
-      #
-      # Set to false to switch the feature off entirely.
+      # Set to false to switch LinkedIn automation off entirely.
       TREVRA_LINKEDIN_LOCAL: ${TREVRA_LINKEDIN_LOCAL:-true}
-      # MAY THIS CONTAINER BE THE ONE THAT OPENS THE BROWSER?
-      #
-      # Default yes -- with credentials saved, this container is the whole
-      # story and there is nothing to run on your machine.
-      #
-      # Set to false if you run `npm run linkedin:worker` on your own machine.
-      # This container CAN drive a headless Chromium and, left to itself, will:
-      # it races your headed worker for the seat and usually wins, then talks to
-      # LinkedIn from a GPU-less container whose WebGL reports SwiftShader and
-      # from this machine's container IP. False parks the work instead -- the
-      # queue, the ledger and the API are all unchanged, and the detect route
-      # still answers 202 with "run the worker on your machine", which is now
-      # the truth rather than a guess.
-      #
-      # It does NOT switch the feature off. That is TREVRA_LINKEDIN_LOCAL.
-      #
-      # With the Xvfb display this image now runs (see Dockerfile.dev), the
-      # container drives a HEADED Chrome and this setting stops applying to it:
-      # it only ever gated the headless fallback. Leaving it false means "if the
-      # display is ever missing, park the work rather than going headless",
-      # which is the correct standing instruction.
+      # Retained for compatibility with explicitly configured remote providers.
+      # Companion owns its own browser mode, so this does not create or launch a
+      # browser inside Docker.
       TREVRA_LINKEDIN_HEADLESS: ${TREVRA_LINKEDIN_HEADLESS:-true}
       # Lead sourcing -- walking a people-search page or a post into a list of
       # people -- is a SECOND opt-in, and off unless this says otherwise.
@@ -130,8 +107,6 @@ services:
       # LinkedIn's User Agreement 8.2, and that risk is yours to accept
       # deliberately rather than inherit from switching sending on.
       TREVRA_LINKEDIN_LEAD_SOURCING: ${TREVRA_LINKEDIN_LEAD_SOURCING:-false}
-      # Which X display the browsers draw into. Xvfb serves it; see Dockerfile.dev.
-      DISPLAY: ${DISPLAY_INSIDE_CONTAINER:-:99}
       # Opens every sealed secret: model API keys, and the LinkedIn sign-in when
       # you choose that path. Without it credential storage refuses outright
       # rather than writing anything in the clear. Generate one with:

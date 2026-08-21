@@ -2,9 +2,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import request from 'supertest';
 import type { Express } from 'express';
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { openDatabase, type Db } from '../db.js';
 import { createApp } from '../app.js';
 import { closeAuthDatabase, migrateAuthDatabase } from '../auth-service.js';
@@ -526,6 +523,7 @@ describe('GET /api/linkedin/limits', () => {
 
 interface WorkerStatusBody {
   enabled: boolean;
+  companionBrowser: boolean;
   playwrightInstalled: boolean;
   playwrightPath: string | null;
   loggedIn: boolean;
@@ -547,142 +545,84 @@ function workerStatus(): Promise<WorkerStatusBody> {
 }
 
 describe('GET /api/linkedin/worker/status', () => {
-  it('answers without launching anything, and never says "ready" where nothing can launch', async () => {
+  it('fails closed when no external browser is configured and never recommends local Chrome', async () => {
     const body = await workerStatus();
 
-    // On by default now: the only deployment that can run this is a self-hoster
-    // on their own machine, so an opt-in flag protected nobody.
-    expect(body.enabled).toBe(true);
+    expect(body.enabled).toBe(false);
     expect(typeof body.playwrightInstalled).toBe('boolean');
-    // No session confirmed yet, and never unknown: every seat signs itself in.
     expect(body.loggedIn).toBe(false);
-    expect(typeof body.loggedIn).toBe('boolean');
-
-    // The setup file points Playwright's registry at a directory that does not
-    // exist, so this is the container case: nothing here can draw a window.
     expect(body.browser.canLaunchHeaded).toBe(false);
-    expect(body.browser.reasons.length).toBeGreaterThan(0);
-    expect(body.ready).toBe(false);
-  });
-
-  /**
-   * A HEADED BROWSER IS A BROWSER.
-   *
-   * `ready` was `enabled && playwrightInstalled && canLaunchHeadless`, which
-   * was a fair proxy for "can this machine open a browser" only while the two
-   * verdicts moved together. `TREVRA_LINKEDIN_HEADLESS=false` separated them --
-   * and a worker driving a real Chrome on an Xvfb display was told it could not
-   * open a browser at all, over the sentence explaining that it declines to
-   * open an INVISIBLE one. Headed is also the BETTER of the two: headless
-   * Chrome reports SwiftShader as its WebGL renderer even on a machine with a
-   * GPU, and names itself in its own user agent.
-   */
-  it('is ready on a machine that can only open a browser somebody can see', async () => {
-    // A machine exactly like the dev container after `Dockerfile.dev` gained
-    // Xvfb: a browser registry, a display, and an explicit refusal to run
-    // headless. `vitest.setup.ts` removes all three for every other test.
-    const registry = mkdtempSync(join(tmpdir(), 'trevra-headed-'));
-    mkdirSync(join(registry, 'chromium-1148'), { recursive: true });
-    const saved = {
-      browsers: process.env.PLAYWRIGHT_BROWSERS_PATH,
-      display: process.env.WAYLAND_DISPLAY,
-      headless: process.env.TREVRA_LINKEDIN_HEADLESS
-    };
-    process.env.PLAYWRIGHT_BROWSERS_PATH = registry;
-    // WAYLAND, NOT `DISPLAY=:99`, and the difference is the point: the route
-    // calls the probe with no options, so an X display would be checked
-    // against the real /tmp/.X11-unix and this test would depend on whether
-    // the machine running the suite happens to serve that display. A Wayland
-    // session is the one "this machine has a screen" the probe takes on trust.
-    process.env.WAYLAND_DISPLAY = 'wayland-0';
-    process.env.TREVRA_LINKEDIN_HEADLESS = 'false';
-
-    try {
-      const body = await workerStatus();
-
-      expect(body.browser.canLaunchHeaded).toBe(true);
-      // Declining to open an invisible browser is not the same as being unable
-      // to open one, and the screen must not confuse them.
-      expect(body.browser.canLaunchHeadless).toBe(false);
-      expect(body.ready).toBe(true);
-      expect(body.blockers).toEqual([]);
-    } finally {
-      if (saved.browsers === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
-      else process.env.PLAYWRIGHT_BROWSERS_PATH = saved.browsers;
-      if (saved.display === undefined) delete process.env.WAYLAND_DISPLAY;
-      else process.env.WAYLAND_DISPLAY = saved.display;
-      if (saved.headless === undefined) delete process.env.TREVRA_LINKEDIN_HEADLESS;
-      else process.env.TREVRA_LINKEDIN_HEADLESS = saved.headless;
-      rmSync(registry, { recursive: true, force: true });
-    }
-  });
-
-  it('gives ONE next action per problem, and never names an environment variable', async () => {
-    const body = await workerStatus();
-
-    expect(body.blockers.length).toBeGreaterThan(0);
-    // The flag defaults correctly now, so naming it is noise an operator has to
-    // read past to find the thing they actually have to do.
-    expect(body.blockers.join(' ')).not.toMatch(/TREVRA_LINKEDIN_LOCAL/);
-    for (const blocker of body.blockers) {
-      // One imperative sentence, plus at most the command to run.
-      expect(blocker.length).toBeLessThanOrEqual(120);
-      expect(blocker.split('. ').length).toBeLessThanOrEqual(1);
-    }
-  });
-
-  /**
-   * Every seat opens its own headless session. The display a headed window
-   * would need is not this path's requirement, and reporting it here is what
-   * told an operator whose container was working perfectly that something was
-   * broken.
-   */
-  it('judges the seat on headless alone, and never on a display', async () => {
-    await seat(WORKSPACE_A);
-    await upsertSeat(db, WORKSPACE_A, { sessionValidAt: NOW.toISOString() }, NOW);
-
-    const body = await workerStatus();
-    expect(body.browser.canLaunchHeaded).toBe(false);
-    // Not unknown: a confirmed session is knowledge already written down.
-    expect(body.loggedIn).toBe(true);
-
-    const said = body.blockers.join(' ');
-    expect(said).not.toMatch(/linkedin:login/);
-    expect(said).not.toMatch(/display/i);
-    expect(said).not.toMatch(/container/i);
-    expect(said).not.toMatch(/browser window/);
-
-    // Fails closed all the same: nothing launchable here is still not ready,
-    // and what is left to say is one line about the browser binary.
     expect(body.browser.canLaunchHeadless).toBe(false);
     expect(body.ready).toBe(false);
-    expect(body.blockers).toHaveLength(1);
-    expect(body.blockers[0]).toMatch(/chromium/i);
+    expect(body.blockers).toEqual(['LinkedIn automation is switched off on this server.']);
+    expect(body.blockers.join(' ')).not.toMatch(/playwright install|chromium|xvfb|display/i);
   });
 
-  it('reports the same headless-alone verdict for a seat that has no session yet', async () => {
-    await seat(WORKSPACE_A);
+  it('ignores Docker-local browser registry and display signals', async () => {
+    const saved = {
+      browsers: process.env.PLAYWRIGHT_BROWSERS_PATH,
+      display: process.env.DISPLAY,
+      wayland: process.env.WAYLAND_DISPLAY,
+      local: process.env.TREVRA_LINKEDIN_LOCAL
+    };
+    process.env.PLAYWRIGHT_BROWSERS_PATH = '/tmp/pretend-local-chromium';
+    process.env.DISPLAY = ':99';
+    process.env.WAYLAND_DISPLAY = 'wayland-0';
+    process.env.TREVRA_LINKEDIN_LOCAL = 'true';
 
-    const body = await workerStatus();
-    expect(body.loggedIn).toBe(false);
-    expect(body.ready).toBe(false);
-    expect(body.blockers.join(' ')).not.toMatch(/linkedin:login/);
-  });
-
-  it('says hosted is hosted, rather than sending the operator looking for a switch', async () => {
-    process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
     try {
       const body = await workerStatus();
       expect(body.enabled).toBe(false);
       expect(body.ready).toBe(false);
-      expect(body.blockers).toEqual([
-        'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
-      ]);
       expect(body.browser.canLaunchHeaded).toBe(false);
       expect(body.browser.canLaunchHeadless).toBe(false);
+      expect(body.blockers.join(' ')).not.toMatch(/chromium|xvfb|display/i);
     } finally {
-      delete process.env.TREVRA_DEPLOYMENT_MODE;
+      if (saved.browsers === undefined) delete process.env.PLAYWRIGHT_BROWSERS_PATH;
+      else process.env.PLAYWRIGHT_BROWSERS_PATH = saved.browsers;
+      if (saved.display === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = saved.display;
+      if (saved.wayland === undefined) delete process.env.WAYLAND_DISPLAY;
+      else process.env.WAYLAND_DISPLAY = saved.wayland;
+      if (saved.local === undefined) delete process.env.TREVRA_LINKEDIN_LOCAL;
+      else process.env.TREVRA_LINKEDIN_LOCAL = saved.local;
     }
+  });
+
+  it('becomes ready when Companion is configured while the visible browser remains off-server', async () => {
+    const saved = {
+      relay: process.env.TREVRA_COMPANION_RELAY_URL,
+      key: process.env.TREVRA_SECRETS_KEY
+    };
+    process.env.TREVRA_COMPANION_RELAY_URL = 'ws://127.0.0.1:43887/api/linkedin/companion';
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
+
+    try {
+      const body = await workerStatus();
+      expect(body.enabled).toBe(true);
+      expect(body.companionBrowser).toBe(true);
+      expect(body.playwrightInstalled).toBe(true);
+      expect(body.browser.canLaunchHeaded).toBe(false);
+      expect(body.browser.canLaunchHeadless).toBe(true);
+      expect(body.ready).toBe(true);
+      expect(body.blockers).toEqual([]);
+    } finally {
+      if (saved.relay === undefined) delete process.env.TREVRA_COMPANION_RELAY_URL;
+      else process.env.TREVRA_COMPANION_RELAY_URL = saved.relay;
+      if (saved.key === undefined) delete process.env.TREVRA_SECRETS_KEY;
+      else process.env.TREVRA_SECRETS_KEY = saved.key;
+    }
+  });
+
+  it('keeps a confirmed LinkedIn session separate from browser availability', async () => {
+    await seat(WORKSPACE_A);
+    await upsertSeat(db, WORKSPACE_A, { sessionValidAt: NOW.toISOString() }, NOW);
+
+    const body = await workerStatus();
+    expect(body.loggedIn).toBe(true);
+    expect(body.enabled).toBe(false);
+    expect(body.ready).toBe(false);
+    expect(body.blockers).toEqual(['LinkedIn automation is switched off on this server.']);
   });
 });
 
@@ -1139,7 +1079,7 @@ describe('withdrawal routes (032)', () => {
     expect(Date.parse(listed.withdrawals[0]?.nextRunWindowEndAt ?? '')).toBeGreaterThan(
       Date.parse(listed.withdrawals[0]?.nextRunAt ?? '')
     );
-    expect(listed.withdrawals[0]?.waitingFor ?? null).toBeNull();
+    expect(listed.withdrawals[0]?.waitingFor).toBe('worker');
 
     const other = (await as(sessionB).get('/api/linkedin/withdrawals').expect(200)).body as {
       withdrawals: unknown[];
@@ -1256,7 +1196,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     expect(body.posture).toBe('warmup');
     expect(body.warmupWeek).toBe(1);
     expect(body.today.invite).toBe(1);
-    expect(body.execution).toEqual({ ready: true, waitingFor: null });
+    expect(body.execution).toEqual({ ready: false, waitingFor: 'worker' });
     expect(body.backgroundRun).not.toBeNull();
     expect(body.backgroundRun?.timezone).toBe('Europe/Zurich');
     expect(Date.parse(body.backgroundRun?.endAt ?? '')).toBeGreaterThan(Date.now() - 60_000);
@@ -1427,62 +1367,70 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     expect(body.nextRun?.endAt).toBe(body.nextRun?.startAt);
     expect(Math.abs(Date.parse(body.nextRun?.startAt ?? '') - Date.now())).toBeLessThan(10_000);
   });
-
-  it('queues detection for a host-side worker when this process cannot open a browser', async () => {
-    // THE CONTAINER CASE, which is the normal one: the API has no display and
-    // no browser binaries, so detection becomes a request rather than a
-    // failure. 202, not 409 -- nothing is wrong, it is just not finished.
-    const queued = (
-      await as(sessionA)
-        .post('/api/linkedin/seat/detect')
-        .send({ timezone: 'Europe/Zurich' })
-        .expect(202)
-    ).body as { status: string; detected: null; seat: null; requestedAt: string; message: string };
-    expect(queued.status).toBe('pending');
-    expect(queued.detected).toBeNull();
-    expect(queued.seat).toBeNull();
-    expect(queued.message).toBe(
-      'Run `npm run linkedin:worker` on your machine to finish connecting.'
-    );
-
-    // THE REPLAY GUARD, enforced by the partial unique index in 027 rather than
-    // by this route remembering: pressing Connect again while the host worker
-    // starts up joins the outstanding request instead of opening a second one.
-    const again = (
-      await as(sessionA)
-        .post('/api/linkedin/seat/detect')
-        .send({ timezone: 'Europe/Zurich' })
-        .expect(202)
-    ).body as { requestedAt: string };
-    expect(again.requestedAt).toBe(queued.requestedAt);
-
-    // And it is visible on the route the client already polls.
-    const seatBody = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as {
-      detectRequest: {
-        status: string;
-        timezone: string;
-        failureReason: string | null;
-        nextAttemptAt?: string | null;
-        waitingFor?: string | null;
-      } | null;
+  it('queues detection for Companion when the paired computer is configured but offline', async () => {
+    const saved = {
+      relay: process.env.TREVRA_COMPANION_RELAY_URL,
+      key: process.env.TREVRA_SECRETS_KEY
     };
-    expect(seatBody.detectRequest?.status).toBe('pending');
-    expect(seatBody.detectRequest?.timezone).toBe('Europe/Zurich');
-    expect(seatBody.detectRequest?.failureReason).toBeNull();
-    expect(seatBody.detectRequest?.waitingFor ?? null).toBeNull();
-    expect(Date.parse(seatBody.detectRequest?.nextAttemptAt ?? '')).toBeGreaterThan(
-      Date.parse(queued.requestedAt)
-    );
+    process.env.TREVRA_COMPANION_RELAY_URL = 'ws://127.0.0.1:43887/api/linkedin/companion';
+    process.env.TREVRA_SECRETS_KEY = randomBytes(32).toString('base64');
 
-    // A timezone this runtime does not know is caller input, and is refused
-    // HERE rather than queued for another machine to fail on minutes later.
-    await as(sessionA)
-      .post('/api/linkedin/seat/detect')
-      .send({ timezone: 'Mars/Olympus' })
-      .expect(400);
+    try {
+      const queued = (
+        await as(sessionA)
+          .post('/api/linkedin/seat/detect')
+          .send({ timezone: 'Europe/Zurich' })
+          .expect(202)
+      ).body as {
+        status: string;
+        detected: null;
+        seat: null;
+        requestedAt: string;
+        message: string;
+      };
+      expect(queued.status).toBe('pending');
+      expect(queued.detected).toBeNull();
+      expect(queued.seat).toBeNull();
+      expect(queued.message).toBe(
+        'Run `npx trevra linkedin` on your computer and keep this Trevra tab open. The pending connection will be picked up when both are online.'
+      );
+
+      const again = (
+        await as(sessionA)
+          .post('/api/linkedin/seat/detect')
+          .send({ timezone: 'Europe/Zurich' })
+          .expect(202)
+      ).body as { requestedAt: string };
+      expect(again.requestedAt).toBe(queued.requestedAt);
+
+      const seatBody = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as {
+        detectRequest: {
+          status: string;
+          timezone: string;
+          failureReason: string | null;
+          nextAttemptAt?: string | null;
+          waitingFor?: string | null;
+        } | null;
+      };
+      expect(seatBody.detectRequest?.status).toBe('pending');
+      expect(seatBody.detectRequest?.timezone).toBe('Europe/Zurich');
+      expect(seatBody.detectRequest?.failureReason).toBeNull();
+      expect(seatBody.detectRequest?.waitingFor).toBe('computer');
+      expect(seatBody.detectRequest?.nextAttemptAt ?? null).toBeNull();
+
+      await as(sessionA)
+        .post('/api/linkedin/seat/detect')
+        .send({ timezone: 'Mars/Olympus' })
+        .expect(400);
+    } finally {
+      if (saved.relay === undefined) delete process.env.TREVRA_COMPANION_RELAY_URL;
+      else process.env.TREVRA_COMPANION_RELAY_URL = saved.relay;
+      if (saved.key === undefined) delete process.env.TREVRA_SECRETS_KEY;
+      else process.env.TREVRA_SECRETS_KEY = saved.key;
+    }
   });
 
-  it('refuses detection outright on a hosted deployment, with nothing queued', async () => {
+  it('refuses detection when hosted has no external browser configured', async () => {
     process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
     try {
       const refusal = (
@@ -1491,10 +1439,8 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
           .send({ timezone: 'Europe/Zurich' })
           .expect(409)
       ).body as { error: string };
-      expect(refusal.error).toBe(
-        'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
-      );
-      expect(refusal.error).not.toMatch(/TREVRA_LINKEDIN_LOCAL/);
+      expect(refusal.error).toBe('LinkedIn automation is switched off on this server.');
+      expect(refusal.error).not.toMatch(/chromium|playwright install|TREVRA_LINKEDIN_LOCAL/i);
     } finally {
       delete process.env.TREVRA_DEPLOYMENT_MODE;
     }

@@ -35,8 +35,6 @@ import {
   humanCadencePage,
   latestSeatDetectRequest,
   linkedInBrowserReadiness,
-  seatLaunchArgs,
-  describeBrowserOpenFailure,
   linkedInHeadlessReadiness,
   linkedInOffReason,
   linkedInWorkerHealth,
@@ -1379,7 +1377,8 @@ describe('the optional dependency', () => {
     // does not exist, so this is the container case for every developer.
     const readiness = linkedInBrowserReadiness({ enabled: true });
     expect(readiness.canLaunchHeaded).toBe(false);
-    expect(readiness.reasons.join(' ')).toContain('npx playwright install chromium');
+    expect(readiness.reasons.join(' ')).toContain('No external browser is configured');
+    expect(readiness.reasons.join(' ')).not.toContain('playwright install chromium');
 
     // Enabled, and still must not throw: a browser this machine cannot open
     // must not take down the worker process and everything else it runs. The
@@ -1415,208 +1414,130 @@ describe('the optional dependency', () => {
 });
 
 /**
- * The capability probe (plan 4.9).
- *
- * WHAT IT MUST NEVER DO IS LAUNCH ANYTHING. It feeds a status endpoint and the
- * detect route, and a status poll that opens Chrome is a status poll that
- * hangs. Everything below is environment and filesystem, and every case is
- * driven by an explicit `env` and `platform` so the answer does not depend on
- * whose laptop the suite is running on.
+ * Browser ownership is external. The server may have Playwright/Patchright as a
+ * CDP client, but Chrome binaries, display servers and browser profiles belong
+ * to Companion or another explicitly configured remote provider.
  */
 describe('linkedInBrowserReadiness', () => {
-  const registry = mkdtempSync(join(tmpdir(), 'trevra-browsers-'));
-  mkdirSync(join(registry, 'chromium-1148'), { recursive: true });
-  // A display is only real if something serves it, so the fixture serves one:
-  // `X0` in a socket directory this test owns. `xSocketDir` exists for exactly
-  // this -- the real path is /tmp/.X11-unix and a test has no business writing
-  // a stray display into it.
-  const sockets = mkdtempSync(join(tmpdir(), 'trevra-x11-'));
-  writeFileSync(join(sockets, 'X0'), '');
-  const served = { platform: 'linux', xSocketDir: sockets } as const;
-  const equipped = { PLAYWRIGHT_BROWSERS_PATH: registry, DISPLAY: ':0' } as NodeJS.ProcessEnv;
-
-  it('refuses before anything else when the deployment says no', () => {
-    const hosted = linkedInBrowserReadiness(
-      { enabled: false, hosted: true },
-      { env: equipped, ...served }
-    );
+  it('refuses before anything else when automation is disabled', () => {
+    const hosted = linkedInBrowserReadiness({ enabled: false, hosted: true });
+    const local = linkedInBrowserReadiness({ enabled: false, hosted: false });
     expect(hosted.canLaunchHeaded).toBe(false);
-    expect(hosted.reasons).toEqual([
-      'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
-    ]);
-
-    const off = linkedInBrowserReadiness({ enabled: false }, { env: equipped, ...served });
-    expect(off.reasons).toEqual(['LinkedIn automation is switched off on this server.']);
+    expect(local.canLaunchHeaded).toBe(false);
+    expect(hosted.reasons).toEqual(['LinkedIn automation is switched off on this server.']);
+    expect(local.reasons).toEqual(hosted.reasons);
   });
 
-  /**
-   * THE CONTAINER THAT COULD, AND THEREFORE DID.
-   *
-   * `runDueLinkedInActions` and `runLinkedInSideTasks` both rest on "a worker
-   * in a container has no display and no browser, so it returns immediately
-   * and claims no work away from the operator's own `npm run linkedin:worker`".
-   * Installing Chromium in the image for other features made that false: the
-   * container could launch headless, so it took the seat and drove the account
-   * from a GPU-less container whose WebGL reports SwiftShader while the headed
-   * worker sat idle.
-   */
-  it.skipIf(!playwrightInstalled)(
-    'lets a machine with no display decline the work instead of racing for it',
-    () => {
-      const blindButEquipped = { PLAYWRIGHT_BROWSERS_PATH: registry } as NodeJS.ProcessEnv;
-
-      // Left alone, a container with a browser and no display still says yes to
-      // headless -- which is correct where it is the only worker there is.
-      expect(
-        linkedInHeadlessReadiness({ enabled: true }, { env: blindButEquipped, platform: 'linux' })
-          .canLaunchHeadless
-      ).toBe(true);
-
-      const declined = linkedInHeadlessReadiness(
-        { enabled: true, headless: false },
-        { env: blindButEquipped, platform: 'linux' }
-      );
-      expect(declined.canLaunchHeadless).toBe(false);
-      expect(declined.reasons[0]).toContain('TREVRA_LINKEDIN_HEADLESS=false');
-
-      // AND IT IS NOT AN OFF SWITCH. `enabled` stays true, so the feature, the
-      // queue and the API's "run the worker on your machine" 202 are untouched --
-      // which is the whole difference between this and TREVRA_LINKEDIN_LOCAL.
-      expect(linkedInOffReason({ hosted: false })).not.toContain('HEADLESS');
-      expect(
-        linkedInHeadlessReadiness(
-          { enabled: false, headless: false },
-          { env: blindButEquipped, platform: 'linux' }
-        ).reasons
-      ).toEqual(['LinkedIn automation is switched off on this server.']);
-    }
-  );
-
-  it.skipIf(!playwrightInstalled)(
-    'says yes on a host with a display and an installed browser',
-    () => {
-      const ready = linkedInBrowserReadiness({ enabled: true }, { env: equipped, ...served });
-      expect(ready).toEqual({ canLaunchHeaded: true, reasons: [] });
-
-      // Wayland counts too; the question is whether anything can be drawn.
-      expect(
-        linkedInBrowserReadiness(
-          { enabled: true },
-          { env: { PLAYWRIGHT_BROWSERS_PATH: registry, WAYLAND_DISPLAY: 'wayland-0' }, ...served }
-        ).canLaunchHeaded
-      ).toBe(true);
-    }
-  );
-
-  it.skipIf(!playwrightInstalled)('treats a missing display on linux as decisive', () => {
-    const blind = linkedInBrowserReadiness(
-      { enabled: true },
-      { env: { PLAYWRIGHT_BROWSERS_PATH: registry }, ...served }
-    );
-    expect(blind.canLaunchHeaded).toBe(false);
-    expect(blind.reasons.some((reason) => reason.includes('No display'))).toBe(true);
-  });
-
-  /**
-   * THE DEFECT THIS CAUGHT, kept as a test because the wrong answer was so
-   * expensive: `docker restart` left `/tmp/.X99-lock` behind, the new Xvfb
-   * exited with "Server is already active for display 99", and DISPLAY stayed
-   * set by the image. Reading the variable alone, this probe reported a
-   * machine that could open a window; the operator got "check that Chromium is
-   * installed" out of the first launch that tried.
-   */
-  it.skipIf(!playwrightInstalled)('will not call a display real when nothing is serving it', () => {
-    const dead = { PLAYWRIGHT_BROWSERS_PATH: registry, DISPLAY: ':99' } as NodeJS.ProcessEnv;
-    const verdict = linkedInBrowserReadiness({ enabled: true }, { env: dead, ...served });
-    expect(verdict.canLaunchHeaded).toBe(false);
-    expect(verdict.reasons.join(' ')).toContain('DISPLAY is :99 but no X server is serving it');
-
-    // Served, and the same probe says yes -- so the blocker is about the X
-    // server, not about the number in the variable.
-    writeFileSync(join(sockets, 'X99'), '');
-    expect(
-      linkedInBrowserReadiness({ enabled: true }, { env: dead, ...served }).canLaunchHeaded
-    ).toBe(true);
-
-    // A remote X server over TCP has no socket on this machine to look for,
-    // and must not be blocked for the lack of one.
-    const forwarded = {
-      PLAYWRIGHT_BROWSERS_PATH: registry,
-      DISPLAY: 'host.docker.internal:0'
+  it('ignores local Chrome, browser caches, DISPLAY and X11 when no external browser is configured', () => {
+    const looksLikeAFullDesktop = {
+      PLAYWRIGHT_BROWSERS_PATH: '/tmp/some-browser-cache',
+      DISPLAY: ':99',
+      WAYLAND_DISPLAY: 'wayland-0'
     } as NodeJS.ProcessEnv;
-    expect(
-      linkedInBrowserReadiness({ enabled: true }, { env: forwarded, ...served }).canLaunchHeaded
-    ).toBe(true);
+    const headed = linkedInBrowserReadiness(
+      { enabled: true, companionBrowser: false },
+      { env: looksLikeAFullDesktop, platform: 'linux', xSocketDir: '/tmp/fake-x11' }
+    );
+    const controlled = linkedInHeadlessReadiness(
+      { enabled: true, companionBrowser: false },
+      { env: looksLikeAFullDesktop, platform: 'linux' }
+    );
+    expect(headed.canLaunchHeaded).toBe(false);
+    expect(headed.reasons.join(' ')).toContain('No external browser is configured');
+    expect(headed.reasons.join(' ')).toContain('server-local Chrome is disabled');
+    expect(headed.reasons.join(' ')).not.toMatch(
+      /Chromium|DISPLAY|X11|X server|playwright install/i
+    );
+    expect(controlled.canLaunchHeadless).toBe(false);
+    expect(controlled.reasons.join(' ')).toContain('No external browser is configured');
+    expect(controlled.reasons.join(' ')).not.toMatch(/Chromium|DISPLAY|playwright install/i);
   });
 
-  it('names the install command when the browser registry is not there', () => {
-    const bare = linkedInBrowserReadiness(
-      { enabled: true },
+  it.skipIf(!playwrightInstalled)('needs only the driver library to control Companion', () => {
+    const config = { enabled: true, companionBrowser: true, headless: false };
+    const headed = linkedInBrowserReadiness(config, { env: {} });
+    const controlled = linkedInHeadlessReadiness(config, { env: {} });
+    expect(headed.canLaunchHeaded).toBe(false);
+    expect(headed.reasons.join(' ')).toContain('paired Companion device');
+    expect(headed.reasons.join(' ')).not.toMatch(/Chromium|DISPLAY|playwright install/i);
+    expect(controlled.canLaunchHeadless).toBe(true);
+    expect(controlled.reasons).toEqual([]);
+    expect(linkedInHeadlessReadiness(config, { env: {} }).canLaunchHeadless).toBe(true);
+  });
+
+  it.skipIf(!playwrightInstalled)(
+    'needs only the driver library to control a configured remote provider',
+    () => {
+      const env = {
+        TREVRA_BROWSER_PROVIDER: 'remote',
+        TREVRA_BROWSER_CDP_URL: 'wss://browser.example.test/session'
+      } as NodeJS.ProcessEnv;
+      const config = { enabled: true, companionBrowser: false };
+      const headed = linkedInBrowserReadiness(config, { env });
+      const controlled = linkedInHeadlessReadiness(config, { env });
+      expect(headed.canLaunchHeaded).toBe(false);
+      expect(headed.reasons.join(' ')).toContain('browser.example.test');
+      expect(headed.reasons.join(' ')).toContain('never opens a local Chrome window');
+      expect(controlled.canLaunchHeadless).toBe(true);
+      expect(controlled.reasons).toEqual([]);
+      expect([...headed.reasons, ...controlled.reasons].join(' ')).not.toMatch(
+        /playwright install chromium|DISPLAY|X11/i
+      );
+    }
+  );
+
+  it('fails closed on a broken remote-provider configuration instead of falling back locally', () => {
+    const env = { TREVRA_BROWSER_PROVIDER: 'remote' } as NodeJS.ProcessEnv;
+    const headed = linkedInBrowserReadiness({ enabled: true }, { env });
+    const controlled = linkedInHeadlessReadiness({ enabled: true }, { env });
+    expect(headed.canLaunchHeaded).toBe(false);
+    expect(controlled.canLaunchHeadless).toBe(false);
+    expect(headed.reasons[0]).toBeTruthy();
+    expect(controlled.reasons[0]).toBeTruthy();
+    expect([...headed.reasons, ...controlled.reasons].join(' ')).not.toMatch(
+      /install chromium|local browser/i
+    );
+  });
+
+  it('never falls back to launching Chromium in the server process', async () => {
+    let localLaunches = 0;
+    const logs: string[] = [];
+    const playwright = {
+      chromium: {
+        launchPersistentContext: async () => {
+          localLaunches += 1;
+          throw new Error('must never run');
+        }
+      }
+    } as unknown as PlaywrightLike;
+    const handle = await openBrowser(
+      { enabled: true, hosted: false, companionBrowser: false },
+      (message) => logs.push(message),
       {
-        env: { PLAYWRIGHT_BROWSERS_PATH: '/nonexistent/ms-playwright', DISPLAY: ':0' },
-        platform: 'linux'
+        db: null,
+        workspaceId: 'ws_no_local_browser',
+        seatKey: 'owner',
+        headless: true,
+        env: {},
+        playwright
       }
     );
-    expect(bare.canLaunchHeaded).toBe(false);
-    expect(bare.reasons.join(' ')).toContain('npx playwright install chromium');
+    expect(handle).toBeNull();
+    expect(localLaunches).toBe(0);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('no external browser is configured');
+    expect(logs[0]).toContain('Pair Companion');
+    expect(logs[0]).toContain('server-local Chrome launches are disabled');
+    expect(logs[0]).not.toContain('playwright install chromium');
   });
 
-  /**
-   * THE SENTENCE THAT SENT AN OPERATOR AFTER THE WRONG THING. Chromium was
-   * installed; the container's Xvfb had died on a stale lock and Chrome had
-   * nowhere to draw. A message may name a cause only when the failure named it.
-   */
-  it('tells the operator what the browser actually said, or admits it does not know', () => {
-    const xserver = describeBrowserOpenFailure(
-      new Error(
-        'browserType.launchPersistentContext: Target closed\nBrowser logs:\n Looks like you launched a headed browser without having a XServer running.'
-      )
-    );
-    expect(xserver).toContain('no X server is serving it');
-    expect(xserver).not.toContain('Chromium build is missing');
-
-    expect(
-      describeBrowserOpenFailure(
-        new Error("Executable doesn't exist at /root/.cache/ms-playwright/chromium-1228/chrome")
-      )
-    ).toContain('npx playwright install chromium');
-
-    // Unknown stays unknown: it points at the log rather than inventing a
-    // next action, which is exactly what the old constant did.
-    const vague = describeBrowserOpenFailure(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'));
-    expect(vague).toContain('log for this attempt');
-    expect(vague).not.toMatch(/Chromium|X server/);
-  });
-
-  /**
-   * THE FLAGS, AS ONE ARRAY. They were two keys in one object literal -- a
-   * conditional `args` spread and a literal `args` eleven lines below it -- so
-   * the second silently won and the ANGLE pair never reached a browser. The
-   * measured fix for "WebGL returns null in this container" was dead code from
-   * the day it was written, and nothing warned.
-   */
-  it('passes every container flag in one array, ANGLE included', () => {
-    const inside = seatLaunchArgs(true);
-    expect(inside).toContain('--use-gl=angle');
-    expect(inside).toContain('--use-angle=gl-egl');
-    // Root in a container, headed or headless alike: making this depend on the
-    // mode is how "works headless, dies headed" happens.
-    expect(inside).toContain('--no-sandbox');
-    expect(inside).toContain('--disable-blink-features=AutomationControlled');
-
-    // NOT ON A REAL DESKTOP. Forcing EGL there moves the GL string away from
-    // what every other Chrome on that machine reports, and dropping the sandbox
-    // costs something real for nothing.
-    expect(seatLaunchArgs(false)).toEqual(['--disable-blink-features=AutomationControlled']);
-  });
-
-  it('FAILS CLOSED, and every reason is one sentence an operator can act on', () => {
-    const blocked = linkedInBrowserReadiness({ enabled: true }, { env: {}, ...served });
+  it('fails closed with short, actionable reasons', () => {
+    const blocked = linkedInBrowserReadiness({ enabled: true }, { env: {} });
     expect(blocked.canLaunchHeaded).toBe(false);
     expect(blocked.reasons.length).toBeGreaterThan(0);
     for (const reason of blocked.reasons) {
       expect(reason.length).toBeLessThanOrEqual(120);
-      expect(reason).not.toMatch(/TREVRA_LINKEDIN_LOCAL/);
+      expect(reason).not.toMatch(/TREVRA_LINKEDIN_LOCAL|playwright install chromium/i);
     }
   });
 });
@@ -1999,9 +1920,7 @@ describe.skipIf(!databaseUrl)('detectLinkedInSeat', () => {
     // find, so naming one would send the operator looking for it -- and the
     // profile directory this process would have used is inside a container the
     // operator cannot reach, which is worse than saying nothing.
-    expect(off.blocked).toBe(
-      'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
-    );
+    expect(off.blocked).toBe('LinkedIn automation is switched off on this server.');
     expect(off.blocked).not.toContain('TREVRA_LINKEDIN_LOCAL');
     expect(off.blocked).not.toContain('TREVRA_DEPLOYMENT_MODE');
     expect(off.blocked).not.toContain(PROFILE_DIR);
@@ -2204,7 +2123,7 @@ describe.skipIf(!databaseUrl)('the seat detect queue', () => {
     ).toEqual([]);
     expect(calls).toHaveLength(0);
     expect(linkedInOffReason({ hosted: true })).toBe(
-      'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
+      'LinkedIn automation is switched off on this server.'
     );
   });
 
@@ -2645,16 +2564,18 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
 
     // Before: the discovery query carried `AND seat_key='owner'`, so this list
     // came back EMPTY and the sales queue never drained.
-    expect(await seatsWithDueActions(db, NOW)).toEqual([
-      { workspaceId: WORKSPACE_ID, seatKey: 'sales', timezone: 'Europe/Zurich' }
-    ]);
+    expect(
+      (await seatsWithDueActions(db, NOW)).filter((seat) => seat.workspaceId === WORKSPACE_ID)
+    ).toEqual([{ workspaceId: WORKSPACE_ID, seatKey: 'sales', timezone: 'Europe/Zurich' }]);
   });
 
   it('leaves the owner seat discovered exactly as before, alongside the others', async () => {
     await plan('owner', 'lact_owner_1', 'https://www.linkedin.com/in/owner-target/');
     await plan('sales', 'lact_sales_1', 'https://www.linkedin.com/in/sales-target/');
 
-    expect(await seatsWithDueActions(db, NOW)).toEqual([
+    expect(
+      (await seatsWithDueActions(db, NOW)).filter((seat) => seat.workspaceId === WORKSPACE_ID)
+    ).toEqual([
       { workspaceId: WORKSPACE_ID, seatKey: 'owner', timezone: 'UTC' },
       { workspaceId: WORKSPACE_ID, seatKey: 'sales', timezone: 'Europe/Zurich' }
     ]);
@@ -2667,9 +2588,9 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
     await plan('ghost', 'lact_ghost', 'https://www.linkedin.com/in/ghost/');
     // A queue that quietly never moves is the exact failure this function just
     // stopped having; the batch refuses it with a sentence instead.
-    expect(await seatsWithDueActions(db, NOW)).toEqual([
-      { workspaceId: WORKSPACE_ID, seatKey: 'ghost', timezone: null }
-    ]);
+    expect(
+      (await seatsWithDueActions(db, NOW)).filter((seat) => seat.workspaceId === WORKSPACE_ID)
+    ).toEqual([{ workspaceId: WORKSPACE_ID, seatKey: 'ghost', timezone: null }]);
 
     const store = postgresLocalWorkerStore(db, WORKSPACE_ID, 'ghost');
     const { driver, calls } = fakeDriver();
@@ -3924,48 +3845,69 @@ describe.skipIf(!databaseUrl)('the Connect queue is fair across tenants', () => 
 });
 
 /**
- * BROWSERS ARE THE MEMORY, AND THE MAP WAS APPEND-ONLY.
+ * REMOTE BROWSER HANDLES ARE STILL MEMORY, EVEN THOUGH CHROME LIVES ON COMPANION.
  *
- * One live Chromium per seat this process had ever served, at ~350-500MB each.
- * The leak below is worse still: a failure anywhere after the launch returned
- * null WITHOUT closing the context, so a leaked browser went on holding the
- * profile directory's exclusive lock and permanently stranded that seat for
- * every worker on the host.
+ * The server keeps one Playwright/CDP handle per active seat. That map must stay
+ * bounded, and a failed attach must close the remote browser connection it just
+ * opened. What must never happen here is a server-local persistent-context launch.
  */
-describe('open browsers are bounded, and a failed open leaks nothing', () => {
-  function fakePlaywright(options: { failAfterLaunch?: boolean } = {}) {
+describe('open Companion browsers are bounded, and a failed attach leaks nothing', () => {
+  function fakeCompanion(options: { failContext?: boolean } = {}) {
     const opened: string[] = [];
     const closed: string[] = [];
+    let localLaunches = 0;
     const playwright = {
       chromium: {
-        launchPersistentContext: async (userDataDir: string) => {
-          opened.push(userDataDir);
-          return {
-            pages: () => [],
-            newPage: async () => {
-              if (options.failAfterLaunch) throw new Error('the tab could not be created');
-              return {};
+        launchPersistentContext: async () => {
+          localLaunches += 1;
+          throw new Error('server-local Chromium must never launch');
+        },
+        connectOverCDP: async (endpoint: string) => {
+          const seatKey = decodeURIComponent(endpoint.split('/').pop() ?? 'unknown');
+          opened.push(seatKey);
+          const context = {
+            pages: () => {
+              if (options.failContext) throw new Error('the persistent context could not be read');
+              return [{}];
             },
-            cookies: async () => [],
+            newPage: async () => ({}),
             on: () => {},
+            storageState: async () => ({ cookies: [], origins: [] }),
+            close: async () => {}
+          };
+          return {
+            contexts: () => [context],
+            newContext: async () => {
+              throw new Error('Companion must use its existing persistent context');
+            },
             close: async () => {
-              closed.push(userDataDir);
+              closed.push(seatKey);
             }
           };
         }
       }
     } as unknown as PlaywrightLike;
-    return { playwright, opened, closed };
+    return { playwright, opened, closed, localLaunches: () => localLaunches };
   }
 
-  const config = { enabled: true, hosted: false, profileDir: '/tmp/trevra-browser-cap-test' };
+  const config = {
+    enabled: true,
+    hosted: false,
+    profileDir: null,
+    remoteBrowser: false,
+    companionBrowser: true
+  };
+  const env = {
+    TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080',
+    TREVRA_SECRETS_KEY: 'companion-test-secret'
+  };
   const open = (playwright: PlaywrightLike, seatKey: string) =>
     openBrowser(config, () => {}, {
       db: null,
       workspaceId: 'ws_cap',
       seatKey,
       headless: true,
-      env: {},
+      env,
       playwright
     });
 
@@ -3974,36 +3916,37 @@ describe('open browsers are bounded, and a failed open leaks nothing', () => {
     delete process.env.TREVRA_LINKEDIN_MAX_BROWSERS;
   });
 
-  it('closes the least recently used context rather than growing forever', async () => {
+  it('closes the least recently used Companion connection rather than growing forever', async () => {
     process.env.TREVRA_LINKEDIN_MAX_BROWSERS = '2';
-    const { playwright, closed } = fakePlaywright();
+    const fake = fakeCompanion();
 
-    await open(playwright, 'first');
-    await open(playwright, 'second');
+    await open(fake.playwright, 'first');
+    await open(fake.playwright, 'second');
     // Touching the first one again makes the SECOND the least recently used.
-    await open(playwright, 'first');
-    await open(playwright, 'third');
+    await open(fake.playwright, 'first');
+    await open(fake.playwright, 'third');
 
-    expect(closed).toEqual([resolveProfileDir(config.profileDir, 'ws_cap', 'second')]);
+    expect(fake.closed).toEqual(['second']);
+    expect(fake.localLaunches()).toBe(0);
   });
 
-  it('closes the context it just opened when anything after the launch fails', async () => {
-    const { playwright, opened, closed } = fakePlaywright({ failAfterLaunch: true });
+  it('closes the Companion connection when context preparation fails', async () => {
+    const fake = fakeCompanion({ failContext: true });
 
-    expect(await open(playwright, 'doomed')).toBeNull();
+    expect(await open(fake.playwright, 'doomed')).toBeNull();
 
-    // Before: null was returned and the context stayed open -- a leaked
-    // Chromium holding a profile lock that stranded this seat for everybody.
-    expect(opened).toEqual(closed);
-    expect(closed).toHaveLength(1);
+    expect(fake.opened).toEqual(['doomed']);
+    expect(fake.closed).toEqual(['doomed']);
+    expect(fake.localLaunches()).toBe(0);
   });
 
-  it('retires a context nobody has used for a while', async () => {
-    const { playwright, closed } = fakePlaywright();
-    await open(playwright, 'idle');
+  it('retires a Companion connection nobody has used for a while', async () => {
+    const fake = fakeCompanion();
+    await open(fake.playwright, 'idle');
 
     expect(await closeIdleBrowsers(new Date(Date.now() + 30 * 60_000))).toBe(1);
-    expect(closed).toHaveLength(1);
+    expect(fake.closed).toEqual(['idle']);
+    expect(fake.localLaunches()).toBe(0);
     // And there is nothing left to retire afterwards.
     expect(await closeIdleBrowsers(new Date(Date.now() + 90 * 60_000))).toBe(0);
   });

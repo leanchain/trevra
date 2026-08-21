@@ -527,6 +527,20 @@ describe('LinkedIn manager HTTP surface', () => {
   });
 
   it('previews launch capacity and exposes wave, queue, control, duplicate, and member timeline operations', async () => {
+    // This case asserts campaign-day allocation, not working-hours behavior. Keep the
+    // seat open for the whole week so the test is deterministic on evenings/weekends.
+    await upsertSeat(
+      db,
+      A,
+      {
+        label: 'Owner A',
+        timezone: 'Europe/Zurich',
+        workingDays: [0, 1, 2, 3, 4, 5, 6],
+        workStartMinute: 0,
+        workEndMinute: 1440
+      },
+      NOW
+    );
     const list = (
       await as(tokenA)
         .post('/api/linkedin/manager/lead-lists')

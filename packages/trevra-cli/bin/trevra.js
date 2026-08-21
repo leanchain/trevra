@@ -45,6 +45,8 @@ const ACTIVITY_LOG = join(LOGS, 'linkedin-companion.log');
 const ACTIVITY_LOG_OLD = join(LOGS, 'linkedin-companion.log.1');
 const MAX_ACTIVITY_LOG_BYTES = 2 * 1024 * 1024;
 const LINKEDIN_FEED = 'https://www.linkedin.com/feed/';
+const REDDIT_HOME = 'https://www.reddit.com/';
+const REDDIT_COMPANION_PROFILE_KEY = '__reddit__';
 
 function usage(exitCode = 0) {
   const out = exitCode === 0 ? process.stdout : process.stderr;
@@ -368,20 +370,21 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
 
   browserExecutable ??= systemChrome() ?? (await playwrightChromium());
   const browserMode = headless ? 'background' : 'visible';
+  const reddit = seatKey === REDDIT_COMPANION_PROFILE_KEY;
+  const browserLabel = reddit ? 'Reddit' : 'LinkedIn';
+  const startUrl = reddit ? REDDIT_HOME : LINKEDIN_FEED;
   activity('browser_opening', `seat=${seatKey} mode=${browserMode}`);
   if (!headless) {
     process.stdout.write(
-      `Opening LinkedIn in Chrome for ${seatKey === 'owner' ? 'your account' : `account ${seatKey}`}…\n`
+      reddit
+        ? 'Opening Reddit in Chrome…\n'
+        : `Opening LinkedIn in Chrome for ${seatKey === 'owner' ? 'your account' : `account ${seatKey}`}…\n`
     );
   }
-  const child = spawn(
-    browserExecutable,
-    chromeLaunchArgs({ profileDir, headless, startUrl: LINKEDIN_FEED }),
-    {
-      stdio: 'ignore',
-      windowsHide: headless
-    }
-  );
+  const child = spawn(browserExecutable, chromeLaunchArgs({ profileDir, headless, startUrl }), {
+    stdio: 'ignore',
+    windowsHide: headless
+  });
 
   const handle = { endpoint: null, child, profileDir };
   browsers.set(key, handle);
@@ -392,7 +395,7 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
   });
   child.once('error', (error) => {
     activity('browser_error', `seat=${seatKey} ${error.message}`);
-    process.stderr.write(`Chrome could not start: ${error.message}\n`);
+    process.stderr.write(`${browserLabel} Chrome could not start: ${error.message}\n`);
   });
 
   for (let attempt = 0; attempt < 200; attempt += 1) {

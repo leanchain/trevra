@@ -52,9 +52,8 @@ const DEPLOYMENT_MODE_REQUIRED =
   'Set TREVRA_DEPLOYMENT_MODE=hosted if this deployment serves workspaces belonging to anyone but you ' +
   '(a fresh workspace is created for every email that signs in, so this is true of any deployment strangers can reach), ' +
   'or TREVRA_DEPLOYMENT_MODE=local if you are self-hosting for yourself alone. ' +
-  'Unset, it would fall back to local, which enables the LinkedIn and Reddit local workers (each driving a browser ' +
-  "signed into one human's account), the shared browser-profile paths, and the operator-wide subscription CLI agent " +
-  'backend: capabilities that are fine for one self-hoster and are not fine for a deployment with tenants';
+  'Browser execution is external in both modes: LinkedIn attaches to Companion or a configured remote provider, and Reddit never launches Chrome in the server process. ' +
+  'The mode still controls tenant custody and whether an operator-wide personal subscription CLI may back agent runs, so production must state it explicitly';
 
 /**
  * Enforced in all three places the mode is read, so no entry point can boot on
@@ -93,9 +92,9 @@ export interface RuntimeConfig {
   /**
    * Reddit browser execution.
    *
-   * The legacy server-local Reddit browser worker is disabled. Reddit must not
-   * make Docker download or launch Chromium; it remains off until its browser
-   * session is routed through Companion like LinkedIn.
+   * Reddit uses a reserved persistent profile on the paired Companion device.
+   * Docker/server code may control that browser over CDP, but it never downloads,
+   * launches or owns Chromium itself.
    */
   redditLocalWorker: { enabled: boolean; profileDir: string | null; hosted: boolean };
   /**
@@ -137,10 +136,8 @@ export function linkedInWorkerConfig(
 }
 
 /**
- * The old Reddit worker launched Chromium inside the server process. That
- * execution home is intentionally gone: no Docker/service process may own a
- * browser. Keep the config shape for callers/status while Reddit is moved to
- * Companion.
+ * Reddit follows the same browser-ownership boundary as LinkedIn: execution is
+ * enabled only when Companion is configured, and Chrome remains on Companion.
  */
 export function redditWorkerConfig(
   env: NodeJS.ProcessEnv = process.env
@@ -154,7 +151,7 @@ export function redditWorkerConfig(
     })
     .parse(env);
   return {
-    enabled: false,
+    enabled: companionBrowserConfigured(env) && parsed.TREVRA_REDDIT_LOCAL !== 'false',
     profileDir: parsed.TREVRA_REDDIT_PROFILE_DIR ?? null,
     hosted: parsed.TREVRA_DEPLOYMENT_MODE === 'hosted'
   };
@@ -210,9 +207,9 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       INDEXNOW_KEY: z.string().optional(),
       NANGO_API_KEY: z.string().optional(),
       NANGO_WEBHOOK_SIGNING_KEY: z.string().optional(),
-      // Opt-OUT for the local LinkedIn worker. Absent means on, except when this
-      // SAME process is a hosted deployment with no remote browser provider,
-      // where the gate below is unconditional -- see `linkedInWorkerConfig`.
+      // Compatibility opt-out name retained from the pre-Companion worker.
+      // Browser execution is enabled only when Companion or an external remote
+      // provider is configured; this flag never authorizes server-local Chrome.
       TREVRA_LINKEDIN_LOCAL: booleanString.optional(),
       // What kind of deployment this is. Defaults to 'local' because that is
       // what a self-hoster running `npm start` has, and because the only thing
@@ -226,22 +223,17 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       // and organization per email that signs in) and the guess only ever errs
       // towards more capability.
       TREVRA_DEPLOYMENT_MODE: z.enum(['local', 'hosted']).default('local'),
-      // Chrome profile the operator logged into LinkedIn with by hand. Absent
-      // means ~/.trevra/linkedin-profile, resolved by the worker rather than
-      // here: $HOME belongs to the process that launches the browser.
+      // Legacy local-profile paths are retained for migration/cleanup of old
+      // installs and lease rows. Active browser sessions live on Companion or
+      // an explicitly configured external provider, never in the server image.
       TREVRA_LINKEDIN_PROFILE_DIR: z.string().optional(),
-      // The Reddit pair, on the same terms as the LinkedIn pair above: opt-OUT,
-      // and a SEPARATE browser profile, because one persistent user-data-dir can
-      // hold one signed-in Chrome at a time.
+      // Compatibility opt-out/profile names retained from the pre-Companion
+      // Reddit worker. They do not enable or locate a Docker-hosted browser.
       TREVRA_REDDIT_LOCAL: booleanString.optional(),
       TREVRA_REDDIT_PROFILE_DIR: z.string().optional(),
-      // WHERE THE BROWSERS ARE. 'local' is this machine's own Chromium at a
-      // persistent profile directory -- what every deployment did before hosted
-      // execution existed, and still the default. 'remote' attaches to a cloud
-      // browser over CDP, which is the only way a container with no display can
-      // drive one at all. Validated in `browser/provider.ts`, which owns the
-      // shape of every variable below; declared here so `npm start` fails on a
-      // typo rather than silently running local.
+      // WHERE AN EXTERNAL BROWSER IS. 'remote' attaches over CDP/Playwright.
+      // 'local' is retained as a compatibility value meaning "no external
+      // provider selected"; server-local Chrome launching is disabled.
       TREVRA_BROWSER_PROVIDER: z.enum(['local', 'remote']).optional(),
       TREVRA_BROWSER_CDP_URL: z.string().optional(),
       TREVRA_BROWSER_API_KEY: z.string().optional(),
@@ -417,9 +409,9 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
         "TREVRA_SECRETS_KEY is required when TREVRA_BROWSER_PROVIDER=remote: a browser attached over CDP has no profile directory, so each seat's signed-in session is stored encrypted and without a key every run would be a new-device sign-in. Generate one with `openssl rand -base64 32`"
       );
     }
-    if (base.TREVRA_REDDIT_LOCAL === 'true')
+    if (base.TREVRA_REDDIT_LOCAL === 'true' && !companionBrowserConfigured(env))
       problems.push(
-        'TREVRA_REDDIT_LOCAL=true is no longer supported: Docker/server-local Chrome launches are disabled. Reddit browser execution must use Companion.'
+        'TREVRA_REDDIT_LOCAL=true requires a paired Companion device. Docker/server-local Chrome launches are disabled.'
       );
     if (base.TREVRA_ORCHESTRATOR === 'temporal' && !base.TEMPORAL_ADDRESS)
       problems.push('TEMPORAL_ADDRESS is required when TREVRA_ORCHESTRATOR=temporal');

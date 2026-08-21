@@ -489,26 +489,22 @@ describe('POST /api/linkedin/seat/login', () => {
       .expect(400);
     await as(session).post('/api/linkedin/seat/login').send({ otp: 'no' }).expect(400);
   });
-
-  it('answers with a status and a sentence rather than a stack trace', async () => {
-    // No browser exists in this suite, so this exercises the honest refusal
-    // path: one sentence, 200, and nothing about either stored value.
-    const body = (await as(session).post('/api/linkedin/seat/login').send({}).expect(200)).body as {
-      status: string;
-      message: string;
+  it('refuses cleanly when no external browser is configured and never leaks stored credentials', async () => {
+    const refusal = (await as(session).post('/api/linkedin/seat/login').send({}).expect(409))
+      .body as {
+      error: string;
     };
-    expect(['ok', 'otp_required', 'challenge', 'failed']).toContain(body.status);
-    expect(body.message.length).toBeGreaterThan(0);
-    expect(body.message).not.toContain(PASSWORD);
+    expect(refusal.error).toBe('LinkedIn automation is switched off on this server.');
+    expect(refusal.error).not.toContain(PASSWORD);
+    expect(refusal.error).not.toContain(EMAIL);
+    expect(refusal.error).not.toMatch(/chromium|playwright install/i);
   });
 
-  it('refuses on a hosted deployment', async () => {
+  it('uses the same external-browser refusal in hosted mode when Companion is not configured', async () => {
     process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
     const refusal = (await as(session).post('/api/linkedin/seat/login').send({}).expect(409))
       .body as { error: string };
-    expect(refusal.error).toBe(
-      'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
-    );
+    expect(refusal.error).toBe('LinkedIn automation is switched off on this server.');
   });
 });
 

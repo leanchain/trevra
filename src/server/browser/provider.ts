@@ -134,11 +134,10 @@ const ENDPOINT_SCHEMES = ['ws:', 'wss:', 'http:', 'https:'];
  * Which browser this deployment drives, read from the environment and nowhere
  * else.
  *
- * NEVER THROWS. A misconfigured remote provider reports `kind: 'local'` with a
- * `problem` sentence, because this function is read by `config.ts`, by the
- * worker loop and by a status route, and a config reader that throws is how a
- * deployment discovers its own mistake through a 500 rather than a message.
- * The callers that must not proceed on a fallback read `problem`.
+ * NEVER THROWS. A missing or misconfigured external provider reports
+ * `kind: 'local'` for compatibility, but that value no longer means "launch a
+ * browser here". Server-local Chrome is disabled; callers either attach to a
+ * remote/Companion browser or fail closed using `problem`.
  */
 export function browserProviderSettings(
   env: NodeJS.ProcessEnv = process.env
@@ -148,9 +147,9 @@ export function browserProviderSettings(
     return { kind: 'local', remote: null, problem: `${PROVIDER_ENV} must be 'local' or 'remote'.` };
   }
   const endpoint = (env[ENDPOINT_ENV] ?? '').trim();
-  // ABSENT MEANS LOCAL, AND AN ENDPOINT ALONE DOES NOT TURN REMOTE ON. Making
-  // the URL's presence the switch would mean an operator who left a stale
-  // variable in a `.env` silently moved every seat onto somebody else's IP.
+  // ABSENT OR 'local' MEANS NO EXTERNAL PROVIDER. It does not authorize a
+  // server-local launch. An endpoint alone also does not turn remote on: a
+  // stale URL must never silently move every seat onto somebody else's IP.
   if (selected !== 'remote') return { kind: 'local', remote: null, problem: null };
 
   if (!endpoint) {
@@ -322,7 +321,7 @@ export interface SeatBrowserRequest {
   workspaceId: string;
   seatKey: string;
   headless: boolean;
-  /** Local only: the per-seat user-data-dir. Ignored by the remote provider, which has none. */
+  /** Legacy/local compatibility field. External providers ignore this path. */
   profileDir: string;
   fingerprint: {
     userAgent: string;
@@ -334,10 +333,9 @@ export interface SeatBrowserRequest {
   proxy: ProviderProxy | null;
   /** Remote only: the seat's signed-in state, restored into the fresh context. */
   storageState: BrowserStorageState | null;
-  /** Launch args, local only -- a remote browser was launched before we connected. */
+  /** Legacy local-launch fields retained for request-shape compatibility; external providers ignore them. */
   args: string[];
   ignoreDefaultArgs: string[];
-  /** Browser channels to try, in order. Local only. */
   channels: readonly string[];
 }
 
@@ -569,7 +567,7 @@ async function openRemoteSeatBrowser(
       }));
     const page = context.pages()[0] ?? (await context.newPage());
     log(
-      `LinkedIn seat browser is remote: attached to ${remote.label} at ${redactEndpoint(remote.endpointTemplate)}` +
+      `Browser session is remote: attached to ${remote.label} at ${redactEndpoint(remote.endpointTemplate)}` +
         (remote.sessionPersistence === 'browser'
           ? ' and is using the persistent session on that computer.'
           : `${request.storageState ? " and restored this seat's stored session" : ' with no stored session, so it must sign in'}.`)

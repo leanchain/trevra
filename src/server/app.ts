@@ -3632,13 +3632,10 @@ export function createApp(db: Db) {
    * a fault; both are something the operator has to go and do, and the body
    * carries that ONE thing rather than a paragraph about environment variables.
    *
-   * 202 WHEN THIS PROCESS CANNOT OPEN A BROWSER, which is the normal case the
-   * moment the API runs in a container: no display, no browser binaries, and a
-   * home directory that is not the operator's. Detection then becomes a
-   * request for the operator's own `npm run linkedin:worker` to fulfil against
-   * this same Postgres, guarded by the partial unique index in migration 027
-   * exactly as `linkedin_batches` work is. The client keeps polling
-   * GET /api/linkedin/seat, which is what it already does.
+   * 202 only when Companion is configured for this server but the paired
+   * computer is not online yet. The request is durable, so Companion can pick
+   * it up when it reconnects. A server with no external browser configuration
+   * fails closed instead of suggesting that Docker should launch Chrome.
    */
   app.post(
     '/api/linkedin/seat/detect',
@@ -3665,28 +3662,24 @@ export function createApp(db: Db) {
 
       if (!config.enabled) throw new LinkedInApiError(linkedInOffReason(config), 409);
 
-      /**
-       * WHICH PROCESS DOES THIS?
-       *
-       * A headed browser is best and is used whenever one can be opened. Failing
-       * that -- the container, always -- a seat that stored its own sign-in can
-       * be served right here by a headless Chromium, because that browser can
-       * type a password even though it cannot show anybody a window. THAT IS THE
-       * WHOLE POINT OF THE CREDENTIALS PATH: no host-side worker, no second
-       * machine, nothing for the operator to run.
-       *
-       */
+      // Browser ownership is explicit. Companion must be online for a Companion
+      // session; a configured remote provider can be attached immediately. No
+      // branch may fall back to launching a browser in this server process.
       const companionReady =
         Boolean(config.companionBrowser) &&
         (await companionWorkspaceReady(db, req.auth!.workspaceId));
-      const canDetectHere =
-        companionReady ||
-        linkedInBrowserReadiness(config).canLaunchHeaded ||
-        ((await describeLinkedInCredentials(db, req.auth!.workspaceId, input.seatKey))
-          .hasCredentials &&
-          linkedInHeadlessReadiness(config).canLaunchHeadless);
+      const externalReady = linkedInHeadlessReadiness(config).canLaunchHeadless;
+      const canDetectHere = config.companionBrowser ? companionReady : externalReady;
 
       if (!canDetectHere) {
+        if (!config.companionBrowser) {
+          const readiness = linkedInHeadlessReadiness(config);
+          throw new LinkedInApiError(
+            readiness.reasons[0] ?? 'The configured external browser is unavailable.',
+            409
+          );
+        }
+
         let request: Awaited<ReturnType<typeof requestSeatDetect>>;
         try {
           request = await requestSeatDetect(
@@ -3703,22 +3696,6 @@ export function createApp(db: Db) {
             throw new LinkedInApiError(error.message, 400);
           throw error;
         }
-        /**
-         * WHO IS GOING TO PICK THIS UP, said accurately rather than by habit.
-         *
-         * This sentence was always "run the worker on your machine", because
-         * that was the only process that could ever fulfil the request. On a
-         * hosted deployment with a remote browser and this workspace's recorded
-         * authorisation, the hosted runner takes it on its next tick and there
-         * is nothing for the operator to run at all -- telling them otherwise
-         * would send them to install Node and Chromium for a job already in
-         * progress.
-         *
-         * The gate is asked rather than assumed: a hosted deployment whose
-         * workspace has NOT authorised hosted execution still gets the old
-         * instruction, because for them it is still the only thing that works.
-         */
-        const hostedRunner = await hostedExecutionGate(db, req.auth!.workspaceId);
         return res.status(202).json({
           status: 'pending',
           detected: null,
@@ -3726,11 +3703,7 @@ export function createApp(db: Db) {
           degraded: [],
           requestedAt: request.requestedAt,
           message:
-            hostedRunner.allowed && hostedExecutionMode().available
-              ? 'Queued for the hosted runner; it will finish connecting this seat on its next pass.'
-              : config.companionBrowser
-                ? 'Run `npx trevra linkedin` on your computer and keep this Trevra tab open. The pending connection will be picked up when both are online.'
-                : 'Run `npm run linkedin:worker` on your machine to finish connecting.'
+            'Run `npx trevra linkedin` on your computer and keep this Trevra tab open. The pending connection will be picked up when both are online.'
         });
       }
 
@@ -9034,24 +9007,18 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
     playwrightInstalled = false;
   }
 
-  // Non-launching by construction: this is a status poll, and a status poll
-  // that opens Chrome hangs. Both verdicts are reported, always.
+  // Non-launching by construction: the server only reports whether it can
+  // attach to an external browser. A visible Chrome window, when there is one,
+  // belongs to Companion; Docker display/X11/browser-cache state is irrelevant.
   const headed = linkedInBrowserReadiness(workerConfig);
-  const headless = linkedInHeadlessReadiness(workerConfig);
+  const external = linkedInHeadlessReadiness(workerConfig);
   const browser = {
-    canLaunchHeaded: headed.canLaunchHeaded,
-    canLaunchHeadless: headless.canLaunchHeadless,
+    canLaunchHeaded: false,
+    canLaunchHeadless: external.canLaunchHeadless,
     reasons: headed.reasons,
-    headlessReasons: headless.reasons
+    headlessReasons: external.reasons
   };
 
-  // ONE NEXT ACTION, and never a problem belonging to a display or a profile
-  // directory: the seat signs itself in, so the binary is the only thing in
-  // its way, and the chromium line only once playwright itself is there --
-  // "install the browsers" is not the next action for somebody with no
-  // playwright.
-  const installPlaywright =
-    'Run `npm i playwright && npx playwright install chromium` on the machine that runs the worker.';
   const blockers: string[] = [];
   if (configError)
     blockers.push(`This server could not read its own configuration: ${configError}`);
@@ -9059,57 +9026,16 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
     blockers.push(linkedInOffReason(workerConfig));
   } else if (!playwrightInstalled) {
     blockers.push(
-      workerConfig.companionBrowser
-        ? 'This hosted worker is missing Playwright, which it needs to attach to the paired computer. Redeploy the server image with Playwright installed.'
-        : installPlaywright
+      'Redeploy this server with Playwright installed as a client library only; do not install Chromium in the server image'
     );
-  } else if (
-    !workerConfig.companionBrowser &&
-    !headless.canLaunchHeadless &&
-    !headed.canLaunchHeaded
-  ) {
-    // BOTH, NOT JUST HEADLESS. This branch read `!headless.canLaunchHeadless`
-    // alone, which was a fair proxy for "can this machine open a browser" only
-    // while the two verdicts moved together -- chromium present meant headless
-    // possible meant a browser possible. `TREVRA_LINKEDIN_HEADLESS=false`
-    // separated them, and a worker that drives a REAL headed Chrome on an Xvfb
-    // display was reported to the operator as unable to open a browser at all,
-    // over the sentence explaining that it declines to open an INVISIBLE one.
-    // Both readiness answers are already in `browser` above; this is the one
-    // place that has to consider them together.
-    blockers.push(...headless.reasons);
+  } else if (!external.canLaunchHeadless) {
+    blockers.push(...external.reasons);
   }
-  // A HEADED BROWSER IS A BROWSER, and it is the better of the two: headless
-  // Chrome reports SwiftShader as its WebGL renderer even on a machine with a
-  // GPU, and puts "HeadlessChrome" in its own user agent (measured; see
-  // `scripts/linkedin-fingerprint-probe.mjs`). Ranking it as "not ready" had
-  // the screen recommending the worse path.
-  const ready =
-    enabled &&
-    playwrightInstalled &&
-    (Boolean(workerConfig.companionBrowser) ||
-      browser.canLaunchHeaded ||
-      browser.canLaunchHeadless);
+  const ready = enabled && playwrightInstalled && external.canLaunchHeadless;
 
   return {
     enabled,
-    /**
-     * WHICH KIND OF OFF THIS DEPLOYMENT IS, as a fact rather than as prose.
-     *
-     * The same `hosted` the server refuses credential custody on and the same
-     * one `linkedInOffReason` writes its sentence from, now carried
-     * structurally: hosted is a decision about who the automation operator is
-     * under LinkedIn's User Agreement 8.2, and no environment variable can undo
-     * it, while every other kind of off is a switch somebody can find. A client
-     * that has to tell those apart was reading `blockers` with a regular
-     * expression -- so an edit to a sentence changed what the screen claimed
-     * about the deployment, and printed an `npx playwright install` line to
-     * somebody who has no machine to run it on. A boolean cannot be reworded.
-     *
-     * True as well when the environment could not be validated at all: the
-     * fail-closed default above is off AND hosted, the pair that promises
-     * nothing.
-     */
+    /** Deployment metadata is structural so clients never infer it from blocker prose. */
     hosted: workerConfig.hosted,
     companionBrowser: Boolean(workerConfig.companionBrowser),
     playwrightInstalled,
@@ -9119,7 +9045,7 @@ async function linkedinWorkerStatus(db: Db, workspaceId: string) {
      * session was CONFIRMED live, so this is knowledge, not a guess.
      */
     loggedIn: Boolean(seat?.sessionValidAt),
-    /** Both verdicts: which mode this process will actually launch in. */
+    /** Compatibility fields describing external-browser control; this process launches no browser. */
     browser,
     /** Fail-closed: unknown is not ready. */
     ready,

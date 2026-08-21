@@ -35,7 +35,9 @@ const FINGERPRINT = {
   viewport: { width: 1440, height: 900 }
 };
 
-function request(overrides: Partial<Parameters<typeof openSeatBrowser>[2]> = {}): Parameters<typeof openSeatBrowser>[2] {
+function request(
+  overrides: Partial<Parameters<typeof openSeatBrowser>[2]> = {}
+): Parameters<typeof openSeatBrowser>[2] {
   return {
     workspaceId: 'ws_a',
     seatKey: 'sales',
@@ -58,7 +60,10 @@ function fakeContext(seen: { contextOptions?: Record<string, unknown> }): Provid
     newPage: async () => ({ url: () => 'about:blank' }),
     close: async () => {},
     on: () => {},
-    storageState: async (): Promise<BrowserStorageState> => ({ cookies: [{ name: 'li_at', value: 'x' }], origins: [] })
+    storageState: async (): Promise<BrowserStorageState> => ({
+      cookies: [{ name: 'li_at', value: 'x' }],
+      origins: []
+    })
   };
 }
 
@@ -109,7 +114,9 @@ describe('choosing a browser provider', () => {
   it('does NOT go remote just because an endpoint is lying around', () => {
     // The dangerous accident: a stale variable in a .env silently moving every
     // seat onto a datacentre IP. Selecting remote has to be an explicit act.
-    const settings = browserProviderSettings({ TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com?apiKey={apiKey}' });
+    const settings = browserProviderSettings({
+      TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com?apiKey={apiKey}'
+    });
     expect(settings.kind).toBe('local');
     expect(settings.problem).toBeNull();
   });
@@ -122,10 +129,12 @@ describe('choosing a browser provider', () => {
     expect(settings.kind).toBe('remote');
     expect(settings.remote?.connect).toBe('cdp');
     expect(settings.remote?.label).toBe('connect.example.com');
-    expect(remoteBrowserConfigured({
-      TREVRA_BROWSER_PROVIDER: 'remote',
-      TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com/'
-    })).toBe(true);
+    expect(
+      remoteBrowserConfigured({
+        TREVRA_BROWSER_PROVIDER: 'remote',
+        TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com/'
+      })
+    ).toBe(true);
   });
 
   it('refuses to fall back to local when remote was asked for and is broken', () => {
@@ -136,8 +145,16 @@ describe('choosing a browser provider', () => {
       { TREVRA_BROWSER_PROVIDER: 'remote' },
       { TREVRA_BROWSER_PROVIDER: 'remote', TREVRA_BROWSER_CDP_URL: 'not a url' },
       { TREVRA_BROWSER_PROVIDER: 'remote', TREVRA_BROWSER_CDP_URL: 'ftp://elsewhere/' },
-      { TREVRA_BROWSER_PROVIDER: 'remote', TREVRA_BROWSER_CDP_URL: 'wss://x/', TREVRA_BROWSER_CONNECT: 'grpc' },
-      { TREVRA_BROWSER_PROVIDER: 'remote', TREVRA_BROWSER_CDP_URL: 'wss://x/', TREVRA_BROWSER_HEADERS: '{not json' },
+      {
+        TREVRA_BROWSER_PROVIDER: 'remote',
+        TREVRA_BROWSER_CDP_URL: 'wss://x/',
+        TREVRA_BROWSER_CONNECT: 'grpc'
+      },
+      {
+        TREVRA_BROWSER_PROVIDER: 'remote',
+        TREVRA_BROWSER_CDP_URL: 'wss://x/',
+        TREVRA_BROWSER_HEADERS: '{not json'
+      },
       { TREVRA_BROWSER_PROVIDER: 'sideways' }
     ]) {
       const settings = browserProviderSettings(env);
@@ -174,7 +191,9 @@ describe('choosing a browser provider', () => {
   });
 
   it('redacts the query string, where every provider keeps its key', () => {
-    const redacted = redactEndpoint('wss://connect.example.com/session?apiKey=sk-canary-9f3&proxy=http%3A%2F%2Fu%3Ap%40h%3A1');
+    const redacted = redactEndpoint(
+      'wss://connect.example.com/session?apiKey=sk-canary-9f3&proxy=http%3A%2F%2Fu%3Ap%40h%3A1'
+    );
     expect(redacted).toBe('wss://connect.example.com/session');
     expect(redacted).not.toContain('sk-canary-9f3');
   });
@@ -186,34 +205,48 @@ describe('a member-computer remote browser', () => {
     const persistent = fakeContext({});
     const driver: ProviderDriver = {
       chromium: {
-        launchPersistentContext: async () => { throw new Error('must not launch locally'); },
+        launchPersistentContext: async () => {
+          throw new Error('must not launch locally');
+        },
         connectOverCDP: async (endpoint) => {
           seen.endpoint = endpoint;
           return {
             contexts: () => [persistent],
-            newContext: async () => { seen.newContext = true; throw new Error('must use the persistent context'); },
-            close: async () => { seen.closed = true; }
+            newContext: async () => {
+              seen.newContext = true;
+              throw new Error('must use the persistent context');
+            },
+            close: async () => {
+              seen.closed = true;
+            }
           };
         }
       }
     };
-    const result = await openSeatBrowser(driver, {
-      kind: 'remote',
-      remote: {
-        endpointTemplate: 'ws://trevra:8080/api/linkedin/companion/browser/{workspace}/{seat}',
-        apiKey: null,
-        connect: 'cdp',
-        headers: { authorization: 'Bearer derived-relay-key' },
-        label: 'your connected computer',
-        requireProxy: false,
-        sessionPersistence: 'browser',
-        useExistingContext: true
+    const result = await openSeatBrowser(
+      driver,
+      {
+        kind: 'remote',
+        remote: {
+          endpointTemplate: 'ws://trevra:8080/api/linkedin/companion/browser/{workspace}/{seat}',
+          apiKey: null,
+          connect: 'cdp',
+          headers: { authorization: 'Bearer derived-relay-key' },
+          label: 'your connected computer',
+          requireProxy: false,
+          sessionPersistence: 'browser',
+          useExistingContext: true
+        },
+        problem: null
       },
-      problem: null
-    }, request({
-      proxy: null,
-      storageState: { cookies: [{ name: 'li_at', value: 'server-copy-must-not-be-used' }], origins: [] }
-    }));
+      request({
+        proxy: null,
+        storageState: {
+          cookies: [{ name: 'li_at', value: 'server-copy-must-not-be-used' }],
+          origins: []
+        }
+      })
+    );
 
     expect('session' in result).toBe(true);
     if (!('session' in result)) throw new Error('unreachable');
@@ -233,7 +266,7 @@ describe('a remote seat with no usable proxy', () => {
     TREVRA_BROWSER_API_KEY: 'sk-canary-9f3'
   };
 
-  it('is refused rather than run on the provider\'s own address', async () => {
+  it("is refused rather than run on the provider's own address", async () => {
     const seen: Record<string, unknown> = {};
     const result = await openSeatBrowser(
       fakeRemoteDriver(seen),
@@ -252,8 +285,13 @@ describe('a remote seat with no usable proxy', () => {
     const seen: Record<string, unknown> = {};
     const result = await openSeatBrowser(
       fakeRemoteDriver(seen),
-      browserProviderSettings({ ...remoteEnv, TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com/?apiKey={apiKey}' }),
-      request({ proxy: { server: 'http://res.example.net:8000', username: 'u', password: 'canary-proxy-pw' } })
+      browserProviderSettings({
+        ...remoteEnv,
+        TREVRA_BROWSER_CDP_URL: 'wss://connect.example.com/?apiKey={apiKey}'
+      }),
+      request({
+        proxy: { server: 'http://res.example.net:8000', username: 'u', password: 'canary-proxy-pw' }
+      })
     );
     expect('refused' in result).toBe(true);
     if (!('refused' in result)) throw new Error('unreachable');
@@ -267,7 +305,10 @@ describe('a remote seat with no usable proxy', () => {
     const result = await openSeatBrowser(
       fakeRemoteDriver(seen),
       browserProviderSettings(remoteEnv),
-      request({ proxy: { server: 'http://res.example.net:8000', username: 'u', password: 'p&w' }, storageState: { cookies: [{ name: 'li_at', value: 'x' }], origins: [] } })
+      request({
+        proxy: { server: 'http://res.example.net:8000', username: 'u', password: 'p&w' },
+        storageState: { cookies: [{ name: 'li_at', value: 'x' }], origins: [] }
+      })
     );
     expect('session' in result).toBe(true);
     expect(seen.via).toBe('cdp');
@@ -275,7 +316,10 @@ describe('a remote seat with no usable proxy', () => {
     // is a connection to the provider's own IP wearing a proxy's clothes.
     expect(String(seen.endpoint)).not.toContain('p&w');
     expect(String(seen.endpoint)).toContain('apiKey=sk-canary-9f3');
-    expect((seen.contextOptions as Record<string, unknown>).storageState).toEqual({ cookies: [{ name: 'li_at', value: 'x' }], origins: [] });
+    expect((seen.contextOptions as Record<string, unknown>).storageState).toEqual({
+      cookies: [{ name: 'li_at', value: 'x' }],
+      origins: []
+    });
     // Over CDP the proxy travels in the URL and is NOT passed to newContext,
     // where it would be silently ignored.
     expect((seen.contextOptions as Record<string, unknown>).proxy).toBeUndefined();
@@ -300,7 +344,13 @@ describe('a remote seat with no usable proxy', () => {
 
   it('refuses when the installed driver cannot connect at all', async () => {
     const result = await openSeatBrowser(
-      { chromium: { launchPersistentContext: async () => { throw new Error('no'); } } },
+      {
+        chromium: {
+          launchPersistentContext: async () => {
+            throw new Error('no');
+          }
+        }
+      },
       browserProviderSettings(remoteEnv),
       request({ proxy: { server: 'http://res.example.net:8000' } })
     );
@@ -317,7 +367,13 @@ describe('a remote seat with no usable proxy', () => {
 
   it('substitutes the seat and workspace for providers that key sessions on them', () => {
     const resolved = resolveRemoteEndpoint(
-      { endpointTemplate: 'wss://x/?s={seat}&w={workspace}', apiKey: null, connect: 'cdp', headers: {}, label: 'x' },
+      {
+        endpointTemplate: 'wss://x/?s={seat}&w={workspace}',
+        apiKey: null,
+        connect: 'cdp',
+        headers: {},
+        label: 'x'
+      },
       { workspaceId: 'ws a', seatKey: 'sales/eu', proxy: null }
     );
     expect(resolved).toBe('wss://x/?s=sales%2Feu&w=ws%20a');
@@ -325,45 +381,47 @@ describe('a remote seat with no usable proxy', () => {
 });
 
 describe('the local provider', () => {
-  it('launches a persistent context with the seat\'s own identity and proxy', async () => {
-    let seenDir = '';
-    let seenOptions: Record<string, unknown> = {};
-    const driver: ProviderDriver = {
-      chromium: {
-        launchPersistentContext: async (dir, options) => {
-          seenDir = dir;
-          seenOptions = options ?? {};
-          return fakeContext({});
-        }
-      }
-    };
-    const proxy = { server: 'http://res.example.net:8000' };
-    const result = await openSeatBrowser(driver, browserProviderSettings({}), request({ proxy }));
-    expect('session' in result).toBe(true);
-    if (!('session' in result)) throw new Error('unreachable');
-    expect(result.session.kind).toBe('local');
-    // NULL, and this is the property that keeps the local session single-homed:
-    // its profile directory is the session, and a copy in Postgres would be a
-    // second source of truth for the one fact that must not have two.
-    expect(result.session.exportStorageState).toBeNull();
-    expect(seenDir).toBe('/tmp/trevra-profile');
-    expect(seenOptions.userAgent).toBe(FINGERPRINT.userAgent);
-    expect(seenOptions.timezoneId).toBe('Europe/London');
-    expect(seenOptions.proxy).toEqual(proxy);
-  });
-
-  it('reports the last channel\'s failure rather than launching nothing quietly', async () => {
+  it('refuses without ever launching Chromium in the server process', async () => {
+    let launches = 0;
     const driver: ProviderDriver = {
       chromium: {
         launchPersistentContext: async () => {
-          throw new Error('Executable doesn\'t exist');
+          launches += 1;
+          throw new Error('must never be called');
         }
       }
     };
+
+    const result = await openSeatBrowser(
+      driver,
+      browserProviderSettings({}),
+      request({
+        proxy: { server: 'http://res.example.net:8000' }
+      })
+    );
+
+    expect('refused' in result).toBe(true);
+    if (!('refused' in result)) throw new Error('unreachable');
+    expect(result.refused).toMatch(/Server-local browser launches are disabled/);
+    expect(result.refused).toMatch(/Companion|remote browser provider/);
+    expect(launches).toBe(0);
+  });
+
+  it('does not probe Chrome channels when no external browser is configured', async () => {
+    let launches = 0;
+    const driver: ProviderDriver = {
+      chromium: {
+        launchPersistentContext: async () => {
+          launches += 1;
+          throw new Error("Executable doesn't exist");
+        }
+      }
+    };
+
     const result = await openSeatBrowser(driver, browserProviderSettings({}), request());
     expect('refused' in result).toBe(true);
     if (!('refused' in result)) throw new Error('unreachable');
-    expect(result.refused).toContain('/tmp/trevra-profile');
-    expect(result.refused).toContain('Executable doesn\'t exist');
+    expect(result.refused).not.toContain("Executable doesn't exist");
+    expect(launches).toBe(0);
   });
 });

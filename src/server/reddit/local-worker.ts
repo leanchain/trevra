@@ -1,24 +1,18 @@
 /**
- * The Reddit worker: the only thing that opens a browser at Reddit, and the
- * only caller of the one function that decrypts a Reddit password.
+ * The Reddit worker: the server-side controller for Reddit browser actions and
+ * the only caller of the one function that decrypts a Reddit password.
  *
- * SELF-HOSTED ONLY, AND THE GATE IS FIRST IN EVERY FUNCTION. `config.enabled`
- * is false on a hosted deployment and no environment variable makes it true.
- * Nothing below runs on a hosted instance.
+ * Chrome itself is owned by Companion. The server attaches over CDP using a
+ * reserved Reddit Companion profile and never launches a local browser.
  *
  * THE PASSWORD'S WHOLE LIFETIME IS ONE `const` IN `loginRedditAccount`. It is
  * decrypted at the moment of use, handed straight to the driver, and never
  * assigned to an outcome, a log line, or anything that outlives that call.
  *
- * A SEPARATE BROWSER PROFILE FROM LINKEDIN'S, AND ONE PER WORKSPACE. A
- * persistent user-data-dir holds ONE signed-in Chrome, so pointing two things
- * at the same directory does not give them a shared window -- it gives them a
- * shared ACCOUNT, and whichever one signed in last owns it. That is true of
- * the two platform workers (they would fight over the profile lock) and it was
- * true of every tenant on the machine, which is the multi-tenancy defect
- * `resolveRedditProfileDir` and the `browsers` map below exist to close.
- * Default base: `~/.trevra/reddit`, one `-<workspace>-profile` directory under
- * it per workspace.
+ * Reddit uses a Companion profile distinct from LinkedIn and keeps one server
+ * CDP handle per workspace. The legacy profile-path helpers below are retained
+ * only to identify/clean old self-hosted profile directories during upgrade;
+ * they are not used to launch Chrome.
  *
  * NEVER THROWS. Every refusal is a status plus one sentence, because the
  * callers are worker ticks and HTTP handlers and neither may 500 because Reddit
@@ -28,14 +22,10 @@ import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import {
-  browserBlockers,
-  displayBlocker,
-  inContainer,
-  playwrightBrowsersPath
-} from '../browser/local.js';
+import { openSeatBrowser, type ProviderDriver } from '../browser/provider.js';
 import { redditWorkerConfig } from '../config.js';
 import type { Db } from '../db.js';
+import { companionBrowserSettings } from '../linkedin/companion.js';
 import { deleteRedditCredentials, readRedditCredentials } from '../secrets/reddit.js';
 import { deleteRedditAccount, getRedditAccount, stampRedditSessionValid } from './account.js';
 import {
@@ -51,12 +41,7 @@ export interface RedditLocalWorkerConfig {
   enabled: boolean;
   /** Absent means the default below. */
   profileDir?: string | null;
-  /**
-   * True on a hosted deployment, where `enabled` is false and cannot be made
-   * true. Carried so a refusal can say WHICH kind of off it is: "turned off"
-   * has a fix, "hosted" does not, and telling an operator to go looking for a
-   * switch that does not exist is the dead end this flag removes.
-   */
+  /** Deployment-mode metadata retained for API/config compatibility. */
   hosted?: boolean;
 }
 
@@ -80,20 +65,16 @@ function expandHome(raw: string): string {
 }
 
 /**
- * The base every workspace's profile directory hangs off, for a startup line
- * printed before any workspace is known.
- *
- * `resolveRedditProfileDir` itself always REQUIRES a workspace, on purpose, so
- * that nothing can quietly resolve the old single shared path again by simply
- * omitting one. This is the only way to get a path without naming a tenant,
- * and it deliberately is not a profile directory.
+ * Legacy profile-directory base retained only for migration/cleanup of old
+ * self-hosted installs. Active Reddit sessions live on Companion.
  */
 export function redditProfileDirBase(configured?: string | null): string {
   return expandHome(configured?.trim() ? configured.trim() : DEFAULT_PROFILE_DIR_BASE);
 }
 
 /**
- * The Chrome profile directory for ONE WORKSPACE.
+ * Legacy Chrome profile directory for ONE WORKSPACE. Active sessions no longer
+ * use this path; it is retained to clean up pre-Companion installs safely.
  *
  * ONE DIRECTORY PER WORKSPACE, NEVER ONE FOR THE WHOLE PROCESS. This function
  * used to take no workspace at all, so every tenant on the machine landed in
@@ -132,14 +113,9 @@ export function redditProfileDirBase(configured?: string | null): string {
  * an empty directory, reports the session as gone, and signs in again from the
  * vault -- or, on a `manual` account, asks the operator to.
  *
- * Resolved at the use site on purpose: `$HOME` belongs to the process that
- * actually launches the browser, and baking it into config would put one
- * machine's home directory into a value other machines read.
- *
- * `configured` (`TREVRA_REDDIT_PROFILE_DIR`) is a BASE an operator may still
- * override -- still suffixed per workspace, because the isolation this exists
- * for is not something a global environment variable should be able to switch
- * back off by accident.
+ * `configured` (`TREVRA_REDDIT_PROFILE_DIR`) remains a legacy cleanup base and
+ * is still suffixed per workspace so old tenant-isolated directories can be
+ * removed without reintroducing a shared path.
  */
 export function resolveRedditProfileDir(
   configured: string | null | undefined,
@@ -151,7 +127,7 @@ export function resolveRedditProfileDir(
 
 /** Why Reddit automation is off, in one sentence. */
 export function redditOffReason(_config: Pick<RedditLocalWorkerConfig, 'hosted'>): string {
-  return 'Reddit browser automation is off because server-local Chrome launches are disabled; Reddit must use Companion.';
+  return 'Reddit browser automation needs a paired Companion device; server-local Chrome launches are disabled.';
 }
 
 export interface RedditBrowserReadiness {
@@ -167,69 +143,39 @@ export interface RedditHeadlessReadiness {
 }
 
 /**
- * The container line is CONTEXT, not a verdict: a container with a forwarded
- * display can genuinely run this. It is emitted only alongside a real blocker,
- * because it is the fact that explains why the others are true -- an operator
- * told "no display" inside Docker has learned nothing they can act on.
+ * Compatibility probe for the retired server-local browser mode. It remains
+ * deliberately false even when Chromium happens to exist on this machine,
+ * because active Reddit browser execution attaches to Companion instead.
  */
 export function redditBrowserReadiness(
   config: RedditLocalWorkerConfig,
-  options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
+  _options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
 ): RedditBrowserReadiness {
-  if (!config.enabled) return { canLaunchHeaded: false, reasons: [redditOffReason(config)] };
-
-  const env = options.env ?? process.env;
-  const platform = options.platform ?? process.platform;
-  const blockers = browserBlockers(env, platform);
-  const display = displayBlocker(env, platform);
-  if (display) blockers.push(display);
-
-  if (blockers.length === 0) return { canLaunchHeaded: true, reasons: [] };
   return {
     canLaunchHeaded: false,
-    reasons: inContainer()
-      ? [
-          'This process runs in a container, which has no display and no browser of its own.',
-          ...blockers
-        ]
-      : blockers
+    reasons: [redditOffReason(config)]
   };
 }
 
-/**
- * Can this process open a HEADLESS Chromium?
- *
- * The same probe minus the display check, because that is the entire
- * difference: a headless browser needs a binary and nothing to draw on. In a
- * container the headed answer is always no and this one is yes as soon as
- * `npx playwright install chromium` has run in the image.
- *
- * An account that stored its own sign-in needs nothing else to be usable -- it
- * opens its own session and shows no human a login form because none is needed.
- */
+/** Same ownership rule for headless execution: Docker never becomes the fallback. */
 export function redditHeadlessReadiness(
   config: RedditLocalWorkerConfig,
-  options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
+  _options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
 ): RedditHeadlessReadiness {
-  if (!config.enabled) return { canLaunchHeadless: false, reasons: [redditOffReason(config)] };
-  const blockers = browserBlockers(
-    options.env ?? process.env,
-    options.platform ?? process.platform
-  );
-  return blockers.length === 0
-    ? { canLaunchHeadless: true, reasons: [] }
-    : { canLaunchHeadless: false, reasons: blockers };
+  return {
+    canLaunchHeadless: false,
+    reasons: [redditOffReason(config)]
+  };
 }
 
 interface BrowserHandle {
   page: RedditPage;
-  /** Which mode this handle was opened in, so a reuse cannot silently be the wrong one. */
+  /** Retained for API compatibility while browser ownership moves to Companion. */
   headless: boolean;
   close(): Promise<void>;
 }
-
 /**
- * One open browser per WORKSPACE, never one for the whole process.
+ * One open Companion CDP handle per WORKSPACE, never one for the whole process.
  *
  * A single shared `browser` here was the other half of the tenant-crossing bug
  * `resolveRedditProfileDir` describes, and the half that survives fixing the
@@ -246,8 +192,8 @@ interface BrowserHandle {
  * those two edits look complete on its own.
  *
  * lc-debt: entries live until `closeRedditBrowser` is called, so a long-lived
- * API process holds one Chrome per workspace it has served; an idle-eviction
- * sweep over this map is the upgrade path if that count ever gets large.
+ * API process retains one remote handle per workspace it has served; an
+ * idle-eviction sweep over this map is the upgrade path if that count grows.
  */
 const browsers = new Map<string, BrowserHandle>();
 
@@ -276,23 +222,15 @@ function reportUnready(
   const summary = reasons.join(' ');
   if (unreadyLogged.get(workspaceId) === summary) return;
   unreadyLogged.set(workspaceId, summary);
-  log(`Reddit local worker stays off for ${workspaceId}: ${summary}`);
+  log(`Reddit browser worker is unavailable for ${workspaceId}: ${summary}`);
 }
 
 /**
- * Attach to this account's persistent Chrome profile, launching Chromium if
- * needed.
+ * Attach to this workspace's persistent Reddit profile on Companion over CDP.
  *
- * HEADED IS PREFERRED WHENEVER IT IS AVAILABLE. The operator can watch what the
- * worker does and close it, and a signed-in window is strictly easier to
- * troubleshoot than one nobody can see. `headless: true` is what a container
- * falls back to: no display, no window to show. Either way the account signs
- * itself in with its own stored credentials -- headless just means nobody is
- * watching it do so.
- *
- * A MODE CHANGE REOPENS. The handle records which mode it was launched in, so a
- * headless job cannot silently be answered by a headed window left over from
- * something else, or the reverse.
+ * The server never launches Chrome. The `headless` bit is retained in the
+ * handle/request shape for compatibility, but Companion owns the actual browser
+ * process and visibility.
  *
  * A DIFFERENT WORKSPACE NEVER REUSES. The lookup is keyed by workspace before
  * the mode is even considered, so there is no path -- not a mode match, not a
@@ -301,15 +239,85 @@ function reportUnready(
  * the same reason `resolveRedditProfileDir` requires one: a default here would
  * be a shared browser reintroduced by omission.
  */
+const REDDIT_COMPANION_PROFILE_KEY = '__reddit__';
+const REDDIT_DRIVER_SPECIFIERS: readonly string[] = ['patchright', 'playwright'];
+
+async function loadRedditBrowserDriver(
+  log: (message: string) => void
+): Promise<ProviderDriver | null> {
+  for (const specifier of REDDIT_DRIVER_SPECIFIERS) {
+    try {
+      return (await import(specifier)) as unknown as ProviderDriver;
+    } catch {
+      // Either package may provide the CDP client; try the next one.
+    }
+  }
+  log(
+    'Reddit browser automation cannot attach to Companion because neither patchright nor playwright is installed in the server image.'
+  );
+  return null;
+}
+
 async function openBrowser(
   _config: RedditLocalWorkerConfig,
   log: (message: string) => void,
-  options: { workspaceId: string; headless?: boolean }
+  options: {
+    workspaceId: string;
+    headless?: boolean;
+    env?: NodeJS.ProcessEnv;
+    playwright?: ProviderDriver;
+  }
 ): Promise<BrowserHandle | null> {
-  log(
-    `Reddit browser execution is unavailable for ${options.workspaceId}: server-local Chrome launches are disabled. Reddit must use a Companion-backed browser session.`
+  const headless = options.headless ?? false;
+  const existing = browsers.get(options.workspaceId);
+  if (existing && existing.headless === headless) return existing;
+  if (existing) await closeRedditBrowser(options.workspaceId);
+
+  const env = options.env ?? process.env;
+  const settings = companionBrowserSettings(env);
+  if (!settings) {
+    log(
+      `Reddit browser execution is unavailable for ${options.workspaceId}: pair a Companion device. Server-local Chrome launches are disabled.`
+    );
+    return null;
+  }
+  const playwright = options.playwright ?? (await loadRedditBrowserDriver(log));
+  if (!playwright) return null;
+
+  const opened = await openSeatBrowser(
+    playwright,
+    settings,
+    {
+      workspaceId: options.workspaceId,
+      seatKey: REDDIT_COMPANION_PROFILE_KEY,
+      headless,
+      profileDir: '',
+      fingerprint: {
+        userAgent: '',
+        locale: 'en-US',
+        timezoneId: 'UTC',
+        viewport: { width: 1365, height: 768 }
+      },
+      proxy: null,
+      storageState: null,
+      args: [],
+      ignoreDefaultArgs: [],
+      channels: []
+    },
+    log
   );
-  return null;
+  if ('refused' in opened) {
+    log(`Reddit Companion browser could not attach for ${options.workspaceId}: ${opened.refused}`);
+    return null;
+  }
+
+  const handle: BrowserHandle = {
+    page: opened.session.page as RedditPage,
+    headless,
+    close: opened.session.close
+  };
+  browsers.set(options.workspaceId, handle);
+  return handle;
 }
 
 /** Reddit handles are unique case-insensitively, so `u/Pankaj` and `u/pankaj` are one account. */
@@ -401,7 +409,7 @@ export interface RedditLoginOutcome {
 
 /** Every place a browser handle failed to open says this, verbatim. */
 const BROWSER_OPEN_FAILED_MESSAGE =
-  'Could not open a Reddit browser session on this machine; check that Chromium is installed and try again.';
+  'Could not attach to a Reddit Companion browser session; server-local Chrome launches are disabled.';
 
 /**
  * Make this workspace's Reddit session usable: reuse it if it works, sign in if
@@ -430,6 +438,8 @@ export async function loginRedditAccount(
     /** Absent -- always, outside a test -- means the shared persistent-profile browser. */
     page?: RedditPage;
     log?: (message: string) => void;
+    env?: NodeJS.ProcessEnv;
+    playwright?: ProviderDriver;
   }
 ): Promise<RedditLoginOutcome> {
   const log = options.log ?? ((message: string) => console.log(message));
@@ -440,11 +450,11 @@ export async function loginRedditAccount(
 
   let page = options.page ?? null;
   if (!page) {
-    const mode = accountBrowserMode(config);
-    if (mode.blocked) return { status: 'failed', message: mode.blocked };
     const handle = await openBrowser(config, log, {
       workspaceId: options.workspaceId,
-      headless: mode.headless
+      headless: true,
+      env: options.env,
+      playwright: options.playwright
     });
     if (!handle) return { status: 'failed', message: BROWSER_OPEN_FAILED_MESSAGE };
     page = handle.page;
@@ -556,6 +566,8 @@ export async function openRedditSession(
     /** Absent -- always, outside a test -- means the shared persistent-profile browser. */
     page?: RedditPage;
     log?: (message: string) => void;
+    env?: NodeJS.ProcessEnv;
+    playwright?: ProviderDriver;
   }
 ): Promise<RedditSessionResult> {
   const log = options.log ?? ((message: string) => console.log(message));
@@ -571,22 +583,20 @@ export async function openRedditSession(
       now,
       driver,
       page: options.page,
-      log
+      log,
+      env: options.env,
+      playwright: options.playwright
     });
     return outcome.status === 'ok'
       ? { ok: true, page: options.page, driver }
       : { ok: false, blocked: outcome.message };
   }
 
-  const mode = accountBrowserMode(config);
-  if (mode.blocked) {
-    reportUnready(options.workspaceId, log, [mode.blocked]);
-    return { ok: false, blocked: mode.blocked };
-  }
-
   const handle = await openBrowser(config, log, {
     workspaceId: options.workspaceId,
-    headless: mode.headless
+    headless: true,
+    env: options.env,
+    playwright: options.playwright
   });
   if (!handle) return { ok: false, blocked: BROWSER_OPEN_FAILED_MESSAGE };
 
@@ -883,12 +893,12 @@ export function redditWorkerStatus(
   const platform = options.platform ?? process.platform;
   const headed = redditBrowserReadiness(config, { env, platform });
   const headless = redditHeadlessReadiness(config, { env, platform });
-  // READY MEANS "SOME BROWSER CAN OPEN HERE", either kind. A container with
-  // chromium installed is ready; a laptop with no playwright is not.
-  const ready = config.enabled && (headed.canLaunchHeaded || headless.canLaunchHeadless);
+  // READY means this deployment is configured to attach to a Companion browser;
+  // no local Chromium installation is part of readiness anymore.
+  const ready = config.enabled;
   return {
     enabled: config.enabled,
-    playwrightPath: playwrightBrowsersPath(env, platform),
+    playwrightPath: null,
     profileDir: options.workspaceId
       ? resolveRedditProfileDir(config.profileDir, options.workspaceId)
       : redditProfileDirBase(config.profileDir),

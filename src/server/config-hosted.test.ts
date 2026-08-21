@@ -105,11 +105,12 @@ describe('the hosted LinkedIn worker gate', () => {
     ).toBe(false);
   });
 
-  it('leaves a self-hosted deployment exactly as it was', () => {
+  it('does not turn self-hosted mode into permission to launch Chrome in the server', () => {
     const config = linkedInWorkerConfig({ ...base });
-    expect(config.enabled).toBe(true);
+    expect(config.enabled).toBe(false);
     expect(config.hosted).toBe(false);
     expect(config.remoteBrowser).toBe(false);
+    expect(config.companionBrowser).toBe(false);
     expect(validateEnvironment({ ...base }).browserProvider).toEqual({
       kind: 'local',
       provider: null
@@ -155,7 +156,7 @@ describe('booting a production deployment', () => {
         TREVRA_DEPLOYMENT_MODE: 'hosted',
         TREVRA_LINKEDIN_LOCAL: 'true'
       })
-    ).toThrow(/no remote browser is configured/);
+    ).toThrow(/requires a browser outside the server process/);
   });
 
   it('refuses to boot on a remote provider that does not hold together, rather than falling back', () => {

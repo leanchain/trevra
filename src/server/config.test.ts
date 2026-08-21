@@ -9,13 +9,15 @@ const base = {
 
 describe('runtime configuration', () => {
   it('treats empty optional URL environment values as unset', () => {
-    expect(() => validateEnvironment({
-      ...base,
-      PUBLIC_REGISTRY_API_URL: '',
-      TREVRA_SANDBOX_GATEWAY_URL: '',
-      BETTER_AUTH_URL: '',
-      PUBLIC_SITE_URL: ''
-    })).not.toThrow();
+    expect(() =>
+      validateEnvironment({
+        ...base,
+        PUBLIC_REGISTRY_API_URL: '',
+        TREVRA_SANDBOX_GATEWAY_URL: '',
+        BETTER_AUTH_URL: '',
+        PUBLIC_SITE_URL: ''
+      })
+    ).not.toThrow();
   });
 });
 
@@ -32,46 +34,72 @@ describe('runtime configuration', () => {
  * so an opt-in flag protected nobody and cost every one of them a step. The
  * flag survives as an opt-OUT.
  */
-describe('the LinkedIn local worker gate', () => {
-  it('is on for a self-hoster who configured nothing at all', () => {
+describe('the LinkedIn browser worker gate', () => {
+  const companion = {
+    TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080',
+    TREVRA_SECRETS_KEY: 'development-companion-secret'
+  };
+
+  it('stays off when a self-hoster configured no external browser', () => {
     const runtime = validateEnvironment({ ...base });
-    expect(runtime.linkedinLocalWorker.enabled).toBe(true);
+    expect(runtime.linkedinLocalWorker.enabled).toBe(false);
     expect(runtime.linkedinLocalWorker.hosted).toBe(false);
-    // Unset here and resolved by the worker: $HOME belongs to the process that
-    // launches the browser, not to whoever wrote the config.
+    expect(runtime.linkedinLocalWorker.remoteBrowser).toBe(false);
+    expect(runtime.linkedinLocalWorker.companionBrowser).toBe(false);
     expect(runtime.linkedinLocalWorker.profileDir).toBeNull();
-    expect(validateEnvironment({ ...base, TREVRA_DEPLOYMENT_MODE: 'local' }).linkedinLocalWorker.enabled).toBe(true);
-    expect(validateEnvironment({ ...base, TREVRA_LINKEDIN_LOCAL: 'true' }).linkedinLocalWorker.enabled).toBe(true);
-  });
-
-  it('lets a self-hoster switch it off explicitly', () => {
-    expect(validateEnvironment({ ...base, TREVRA_LINKEDIN_LOCAL: 'false' }).linkedinLocalWorker.enabled).toBe(false);
-  });
-
-  it('FAILS CLOSED: hosted mode cannot enable it, however hard the environment asks', () => {
-    for (const asked of [undefined, 'true', 'false']) {
-      const runtime = validateEnvironment({ ...base, ...(asked ? { TREVRA_LINKEDIN_LOCAL: asked } : {}), TREVRA_DEPLOYMENT_MODE: 'hosted' });
-      expect(runtime.linkedinLocalWorker.enabled).toBe(false);
-      expect(runtime.linkedinLocalWorker.hosted).toBe(true);
-    }
-  });
-
-  it('refuses the combination out loud in production rather than silently ignoring it', () => {
-    // The whole production block runs, so other problems are reported too; what
-    // matters is that this one is named instead of being quietly dropped.
-    expect(() => validateEnvironment({
-      ...base,
-      NODE_ENV: 'production',
-      TREVRA_LINKEDIN_LOCAL: 'true',
-      TREVRA_DEPLOYMENT_MODE: 'hosted'
-    })).toThrow(/TREVRA_LINKEDIN_LOCAL cannot be true when TREVRA_DEPLOYMENT_MODE=hosted/);
-  });
-
-  it('carries a configured profile directory through untouched', () => {
     expect(
-      validateEnvironment({ ...base, TREVRA_LINKEDIN_PROFILE_DIR: '/srv/linkedin-profile' })
-        .linkedinLocalWorker.profileDir
-    ).toBe('/srv/linkedin-profile');
+      validateEnvironment({ ...base, TREVRA_DEPLOYMENT_MODE: 'local' }).linkedinLocalWorker.enabled
+    ).toBe(false);
+    expect(
+      validateEnvironment({ ...base, TREVRA_LINKEDIN_LOCAL: 'true' }).linkedinLocalWorker.enabled
+    ).toBe(false);
+  });
+
+  it('runs for a self-hoster through Companion and still honours the explicit off switch', () => {
+    expect(validateEnvironment({ ...base, ...companion }).linkedinLocalWorker).toMatchObject({
+      enabled: true,
+      hosted: false,
+      remoteBrowser: false,
+      companionBrowser: true
+    });
+    expect(
+      validateEnvironment({ ...base, ...companion, TREVRA_LINKEDIN_LOCAL: 'false' })
+        .linkedinLocalWorker.enabled
+    ).toBe(false);
+  });
+
+  it('uses the same Companion rule in hosted mode', () => {
+    const runtime = validateEnvironment({
+      ...base,
+      ...companion,
+      TREVRA_DEPLOYMENT_MODE: 'hosted'
+    });
+    expect(runtime.linkedinLocalWorker).toMatchObject({
+      enabled: true,
+      hosted: true,
+      remoteBrowser: false,
+      companionBrowser: true
+    });
+  });
+
+  it('refuses an explicit production enable when no external browser exists', () => {
+    expect(() =>
+      validateEnvironment({
+        ...base,
+        NODE_ENV: 'production',
+        TREVRA_LINKEDIN_LOCAL: 'true',
+        TREVRA_DEPLOYMENT_MODE: 'hosted'
+      })
+    ).toThrow(/requires a browser outside the server process/);
+  });
+
+  it('carries a configured legacy profile directory through without making it an execution home', () => {
+    const runtime = validateEnvironment({
+      ...base,
+      TREVRA_LINKEDIN_PROFILE_DIR: '/srv/linkedin-profile'
+    });
+    expect(runtime.linkedinLocalWorker.profileDir).toBe('/srv/linkedin-profile');
+    expect(runtime.linkedinLocalWorker.enabled).toBe(false);
   });
 });
 
@@ -99,39 +127,51 @@ describe('the deployment-mode gate', () => {
   }
 
   it('refuses to boot a production deployment that never says which it is', () => {
-    expect(() => validateEnvironment(production)).toThrow(/TREVRA_DEPLOYMENT_MODE must be set explicitly when NODE_ENV=production/);
+    expect(() => validateEnvironment(production)).toThrow(
+      /TREVRA_DEPLOYMENT_MODE must be set explicitly when NODE_ENV=production/
+    );
   });
 
-  it('says exactly what to set, both ways, and what the guess would turn on', () => {
+  it('says exactly what to set, both ways, without claiming local mode owns browsers', () => {
     const message = problems(production);
     expect(message).toContain('TREVRA_DEPLOYMENT_MODE=hosted');
     expect(message).toContain('TREVRA_DEPLOYMENT_MODE=local');
-    expect(message).toMatch(/LinkedIn and Reddit local workers/);
+    expect(message).toMatch(/Browser execution is external in both modes/);
+    expect(message).not.toMatch(/enables the LinkedIn and Reddit local workers/);
   });
 
   it('is satisfied by either value, said explicitly', () => {
     // Other production requirements still fail here -- what matters is that
     // THIS complaint is gone once the operator has answered the question.
     for (const mode of ['local', 'hosted']) {
-      expect(problems({ ...production, TREVRA_DEPLOYMENT_MODE: mode }))
-        .not.toMatch(/TREVRA_DEPLOYMENT_MODE must be set explicitly/);
+      expect(problems({ ...production, TREVRA_DEPLOYMENT_MODE: mode })).not.toMatch(
+        /TREVRA_DEPLOYMENT_MODE must be set explicitly/
+      );
     }
   });
 
-  it('leaves development and self-hosting alone: unset still means local there', () => {
+  it('leaves development mode local without giving the server a browser', () => {
     const runtime = validateEnvironment({ ...base });
     expect(runtime.linkedinLocalWorker.hosted).toBe(false);
-    expect(runtime.redditLocalWorker.enabled).toBe(true);
+    expect(runtime.linkedinLocalWorker.enabled).toBe(false);
+    expect(runtime.redditLocalWorker.enabled).toBe(false);
   });
 
   it('applies to the worker CLIs too, which read their own slice of the environment', () => {
-    expect(() => linkedInWorkerConfig({ NODE_ENV: 'production' })).toThrow(/TREVRA_DEPLOYMENT_MODE must be set explicitly/);
-    expect(() => redditWorkerConfig({ NODE_ENV: 'production' })).toThrow(/TREVRA_DEPLOYMENT_MODE must be set explicitly/);
-    // Answered, they behave exactly as before.
-    expect(linkedInWorkerConfig({ NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'hosted' })).toMatchObject({ enabled: false, hosted: true });
-    expect(redditWorkerConfig({ NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'local' })).toMatchObject({ enabled: true, hosted: false });
-    // And a self-hoster running `npm run linkedin:worker` by hand is untouched.
-    expect(linkedInWorkerConfig({}).enabled).toBe(true);
+    expect(() => linkedInWorkerConfig({ NODE_ENV: 'production' })).toThrow(
+      /TREVRA_DEPLOYMENT_MODE must be set explicitly/
+    );
+    expect(() => redditWorkerConfig({ NODE_ENV: 'production' })).toThrow(
+      /TREVRA_DEPLOYMENT_MODE must be set explicitly/
+    );
+    // Answered, neither CLI invents a browser inside the server process.
+    expect(
+      linkedInWorkerConfig({ NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'hosted' })
+    ).toMatchObject({ enabled: false, hosted: true });
+    expect(
+      redditWorkerConfig({ NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'local' })
+    ).toMatchObject({ enabled: false, hosted: false });
+    expect(linkedInWorkerConfig({}).enabled).toBe(false);
   });
 });
 
@@ -186,7 +226,9 @@ describe('hosted credential custody', () => {
     // The current contract, kept on purpose: the local workers drive a browser
     // profile the operator logged into by hand, so there is nothing to store,
     // and requiring a key would break every existing self-host install.
-    expect(problems({ ...base, NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'local' })).not.toMatch(/TREVRA_SECRETS_KEY/);
+    expect(
+      problems({ ...base, NODE_ENV: 'production', TREVRA_DEPLOYMENT_MODE: 'local' })
+    ).not.toMatch(/TREVRA_SECRETS_KEY/);
   });
 });
 
@@ -213,18 +255,22 @@ describe('single-operator production on loopback', () => {
   });
 
   it('does not turn the loopback exception into an insecure LAN deployment', () => {
-    expect(() => validateEnvironment({
-      ...production,
-      APP_ORIGIN: 'http://192.168.1.20:43900',
-      BETTER_AUTH_URL: 'http://192.168.1.20:43900',
-      PUBLIC_SITE_URL: 'http://192.168.1.20:43900'
-    })).toThrow(/must use HTTPS/);
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        APP_ORIGIN: 'http://192.168.1.20:43900',
+        BETTER_AUTH_URL: 'http://192.168.1.20:43900',
+        PUBLIC_SITE_URL: 'http://192.168.1.20:43900'
+      })
+    ).toThrow(/must use HTTPS/);
   });
 
   it('requires the Nango key and signing key together when local integrations are enabled', () => {
-    expect(() => validateEnvironment({ ...production, NANGO_API_KEY: 'configured' }))
-      .toThrow(/NANGO_WEBHOOK_SIGNING_KEY/);
-    expect(() => validateEnvironment({ ...production, NANGO_WEBHOOK_SIGNING_KEY: 'configured' }))
-      .toThrow(/NANGO_API_KEY/);
+    expect(() => validateEnvironment({ ...production, NANGO_API_KEY: 'configured' })).toThrow(
+      /NANGO_WEBHOOK_SIGNING_KEY/
+    );
+    expect(() =>
+      validateEnvironment({ ...production, NANGO_WEBHOOK_SIGNING_KEY: 'configured' })
+    ).toThrow(/NANGO_API_KEY/);
   });
 });

@@ -3,7 +3,6 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, hostname } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
-import { releaseStaleProfileLock } from '../browser/local.js';
 import { id, type Db } from '../db.js';
 import {
   browserProviderSettings,
@@ -214,9 +213,9 @@ export function workerIdentity(env: NodeJS.ProcessEnv = process.env): string {
 /**
  * WHICH MACHINE this process is on, separately from which process it is.
  *
- * The distinction is the whole of the seat-affinity rule: a restarted worker
- * is a new identity on the SAME disk, and that disk is where the seat's Chrome
- * profile -- which is to say the seat's LinkedIn session -- lives. See
+ * The host remains part of lease ownership and operational diagnostics. Active
+ * Companion/remote sessions are portable across server hosts; the host pin is
+ * relevant only to legacy lease rows that still name a local profile path. See
  * {@link claimSeatLease}.
  */
 export function workerHost(env: NodeJS.ProcessEnv = process.env): string {
@@ -228,18 +227,17 @@ export function workerHost(env: NodeJS.ProcessEnv = process.env): string {
  * Which slice of the fleet this worker serves: `index` of `total`.
  *
  * WHY A SHARD AT ALL. Every worker used to run the identical discovery query
- * in the identical order, so they all reached for the same seat and
- * `launchPersistentContext` gave the profile directory's exclusive lock to
- * whichever arrived first; the rest failed and raced on to the next one
- * together. Adding a worker added contention and no throughput. A static
- * partition on (workspace, seat) means two workers cannot WANT the same seat,
- * so the leases below are a correctness backstop rather than the mechanism.
+ * in the identical order, so they all reached for the same seat and contended
+ * for one browser session. Adding a worker added contention and no throughput.
+ * A static partition on (workspace, seat) means two workers cannot WANT the
+ * same seat, so the leases below are a correctness backstop rather than the
+ * mechanism.
  *
  * Hashed rather than assigned, because assignment needs a coordinator and
  * hashing needs nothing. `hashtext` is Postgres's own, evaluated in the query,
- * so the partition is identical in every statement that uses it -- which is
- * what keeps a seat's actions, its side tasks and its browser profile on ONE
- * host.
+ * so the partition is identical in every statement that uses it -- which keeps
+ * a seat's actions and side tasks on one worker slice while the browser session
+ * remains on its external provider.
  *
  * THROWS on a value that is not a partition. A worker that silently rounded
  * `TREVRA_LINKEDIN_WORKER_INDEX=5` of 3 down to something workable would serve
@@ -2753,7 +2751,7 @@ const STALE_BATCH_REASON =
   'The worker driving this batch stopped without closing it, so a later worker wrote it off. Nothing about the actions it had already settled changed; anything it had claimed and not settled was released back to the queue.';
 
 // ---------------------------------------------------------------------------
-// Seat leases: one driver per account, pinned to the host that has its session
+// Seat leases: one driver per account; external sessions are portable across server hosts
 // ---------------------------------------------------------------------------
 
 export type SeatLeaseOutcome = { ok: true; expiresAt: string } | { ok: false; reason: string };
@@ -2771,31 +2769,16 @@ interface SeatLeaseRow {
  * TWO DIFFERENT QUESTIONS, AND CONFLATING THEM IS WHY THIS IS NOT JUST A LOCK.
  *
  * The first is mutual exclusion: two processes must not drive one LinkedIn
- * account at the same time. The shard already makes that rare, but a static
- * partition overlaps during a rolling deploy (the old pod and the new one hold
- * the same index for a few seconds), and Chromium's own user-data-dir lock
- * turns the overlap into a launch failure rather than a queue.
+ * account at the same time. The shard already makes that rare, but rolling
+ * deploys can briefly overlap workers with the same shard, so the lease is the
+ * final ownership gate.
  *
- * The second is SESSION PORTABILITY, and it is the one that costs an account.
- * The Chrome profile directory IS the LinkedIn session -- its cookies, its
- * "remember this browser" device trust -- and it lives on ONE host's local
- * disk (`resolveProfileDir`). A different host picking up the same seat finds
- * an empty directory and signs in from scratch: a new device, a new IP, on an
- * account LinkedIn already trusts a specific browser for. That is the single
- * loudest challenge signal available to us, and we would be generating it
- * ourselves, on every seat, every time a pod moved.
- *
- * So a lease is refused when ANOTHER host holds this seat's affinity and this
- * host has no profile for it. Not "until the lease expires" -- forever, until
- * either that host comes back or a human moves the profile. A seat that cannot
- * run here is a seat that waits; a seat that re-authenticates here is a seat
- * that may be gone.
- *
- * WHAT IS DELIBERATELY ALLOWED: the same host, always (a restarted worker is a
- * new pid and the same disk); any host when nobody holds the seat; and any
- * host when the profile is present here too (an operator who has copied or
- * shared the profile directory has said, by doing so, that this host is a home
- * for this seat).
+ * The second is SESSION PORTABILITY. Companion and configured remote-provider
+ * sessions are external to the server and therefore portable between server
+ * hosts. Legacy lease rows may still name a local profile directory from older
+ * deployments; those rows remain host-pinned so an upgrade cannot silently turn
+ * an established device session into a fresh sign-in. Once both sides record a
+ * remote session home, only mutual exclusion remains.
  */
 export async function claimSeatLease(
   db: Db,
@@ -2822,26 +2805,12 @@ export async function claimSeatLease(
     )
     .get<SeatLeaseRow>(options.workspaceId, options.seatKey);
 
-  // WHOSE SESSION IS IT, AND CAN IT TRAVEL? The host pin below exists for one
-  // reason: the Chrome profile IS the session and it sits on ONE host's local
-  // disk, so a second host picking the seat up performs a new-device sign-in.
-  // A REMOTE browser has no profile directory at all -- its session lives in
-  // `linkedin_seat_sessions`, which every worker can read -- so for a seat held
-  // that way the pin is not protecting anything and would instead pin the seat
-  // to whichever hosted pod happened to take it first, forever.
-  //
-  // The distinction is read off the row rather than off this process's own
-  // configuration, and that is the part that makes the two runners safe
-  // together: a seat currently held by a LOCAL worker still refuses a hosted
-  // one (that account's device trust is on that laptop), and a seat held
-  // remotely still refuses a local worker with an empty profile directory. Only
-  // remote-to-remote is portable, which is exactly the case where it is true.
-  //
-  // BOTH ENDS HAVE TO BE PORTABLE, not just the current one. A seat held
-  // remotely and picked up by a LOCAL worker with an empty profile directory is
-  // still a new-device sign-in -- the session is in the database and that
-  // worker is not going to read it into a persistent Chrome profile. Only
-  // remote-to-remote genuinely carries the session with it.
+  // CAN THIS SESSION MOVE BETWEEN SERVER HOSTS? External browser homes are
+  // portable because Chrome/profile ownership lives outside the server. A
+  // legacy lease row containing a filesystem path is not portable: preserving
+  // that host pin avoids silently converting an established local device into a
+  // new sign-in during upgrade. Both the existing and requested homes must be
+  // external before the pin can be ignored.
   const portable = current
     ? isRemoteSessionHome(current.profile_dir) && isRemoteSessionHome(options.profileDir)
     : false;
@@ -2983,10 +2952,9 @@ export function isRemoteSessionHome(profileDir: string): boolean {
 }
 
 /**
- * Where THIS process would keep the seat's session: a directory, or a provider.
- *
- * The one place the choice is made, so the lease, the refusal sentences and
- * the browser all agree about what this worker is.
+ * Record where the seat's session lives for lease portability. Active
+ * Companion/remote sessions record a provider home; filesystem paths are kept
+ * only for compatibility with legacy local-profile lease rows.
  */
 export function seatSessionHome(
   config: LinkedInLocalWorkerConfig,
@@ -3156,28 +3124,9 @@ export interface LinkedInLocalWorkerConfig {
   /** A paired member computer is the browser provider for this hosted process. */
   companionBrowser?: boolean;
   /**
-   * May THIS PROCESS drive a seat with a browser nobody can see?
-   *
-   * ABSENT MEANS YES, which is every deployment that has not thought about it
-   * and the behaviour this flag was added to leave alone.
-   *
-   * IT EXISTS BECAUSE "CAN" AND "SHOULD" CAME APART. The container in a normal
-   * self-hosted stack has no display, and the design assumed that meant no
-   * browser either -- `runDueLinkedInActions` and `runLinkedInSideTasks` both
-   * lean on "a worker in a container returns immediately and claims no work
-   * away from the operator's own `npm run linkedin:worker`". That stopped
-   * being true the moment Chromium was installed in the image for other
-   * features: the container could launch headless, so it did, and it served
-   * the seat from a GPU-less container -- WebGL reporting SwiftShader, from a
-   * container IP -- while the operator's headed worker sat idle.
-   *
-   * NOT `enabled: false`, which is the switch that was already there and is
-   * too blunt: it turns the FEATURE off, so the API stops parking detect
-   * requests for the machine that CAN do the work and answers "LinkedIn
-   * automation is switched off" instead. This says something narrower and
-   * true: this process may not be the one that opens the browser. Everything
-   * else -- the queue, the ledger, the routes, the 202 that hands the job to
-   * the host worker -- carries on.
+   * Visibility preference for an explicitly configured remote provider.
+   * Companion owns its own Chrome process/profile and ignores this setting.
+   * This flag never authorizes a server-local browser launch.
    */
   headless?: boolean;
 }
@@ -3276,98 +3225,26 @@ function seatHandleKey(workspaceId: string, seatKey: string): string {
  * a switch. Hosted is a decision the deployment made and no environment
  * variable can undo it; anything else is a self-hoster's own setting.
  */
-export function linkedInOffReason(config: Pick<LinkedInLocalWorkerConfig, 'hosted'>): string {
-  return config.hosted
-    ? 'This deployment is hosted, so LinkedIn automation is off and cannot be enabled.'
-    : 'LinkedIn automation is switched off on this server.';
+export function linkedInOffReason(_config: Pick<LinkedInLocalWorkerConfig, 'hosted'>): string {
+  return 'LinkedIn automation is switched off on this server.';
 }
 
 // ---------------------------------------------------------------------------
-// Can this process open a headed browser? Answered WITHOUT opening one.
+// Can this process control an external browser? Answered WITHOUT opening one.
 // ---------------------------------------------------------------------------
 
 const localWorkerRequire = createRequire(import.meta.url);
 
 export interface LinkedInBrowserReadiness {
   canLaunchHeaded: boolean;
-  /** Empty exactly when `canLaunchHeaded` is true. One sentence each. */
+  /** A headed window never belongs to the server; this explains where it lives. */
   reasons: string[];
 }
 
 /**
- * Where an X server puts the socket for a local display. Fixed by X itself --
- * `:N` is served at `X{N}` in this directory on every Linux -- and overridable
- * only so a test can point at a directory it owns.
- */
-const X11_SOCKET_DIR = '/tmp/.X11-unix';
-
-/** True when this process is inside a container -- the fact that explains the rest. */
-export function inContainer(): boolean {
-  if (existsSync('/.dockerenv')) return true;
-  try {
-    return /docker|containerd|podman|kubepods|lxc/i.test(readFileSync('/proc/1/cgroup', 'utf8'));
-  } catch {
-    // No /proc/1/cgroup is not evidence of a container; on macOS and Windows it
-    // simply does not exist.
-    return false;
-  }
-}
-
-/**
- * Where Playwright keeps its downloaded browsers, derived rather than asked.
- *
- * Asking would mean importing playwright, which is the ~400MB load this whole
- * probe exists to avoid. The rules are Playwright's own and stable: the env
- * override wins, `0` means "inside the package", and otherwise it is the
- * platform cache directory.
- */
-export function playwrightBrowsersPath(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform
-): string | null {
-  const configured = env.PLAYWRIGHT_BROWSERS_PATH?.trim();
-  if (configured === '0') {
-    try {
-      return join(dirname(localWorkerRequire.resolve('playwright-core')), '.local-browsers');
-    } catch {
-      return null;
-    }
-  }
-  if (configured) return configured;
-  if (platform === 'win32')
-    return join(env.LOCALAPPDATA?.trim() || join(homedir(), 'AppData', 'Local'), 'ms-playwright');
-  if (platform === 'darwin') return join(homedir(), 'Library', 'Caches', 'ms-playwright');
-  return join(env.XDG_CACHE_HOME?.trim() || join(homedir(), '.cache'), 'ms-playwright');
-}
-
-/** A chromium build actually present in the registry, not just the registry directory. */
-function chromiumInstalled(browsersPath: string | null): boolean {
-  if (!browsersPath) return false;
-  try {
-    if (!statSync(browsersPath).isDirectory()) return false;
-    return readdirSync(browsersPath).some((entry) => entry.startsWith('chromium'));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Can this process open a headed Chrome, and if not, what is the one thing to
- * do about it?
- *
- * CHEAP AND NON-LAUNCHING, and that is a hard requirement rather than an
- * optimisation. This feeds a status endpoint and the detect route, and a
- * status endpoint that opens Chrome is a status endpoint that hangs. Every
- * check here is a `require.resolve`, a `stat` or an environment read.
- *
- * FAILS CLOSED. Anything it could not determine counts as not ready, because
- * the cost of a wrong `true` is a request routed to a process that will sit
- * there failing to launch a browser nobody can see.
- *
- * The container line is CONTEXT, not a verdict: a container with a forwarded
- * display can genuinely run this. It is emitted only alongside a real blocker,
- * because it is the fact that explains why the others are true -- an operator
- * told "no display" inside Docker has learned nothing they can act on.
+ * The server never opens a visible Chrome window. Companion may expose one on
+ * the paired computer, while a cloud provider is necessarily remote. This
+ * probe therefore reports the ownership boundary, not local display/X11 state.
  */
 export function linkedInBrowserReadiness(
   config: LinkedInLocalWorkerConfig,
@@ -3376,138 +3253,49 @@ export function linkedInBrowserReadiness(
   if (!config.enabled) return { canLaunchHeaded: false, reasons: [linkedInOffReason(config)] };
 
   const env = options.env ?? process.env;
-  const platform = options.platform ?? process.platform;
-
   if (config.companionBrowser) {
     return {
       canLaunchHeaded: false,
       reasons: [
-        'This hosted process drives the visible Chrome window on the paired member computer, not a window on the server.'
+        'The visible Chrome window belongs to the paired Companion device, not the server process.'
       ]
     };
   }
 
-  // A REMOTE BROWSER IS NEVER HEADED, AND THAT IS NOT A BLOCKER -- it is what
-  // a cloud browser is. Nobody is at the other end to watch a window, clear a
-  // captcha or close it, so the honest answer to "can this process open a
-  // browser the operator can see" is no, with the reason said plainly rather
-  // than reported as a missing display. The headless probe is the one that
-  // matters in this mode.
   const remote = browserProviderSettings(env);
   if (remote.kind === 'remote') {
     return {
       canLaunchHeaded: false,
       reasons: [
-        `This deployment drives a remote browser at ${remote.remote?.label ?? 'the configured provider'}, so there is no window on this machine for anyone to watch.`
+        `This server controls ${remote.remote?.label ?? 'the configured remote browser'} over the network; it never opens a local Chrome window.`
       ]
     };
   }
+  if (remote.problem) return { canLaunchHeaded: false, reasons: [remote.problem] };
 
-  const blockers = browserBlockers(env, platform);
-
-  // THE DECISIVE SIGNAL ON LINUX. A headed browser needs somewhere to draw,
-  // and neither X11 nor Wayland is reachable without one of these. macOS and
-  // Windows have no equivalent variable and always have a window server.
-  if (platform === 'linux') {
-    const wayland = env.WAYLAND_DISPLAY?.trim();
-    const display = env.DISPLAY?.trim();
-    if (!wayland && !display) {
-      blockers.push(
-        'No display is attached to this process, so a browser window cannot open here.'
-      );
-    } else if (!wayland && display) {
-      // SET IS NOT SERVED. `DISPLAY=:99` is an address, not a promise that
-      // anything is listening at it, and the two came apart in this project's
-      // own dev container: `docker restart` keeps /tmp, the stale
-      // `/tmp/.X99-lock` made the new Xvfb exit at once, and DISPLAY stayed
-      // set by the image. This probe said yes, the route dispatched the work,
-      // and Playwright died with "you launched a headed browser without having
-      // a XServer running" -- reported to the operator as "check that Chromium
-      // is installed", the one thing that was fine.
-      //
-      // A local display's socket is at a known path and a `stat` is as cheap
-      // as reading the variable, so the honest answer costs nothing. Only
-      // LOCAL displays are checked: `host:0` reaches an X server over TCP and
-      // has no socket here to look for. Wayland is exempted rather than
-      // half-checked -- its socket lives in a runtime directory this process
-      // may not be allowed to stat, and a false blocker is worse than none.
-      const local = /^(?:unix)?:(\d+)(?:\.\d+)?$/.exec(display);
-      if (local && !existsSync(join(options.xSocketDir ?? X11_SOCKET_DIR, `X${local[1]}`))) {
-        blockers.push(
-          `DISPLAY is ${display} but no X server is serving it, so a browser window cannot open here.`
-        );
-      }
-    }
-  }
-
-  if (blockers.length === 0) return { canLaunchHeaded: true, reasons: [] };
   return {
     canLaunchHeaded: false,
-    reasons: inContainer()
-      ? [
-          'This process runs in a container, which has no display and no browser of its own.',
-          ...blockers
-        ]
-      : blockers
+    reasons: [
+      'No external browser is configured. Pair Companion or configure a remote provider; server-local Chrome is disabled.'
+    ]
   };
-}
-
-/** The two checks a browser of ANY kind needs: the package, and a chromium build. */
-function browserBlockers(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
-  const blockers: string[] = [];
-
-  let playwrightResolvable = false;
-  try {
-    localWorkerRequire.resolve('playwright');
-    playwrightResolvable = true;
-  } catch {
-    blockers.push(
-      'Playwright is not installed here; run `npm i playwright && npx playwright install chromium`.'
-    );
-  }
-
-  // Only worth asking once playwright itself resolves: "install the browsers"
-  // is not the next action for somebody who has no playwright.
-  if (playwrightResolvable && !chromiumInstalled(playwrightBrowsersPath(env, platform))) {
-    blockers.push('No Chromium is installed here; run `npx playwright install chromium`.');
-  }
-
-  return blockers;
 }
 
 export interface LinkedInHeadlessReadiness {
   canLaunchHeadless: boolean;
-  /** Empty exactly when `canLaunchHeadless` is true. One sentence each. */
+  /** Empty exactly when this server can control its external browser. */
   reasons: string[];
 }
 
 /**
- * Can this process open a HEADLESS Chromium?
- *
- * The same probe as {@link linkedInBrowserReadiness} minus the display check,
- * because that is the entire difference: a headless browser needs a binary and
- * nothing to draw on. In a container the headed answer is always no and this
- * one is yes as soon as `npx playwright install chromium` has run in the image.
- *
- * Every seat signs itself in with stored credentials, so a headless browser
- * needs nothing else to be usable -- it opens its own session and shows no
- * human a login form because none is needed.
- *
- * Same discipline as the headed probe: cheap, non-launching, fails closed.
+ * Historical name retained for callers: this now answers whether the server can
+ * control an external browser without owning a local window or browser binary.
  */
 export function linkedInHeadlessReadiness(
   config: LinkedInLocalWorkerConfig,
   options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
 ): LinkedInHeadlessReadiness {
   if (!config.enabled) return { canLaunchHeadless: false, reasons: [linkedInOffReason(config)] };
-  if (config.headless === false) {
-    return {
-      canLaunchHeadless: false,
-      reasons: [
-        'This process is configured not to drive LinkedIn with a browser nobody can see (TREVRA_LINKEDIN_HEADLESS=false), so the work waits for a machine with a display.'
-      ]
-    };
-  }
   const env = options.env ?? process.env;
 
   if (config.companionBrowser) {
@@ -3516,18 +3304,20 @@ export function linkedInHeadlessReadiness(
       : {
           canLaunchHeadless: false,
           reasons: [
-            'No browser driver is installed on this hosted worker, so it cannot attach to the paired computer.'
+            'No browser driver library is installed on this server, so it cannot attach to Companion; install patchright or playwright without downloading a browser.'
           ]
         };
   }
 
-  // REMOTE NEEDS THE CLIENT, NOT THE BROWSER. `npx playwright install chromium`
-  // downloads a ~400MB binary this process would never launch: the browser it
-  // drives is somebody else's, already running, and all this image needs is the
-  // library that can speak CDP to it. Asking for a local Chromium here is what
-  // would keep a correctly configured hosted deployment permanently "not
-  // ready", which is precisely the silent dead queue this capability exists to
-  // end.
+  if (config.headless === false) {
+    return {
+      canLaunchHeadless: false,
+      reasons: [
+        'This server is configured not to use a non-visible remote browser (TREVRA_LINKEDIN_HEADLESS=false).'
+      ]
+    };
+  }
+
   const remote = browserProviderSettings(env);
   if (remote.kind === 'remote') {
     return driverResolvable()
@@ -3535,19 +3325,20 @@ export function linkedInHeadlessReadiness(
       : {
           canLaunchHeadless: false,
           reasons: [
-            'No browser driver is installed here, so this process cannot attach to a remote browser; run `npm i patchright` (or playwright) in the image that runs the worker.'
+            'No browser driver library is installed on this server, so it cannot attach to the remote browser; install patchright or playwright without downloading a browser.'
           ]
         };
   }
   if (remote.problem) return { canLaunchHeadless: false, reasons: [remote.problem] };
 
-  const blockers = browserBlockers(env, options.platform ?? process.platform);
-  return blockers.length === 0
-    ? { canLaunchHeadless: true, reasons: [] }
-    : { canLaunchHeadless: false, reasons: blockers };
+  return {
+    canLaunchHeadless: false,
+    reasons: [
+      'No external browser is configured. Pair Companion or configure a remote provider; server-local Chrome is disabled.'
+    ]
+  };
 }
-
-/** Is the driver LIBRARY here? The only local requirement a remote browser has. */
+/** Is the driver LIBRARY here? The only browser-related runtime requirement on the server. */
 function driverResolvable(): boolean {
   for (const specifier of DRIVER_SPECIFIERS) {
     try {
@@ -3559,7 +3350,6 @@ function driverResolvable(): boolean {
   }
   return false;
 }
-
 /**
  * One attached DevTools-protocol client.
  *
@@ -4402,78 +4192,6 @@ export async function loadLinkedInPlaywright(
  * `openBrowser` describes at length.
  */
 const BROWSER_CHANNELS: readonly string[] = ['chrome', 'chromium'];
-let launchChannelLogged = false;
-
-/**
- * Launch on the best channel this machine actually has.
- *
- * A missing channel throws at launch -- there is no way to ask Playwright
- * whether Google Chrome is installed without trying it -- so the fallback IS
- * the probe. The last channel's failure is rethrown unchanged, so a genuinely
- * broken install still reports its own error to `openBrowser`'s catch rather
- * than a summary of it.
- */
-/**
- * THE COMMAND-LINE FLAGS A SEAT'S BROWSER IS LAUNCHED WITH, in ONE array.
- *
- * It was two, and that is the bug this function exists to make impossible: the
- * options object held `...(inContainer() ? { args: [ANGLE flags] } : {})` and,
- * eleven lines later, a literal `args: [...]`. The second key wins in an object
- * literal, so the ANGLE flags were silently discarded -- the measured fix for
- * "WebGL returns null in this container" was never actually passed to a single
- * browser. A duplicate key is not a merge, and nothing warned.
- *
- * `--no-sandbox` NOW APPLIES IN A CONTAINER WHATEVER THE MODE. It was
- * `headless && inContainer()`, which is the same container and the same root
- * user in either mode; making the flag depend on the mode is how "it works
- * headless and dies headed" happens.
- */
-export function seatLaunchArgs(inside: boolean): string[] {
-  return [
-    '--disable-blink-features=AutomationControlled',
-    // See the ANGLE note on the launch options: without these, WebGL in this
-    // container returns null, which is rarer than a software renderer.
-    ...(inside
-      ? ['--use-gl=angle', '--use-angle=gl-egl', '--no-sandbox', '--disable-dev-shm-usage']
-      : [])
-  ];
-}
-
-// `releaseStaleProfileLock` is imported from `browser/local.ts`: a dead
-// Chromium's lock is not a LinkedIn fact, and the Reddit worker opens
-// persistent profiles the same way and was stranded the same way.
-
-async function launchSeatBrowser(
-  playwright: PlaywrightLike,
-  profileDir: string,
-  optionsFor: (channel: string) => Record<string, unknown>,
-  log: (message: string) => void
-): Promise<LinkedInBrowserContext> {
-  // A LOCK LEFT BY A DEAD PROCESS IS NOT A LOCK. See the function.
-  releaseStaleProfileLock(profileDir, log);
-  let last: unknown;
-  for (let index = 0; index < BROWSER_CHANNELS.length; index += 1) {
-    const channel = BROWSER_CHANNELS[index] as string;
-    try {
-      const context = await playwright.chromium.launchPersistentContext(
-        profileDir,
-        optionsFor(channel)
-      );
-      if (!launchChannelLogged) {
-        launchChannelLogged = true;
-        log(
-          channel === 'chrome'
-            ? 'LinkedIn seat browser is Google Chrome, the same binary a member browses with.'
-            : `LinkedIn seat browser is Chromium; Google Chrome is not installed here, so \`window.chrome.runtime\` is undefined where a real Chrome defines it. \`npx playwright install chrome\` closes that gap.`
-        );
-      }
-      return context;
-    } catch (cause) {
-      last = cause;
-    }
-  }
-  throw last;
-}
 
 /** Where a real session starts. Never a target, never a search. */
 const FEED_URL = 'https://www.linkedin.com/feed/';
@@ -4791,7 +4509,7 @@ export async function openBrowser(
   if (providerSettings.kind !== 'remote') {
     log(
       providerSettings.problem ??
-        `LinkedIn seat ${options.workspaceId}/${seatKey}: no Companion or remote browser is configured. Server-local Chrome launches are disabled.`
+        `LinkedIn seat ${options.workspaceId}/${seatKey}: no external browser is configured. Pair Companion or configure a remote provider; server-local Chrome launches are disabled.`
     );
     return null;
   }
@@ -5675,11 +5393,9 @@ export async function runDueLinkedInActions(
     const sessionSeed = `${handleKey}:session:${sessionIndex}`;
     let restAfterBatch = false;
 
-    // A DIRECTORY ON THIS DISK, OR A PROVIDER'S NAME. Which one decides whether
-    // the lease pins this seat to this host -- see `claimSeatLease`. Passing
-    // the profile directory unconditionally would have pinned every hosted seat
-    // to whichever pod claimed it first, permanently, for a session that is not
-    // on that pod's disk at all.
+    // A legacy local path or an external provider name. External homes are
+    // portable across server hosts; legacy filesystem homes remain pinned for
+    // safe upgrade compatibility. See `claimSeatLease`.
     const profileDir = seatSessionHome(config, workspaceId, seatKey);
     let lease: SeatLeaseOutcome;
     try {
