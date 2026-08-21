@@ -27,10 +27,9 @@ import { useCallback, useEffect, useState } from 'react';
  * the workaround is not needed.
  *
  * OLD HASH URLS ARE NOT HONOURED. A `#/outreach/inbox` bookmark from before
- * this change lands
- * on the default route, deliberately: keeping a hash-route reader alive is
- * keeping the ambiguity alive, and the rule above has to be true with no
- * exceptions to stay true at all.
+ * this change lands on the default route, deliberately: keeping a hash-route
+ * reader alive is keeping the ambiguity alive, and the rule above has to be
+ * true with no exceptions to stay true at all.
  */
 
 export type Section = 'loop' | 'outreach' | 'ledger' | 'research' | 'setup';
@@ -40,58 +39,12 @@ export const SECTIONS: readonly Section[] = ['loop', 'outreach', 'ledger', 'rese
 /** Which second segments each section answers to. */
 const SUB_ROUTES: Record<Section, readonly string[]> = {
   loop: ['', 'cost'],
-  // Live: '', new, inbox, posts, settings. The rest are legacy addresses kept
-  // parseable so OutreachView can redirect them; parseRoute would otherwise
-  // flatten them to the section root and lose the anchor.
-  outreach: [
-    '',
-    'new',
-    'campaign',
-    'workflow',
-    'inbound',
-    'inbox',
-    'opportunities',
-    'posts',
-    'settings',
-    'accounts',
-    'activity',
-    'campaigns',
-    'leads',
-    'manager',
-    'plan'
-  ],
+  outreach: ['', 'new', 'campaign', 'workflow', 'inbound', 'inbox', 'opportunities', 'posts'],
   ledger: ['', 'run'],
   research: [''],
-  setup: [
-    '',
-    'workspace',
-    'capture',
-    'agent',
-    'data',
-    'reddit',
-    'research',
-    'seat',
-    'skills',
-    'limits',
-    'spend',
-    'team'
-  ]
+  // `team` only exists with an invitation id: `/setup/team/:invitationId`.
+  setup: ['', 'workspace', 'capture', 'team']
 };
-
-/**
- * First segments the SHELL owns that are not `Section`s.
- *
- * `leads` is a legacy alias for the target-account screen; App replaces it
- * with `/outreach/accounts` so old bookmarks survive without keeping a sixth
- * primary destination. `login` is the auth screen, which is a place you can be
- * sent to -- from the marketing page, from an expired session, from a link in
- * an email -- and therefore an address.
- *
- * They are listed here because `isAppPath` is the single answer to "is this
- * URL ours", and both the click interceptor below and the server's fallback
- * have to give the same answer to the same path.
- */
-const SHELL_PATHS: readonly string[] = ['leads', 'login'];
 
 export interface Route {
   section: Section;
@@ -113,32 +66,34 @@ function build(section: Section, sub: string, id: string | null): Route {
 /**
  * Is this path the SPA's to answer?
  *
- * THE ONE ANSWER, asked by three callers that must agree: the click
- * interceptor (intercept, or let the browser navigate), `App.tsx`'s
- * shell-route readers, and -- restated in its own language, because it cannot
- * import this module -- the production server's fallback in
- * `src/server/index.ts`. A path the client claims and the server 404s is a
- * broken reload; a path the server serves the app for and the client does not
- * claim is a blank screen.
- *
- * Anything with a file extension is excluded on purpose: `/logo.svg` and
- * `/catalog/modules.json` are files, and a shipped document like `/privacy` is
- * excluded by not being in the lists above.
+ * This is deliberately stricter than `parseRoute`: removed aliases and typos
+ * are not intercepted by the client and are not served the SPA by production.
+ * They fall through to the server's real 404 instead of silently becoming a
+ * different screen.
  */
 export function isAppPath(pathname: string): boolean {
-  const head = pathname.replace(/^\//, '').split('/')[0] ?? '';
-  if (!head) return true;
-  if (head.includes('.')) return false;
-  return (SECTIONS as readonly string[]).includes(head) || SHELL_PATHS.includes(head);
+  const raw = pathname.replace(/\/+$/, '');
+  if (!raw || raw === '/') return true;
+  if (raw === '/login') return true;
+  if (raw.includes('.')) return false;
+
+  const [head, sub = '', ...rest] = raw.replace(/^\//, '').split('/');
+  if (!(SECTIONS as readonly string[]).includes(head)) return false;
+  const section = head as Section;
+  if (!SUB_ROUTES[section].includes(sub)) return false;
+
+  if (section === 'ledger' && sub === 'run') return rest.length === 1 && Boolean(rest[0]);
+  if (section === 'outreach' && sub === 'campaign') return rest.length === 1 && Boolean(rest[0]);
+  if (section === 'outreach' && sub === 'workflow')
+    return (rest.length === 1 || rest.length === 2) && rest.every(Boolean);
+  if (section === 'setup' && sub === 'team') return rest.length === 1 && Boolean(rest[0]);
+
+  return rest.length === 0;
 }
 
 /** True for `/login`, the auth screen's own address. */
 export const isLoginPath = (pathname: string): boolean =>
   pathname === '/login' || pathname === '/login/';
-
-/** True for `/leads` and `/leads/:id`, the account spine. See `useAccountsRoute`. */
-export const isAccountsPath = (pathname: string): boolean =>
-  pathname === '/leads' || pathname.startsWith('/leads/');
 
 export function parseRoute(pathname: string): Route {
   const raw = pathname.replace(/\/+$/, '');
@@ -153,8 +108,8 @@ export function parseRoute(pathname: string): Route {
     : DEFAULT.section;
   if (!SUB_ROUTES[section].includes(sub)) return build(section, '', null);
   const id = rest.length > 0 && rest[0] ? rest.join('/') : null;
-  // `/ledger/run` with no id names no run. Send it to the list it came from.
   if (sub === 'run' && !id) return build(section, '', null);
+  if (section === 'setup' && sub === 'team' && !id) return build(section, '', null);
   return build(section, sub, id);
 }
 
@@ -166,22 +121,10 @@ export function parseRoute(pathname: string): Route {
 const subscribers = new Set<() => void>();
 
 function announce(): void {
-  // A copy, because a subscriber is free to unsubscribe while being notified.
   for (const notify of [...subscribers]) notify();
 }
 
-/**
- * Go to a path, WITHOUT a page load.
- *
- * `pushState` rather than assigning `location`, so Back returns to the
- * previous screen instead of re-fetching the document -- the same history
- * behaviour the hash router had, for the same reason. `popstate` does not fire
- * for our own `pushState`, so subscribers are told directly.
- *
- * Exported as a plain function, not only as the hook's second return value:
- * the click interceptor and a handful of screens navigate from outside a
- * component that holds the hook.
- */
+/** Go to a path without a page load. */
 export function navigate(path: string): void {
   const next = path.startsWith('/') ? path : `/${path}`;
   if (window.location.pathname + window.location.search === next) return;
@@ -189,7 +132,7 @@ export function navigate(path: string): void {
   announce();
 }
 
-/** Replace a legacy/internal address without leaving it behind in Back history. */
+/** Replace the current in-app address without leaving it in Back history. */
 export function replaceNavigate(path: string): void {
   const next = path.startsWith('/') ? path : `/${path}`;
   if (window.location.pathname + window.location.search === next) return;
@@ -199,26 +142,8 @@ export function replaceNavigate(path: string): void {
 
 /**
  * ONE listener for every in-app link in the shell, so a link stays a link.
- *
- * The alternative was a `<Link>` component and 53 call sites that have to
- * remember to use it -- and one plain `<a href="/outreach">` added later would
- * silently reload the whole app, which is the kind of failure nobody reports
- * because it still works. This way an anchor is written the way anchors are
- * written, and the ones that name a screen are caught here.
- *
- * WHAT IS DELIBERATELY NOT INTERCEPTED, in order:
- *   * a modified click -- ctrl/cmd/shift/alt, or anything but the main button.
- *     "Open in a new tab" must open a new tab;
- *   * `target`, `download`, or an explicit `rel="external"`;
- *   * another origin;
- *   * A PURE FRAGMENT ON THIS PAGE -- `#approval`, `#hosted`. This is the rule
- *     at the top of the file being enforced: the browser owns scrolling and
- *     this router does not touch the fragment;
- *   * a path that is not the app's (`/privacy`, `/catalog/modules.json`).
- *
- * Capture phase, so a screen that calls `preventDefault` in its own handler
- * still wins -- it runs after this and the navigation has already happened,
- * which is the same order the hash router produced.
+ * Removed/unknown app-looking paths are deliberately not intercepted: the
+ * browser asks the server for them and receives a real 404.
  */
 function interceptLinkClicks(event: MouseEvent): void {
   if (event.defaultPrevented || event.button !== 0) return;
@@ -233,8 +158,6 @@ function interceptLinkClicks(event: MouseEvent): void {
 
   const url = new URL(anchor.href, window.location.href);
   if (url.origin !== window.location.origin) return;
-  // An anchor into the page we are already on. The browser scrolls; we do not
-  // navigate, and we do not touch the fragment.
   if (url.hash && url.pathname === window.location.pathname) return;
   if (!isAppPath(url.pathname)) return;
 
@@ -242,13 +165,7 @@ function interceptLinkClicks(event: MouseEvent): void {
   navigate(url.pathname + url.search);
 }
 
-/**
- * Where you are, and one function that moves you.
- *
- * The click interceptor is installed by the first mounted reader and removed
- * by the last, so a test that renders one screen gets the same behaviour the
- * shell has and nothing leaks between tests.
- */
+/** Where you are, and one function that moves you. */
 export function useRoute(): [Route, (path: string) => void] {
   const read = useCallback(() => parseRoute(window.location.pathname), []);
   const [route, setRoute] = useState<Route>(read);
@@ -273,14 +190,7 @@ export function useRoute(): [Route, (path: string) => void] {
   return [route, navigate];
 }
 
-/**
- * Subscribe to route changes without parsing one.
- *
- * For the two shell-level readers that ask a yes/no question of the URL --
- * "are we on the accounts spine", "are we on the login screen" -- and would
- * otherwise each need their own `popstate` wiring, which is how the hash
- * version ended up with three copies of the same listener.
- */
+/** Subscribe to route changes without parsing one. */
 export function usePathname(): string {
   const [pathname, setPathname] = useState(() =>
     typeof window === 'undefined' ? '/' : window.location.pathname

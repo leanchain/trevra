@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Check, LoaderCircle, Plus, Settings2 } from 'lucide-react';
+import { Check, LoaderCircle, Settings2 } from 'lucide-react';
 import {
   ApiError,
-  createLinkedInManagerSeat,
+  deleteLinkedInCredentials,
+  detectLinkedInSeat,
+  getLinkedInManagerSeats,
+  loginLinkedInSeat,
+  saveLinkedInCredentials,
   updateLinkedInManagerSeat,
   updateLinkedInSeatCapabilities,
   type LinkedInLimitsReport,
@@ -10,22 +14,14 @@ import {
   type LinkedInSeatResponse,
   type PacedKind
 } from './api';
-import { OWNER_ACCOUNT_KEY, slugifyAccountKey } from './LinkedInActiveAccount';
+import { OWNER_ACCOUNT_KEY } from './LinkedInActiveAccount';
 import { Wall } from './LinkedInCompanion';
 import { errorMessage } from './LinkedInSafety';
-
 /**
- * Adding a LinkedIn account and changing one: the two forms that write a
- * seat's schedule, ceilings and proxy, plus the vocabulary both of them and
- * the read-only screen in `LinkedInAccounts.tsx` share.
+ * Adding a LinkedIn account and changing one: connection first, then the
+ * schedule/safety/capability controls that belong to an account after Trevra
+ * has actually identified it.
  */
-
-/**
- * The server's own rule for an account key (`linkedinSeatKeySchema` in
- * app.ts), restated so the field can refuse before the request is made.
- * A form that only learns the rule from a 400 is a form that taught nothing.
- */
-export const ACCOUNT_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 /* -------------------------------------------------------------------------
  * The vocabulary and the arithmetic, in one place.
@@ -624,12 +620,10 @@ function BandOverrideField({
   return (
     <>
       <h4 className="li-subhead" aria-level={3}>
-        Whose daily ceiling binds
+        Safety ceiling
       </h4>
       <p className="li-hint">
-        Trevra researched its own safety bands, and they are lower than what this form lets you
-        type. Until you say otherwise the lower of the two applies — which is the band, not your
-        number.
+        By default Trevra uses the lower of your account limit and its researched safety band.
       </p>
       <label className="li-inline-check">
         <input
@@ -637,7 +631,7 @@ function BandOverrideField({
           checked={on}
           onChange={(event) => onChange({ safetyBandOverride: event.target.checked })}
         />
-        <span>Use the numbers I set above, including where they are higher than Trevra’s band</span>
+        <span>Use my account limits even when they are higher than Trevra’s band</span>
       </label>
 
       {bands ? (
@@ -666,20 +660,17 @@ function BandOverrideField({
       )}
 
       <p className="li-hint">
-        Both ramps apply either way, and this lifts neither.{' '}
-        {/* `warmupWeek` counts on past the ramp -- it is weeks since this account
-          started sending through Trevra, not a position in a list -- so week 12
-          of a 4-week ramp is a real answer and "12 of 4" is not a sentence. */}
+        Warm-up and campaign ramps still apply either way.{' '}
         {safety
           ? safety.seat.warmupWeek > safety.seat.warmupWeeks
             ? `This account has finished its ${safety.seat.warmupWeeks}-week warm-up.`
-            : `This account is on week ${safety.seat.warmupWeek} of its ${safety.seat.warmupWeeks}-week warm-up, and takes only part of its ceiling until that finishes.`
-          : 'The per-account warm-up still applies.'}{' '}
-        Every campaign then starts at{' '}
+            : `Account warm-up: week ${safety.seat.warmupWeek} of ${safety.seat.warmupWeeks}.`
+          : 'The account warm-up still applies.'}{' '}
+        Campaign ramp:{' '}
         {ramp && ramp.length > 0
-          ? ramp.map((fraction) => `${Math.round(fraction * 100)}%`).join(', then ')
-          : 'a fraction'}{' '}
-        of whichever ceiling is binding. A different ceiling, never no ceiling.
+          ? ramp.map((fraction) => `${Math.round(fraction * 100)}%`).join(' → ')
+          : 'applies'}
+        .
       </p>
     </>
   );
@@ -689,12 +680,35 @@ function BandOverrideField({
  * Adding one.
  * ---------------------------------------------------------------------- */
 
+/* -------------------------------------------------------------------------
+ * Adding one.
+ *
+ * The browser session is the source of truth for account identity. The person
+ * supplies only what Trevra cannot know: the LinkedIn sign-in. A private seat
+ * key is generated mechanically, credentials are stored against it, and the
+ * detect route creates/names the seat from LinkedIn's own profile page.
+ * ---------------------------------------------------------------------- */
+
+function generatedSeatKey(existingKeys: string[]): string {
+  if (existingKeys.length === 0 && !existingKeys.includes(OWNER_ACCOUNT_KEY))
+    return OWNER_ACCOUNT_KEY;
+  const random =
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID().replace(/-/g, '').slice(0, 14)
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  let candidate = `li-${random}`.slice(0, 64);
+  let suffix = 1;
+  while (existingKeys.includes(candidate)) {
+    candidate = `li-${random}-${suffix}`.slice(0, 64);
+    suffix += 1;
+  }
+  return candidate;
+}
+
 export function AddAccountForm({
   existingKeys,
-  safety,
   onCreated,
-  onCancel,
-  firstOne = false
+  onCancel
 }: {
   existingKeys: string[];
   safety: LinkedInLimitsReport | null;
@@ -702,158 +716,201 @@ export function AddAccountForm({
   onCancel: (() => void) | null;
   firstOne?: boolean;
 }) {
-  const ranges = safety?.operatorRanges ?? null;
-  const [draft, setDraft] = useState<AccountDraft>(() => emptyDraft(BROWSER_TIMEZONE, ranges));
-  const [key, setKey] = useState(existingKeys.length === 0 ? OWNER_ACCOUNT_KEY : '');
-  // The very first account keeps its fixed 'owner' key regardless of what it is
-  // named -- that key is a convention other reads lean on, not a name's slug --
-  // so it starts already 'touched' and the name never overwrites it.
-  const [keyTouched, setKeyTouched] = useState(existingKeys.length === 0);
+  const [seatKey] = useState(() => generatedSeatKey(existingKeys));
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [otp, setOtp] = useState('');
+  const [stage, setStage] = useState<'credentials' | 'otp' | 'waiting'>('credentials');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState('');
-  const [wall, setWall] = useState('');
+  const [credentialsStored, setCredentialsStored] = useState(false);
 
-  // The starting numbers are the server's, and this form can open before the
-  // read that carries them has landed. Only the fields nobody has touched yet
-  // are filled in: a draft somebody is typing into is not overwritten by a
-  // late response.
-  useEffect(() => {
-    if (!ranges) return;
-    setDraft((current) => ({
-      ...current,
-      dailyInviteLimit: current.dailyInviteLimit || startingLimit(ranges, 'invite'),
-      dailyMessageLimit: current.dailyMessageLimit || startingLimit(ranges, 'message'),
-      dailyProfileViewLimit: current.dailyProfileViewLimit || startingLimit(ranges, 'profileView'),
-      dailyFollowLimit: current.dailyFollowLimit || startingLimit(ranges, 'follow')
-    }));
-  }, [ranges]);
+  const finish = async () => {
+    const detection = await detectLinkedInSeat(BROWSER_TIMEZONE, seatKey);
+    if (detection.status === 'pending') {
+      setStage('waiting');
+      setFailure(detection.message ?? 'Waiting for your connected computer to read this account.');
+      return;
+    }
+    const account = (await getLinkedInManagerSeats()).find((item) => item.seatKey === seatKey);
+    if (!account)
+      throw new Error('LinkedIn signed in, but Trevra could not finish reading the account.');
+    onCreated(account);
+  };
 
-  const change = (patch: Partial<AccountDraft>) =>
-    setDraft((current) => ({ ...current, ...patch }));
+  const runLogin = async (code?: string) => {
+    const result = await loginLinkedInSeat(code, seatKey);
+    if (result.status === 'otp_required') {
+      setStage('otp');
+      setFailure('');
+      return;
+    }
+    if (result.status !== 'ok') {
+      setFailure(result.message);
+      return;
+    }
+    setStage('credentials');
+    setOtp('');
+    await finish();
+  };
 
-  const submit = async () => {
+  const connect = async () => {
+    const address = email.trim();
+    if (!address || !password) {
+      setFailure('Enter the LinkedIn email and password for the account you want to connect.');
+      return;
+    }
     setBusy(true);
     setFailure('');
-    setWall('');
     try {
-      const trimmedKey = key.trim();
-      if (!ACCOUNT_KEY_PATTERN.test(trimmedKey)) {
-        throw new Error(
-          'A short key is letters, numbers, dashes and underscores, starting with a letter or a number — no spaces, up to 64 characters.'
-        );
-      }
-      if (existingKeys.includes(trimmedKey)) {
-        throw new Error(
-          'You already have an account with that key. Pick another — the key is how every queue, inbox and export tells them apart.'
-        );
-      }
-      const patch = draftToPatch(draft, ranges);
-      onCreated(await createLinkedInManagerSeat({ seatKey: trimmedKey, ...patch }));
+      await saveLinkedInCredentials({ email: address, password, seatKey });
+      setCredentialsStored(true);
+      setPassword('');
+      await runLogin();
     } catch (error) {
-      const message = errorMessage(error, 'Unable to add this account');
-      if (isWall(error)) setWall(message);
-      else setFailure(message);
+      setFailure(errorMessage(error, 'Unable to connect this LinkedIn account'));
     } finally {
       setBusy(false);
     }
   };
 
-  /*
-   * A REAL FORM, BECAUSE THE CONSTRAINTS ON THESE FIELDS ARE REAL.
-   *
-   * `pattern` on the short key and `min`/`max` on the four numbers do nothing
-   * at all outside a form element -- the browser runs them on submit and there
-   * was no submit -- so a `type="button"` handler left every one of them
-   * decorative, and the field claiming "letters, numbers, dashes" would happily
-   * post a space and wait for a 400. `submit()` still checks the same rules in
-   * the operator's own words: the browser has no attribute for "a stop time
-   * after the start time", and a sentence beats a bubble for the rules it does
-   * have. Enter now submits, which is what a form of eight fields should do.
-   */
+  const verify = async () => {
+    if (!otp.trim()) return;
+    setBusy(true);
+    setFailure('');
+    try {
+      await runLogin(otp.trim());
+    } catch (error) {
+      setFailure(errorMessage(error, 'Unable to verify this LinkedIn account'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancel = async () => {
+    if (credentialsStored) {
+      try {
+        await deleteLinkedInCredentials(seatKey);
+      } catch {
+        // Closing the form must not be blocked by cleanup. A later successful
+        // connect to this generated key will overwrite the same encrypted pair.
+      }
+    }
+    onCancel?.();
+  };
+
+  useEffect(() => {
+    if (stage !== 'waiting') return;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const account = (await getLinkedInManagerSeats()).find((item) => item.seatKey === seatKey);
+        if (!cancelled && account) onCreated(account);
+      } catch {
+        // The durable detect request is still the source of truth; keep waiting.
+      }
+    };
+    const timer = window.setInterval(() => void check(), 4000);
+    void check();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [onCreated, seatKey, stage]);
+
   return (
-    <form
-      className={`li-acct-add${firstOne ? ' is-first' : ''}`}
-      onSubmit={(event) => {
-        event.preventDefault();
-        void submit();
-      }}
-    >
-      {!firstOne && (
+    <div className="li-acct-add li-acct-connect-simple">
+      <div>
         <h4 className="li-subhead" aria-level={3}>
-          Add a LinkedIn account
+          Connect LinkedIn account
         </h4>
+        <p className="li-hint">
+          Sign in first. Trevra reads the account name and profile from LinkedIn automatically.
+        </p>
+      </div>
+
+      {failure && (
+        <div className={stage === 'waiting' ? 'li-signin-note' : 'error-banner'}>{failure}</div>
       )}
-      <p className="li-hint">
-        Each account keeps its own sign-in, its own browser profile, its own hours and its own daily
-        limits. Nothing is shared between them, so a wall on one never stops another.
-      </p>
 
-      {failure && <div className="error-banner li-acct-error">{failure}</div>}
-      {wall && <Wall title="That account could not be added." message={wall} />}
-
-      <div className="li-form-grid">
-        <label>
-          Name
-          <input
-            value={draft.label}
-            onChange={(event) => {
-              const label = event.target.value;
-              change({ label });
-              // Smart default: the key is a mechanical slug of the name until the
-              // operator types into the key field directly, at which point their
-              // spelling wins for good.
-              if (!keyTouched) setKey(slugifyAccountKey(label));
-            }}
-            placeholder="Priya (sales)"
-            autoComplete="off"
-          />
-          <small className="li-acct-range">
-            What you will see in the switcher and on every queue.
-          </small>
-        </label>
-        <label>
-          Short key
-          <input
-            value={key}
-            onChange={(event) => {
-              setKeyTouched(true);
-              setKey(event.target.value);
-            }}
-            placeholder="priya"
-            autoComplete="off"
-            spellCheck={false}
-            pattern={ACCOUNT_KEY_PATTERN.source}
-            title="Letters, numbers, dashes and underscores, starting with a letter or a number. No spaces, up to 64 characters."
-          />
-          <small className="li-acct-range">
-            Filled in from the name above until you edit it. Letters, numbers, dashes, underscores.
-            Permanent — it is how exports and queues name this account.
-          </small>
-        </label>
-        <TimezoneField
-          className="li-span-2"
-          value={draft.timezone}
-          onChange={(timezone) => change({ timezone })}
-          hint="Taken from this browser. Change it if this account is worked from somewhere else."
-        />
-      </div>
-
-      <ScheduleFields draft={draft} onChange={change} idPrefix="add" safety={safety} />
-
-      <div className="panel-footer">
-        <span>Adding an account stores nothing on LinkedIn. You connect it in the next step.</span>
-        <div className="li-acct-form-actions">
-          {onCancel && (
-            <button className="secondary-button" type="button" disabled={busy} onClick={onCancel}>
-              Cancel
-            </button>
-          )}
-          <button className="primary-button" type="submit" disabled={busy}>
-            {busy ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />} Add account
-          </button>
+      {stage === 'waiting' ? (
+        <div className="li-connect-waiting">
+          <LoaderCircle className="spin" size={18} />
+          <span>Waiting for the computer that runs this LinkedIn account…</span>
         </div>
+      ) : stage === 'otp' ? (
+        <form
+          className="li-signin-fields li-signin-otp"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void verify();
+          }}
+        >
+          <label>
+            Verification code
+            <input
+              value={otp}
+              onChange={(event) => setOtp(event.target.value)}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+              placeholder="123456"
+            />
+          </label>
+          <button className="primary-button" type="submit" disabled={busy || !otp.trim()}>
+            {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Verify
+          </button>
+        </form>
+      ) : (
+        <form
+          className="li-connect-credentials"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void connect();
+          }}
+        >
+          <label>
+            LinkedIn email
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              autoComplete="username"
+              autoFocus
+              placeholder="you@example.com"
+            />
+          </label>
+          <label>
+            LinkedIn password
+            <input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="current-password"
+            />
+          </label>
+          <small>Encrypted and used only to open this LinkedIn account’s browser session.</small>
+          <button className="primary-button" type="submit" disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Connect
+            LinkedIn
+          </button>
+        </form>
+      )}
+
+      <div className="panel-footer li-connect-footer">
+        <span />
+        {onCancel && (
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busy}
+            onClick={() => void cancel()}
+          >
+            Cancel
+          </button>
+        )}
       </div>
-    </form>
+    </div>
   );
 }
 
@@ -877,6 +934,9 @@ export function EditAccountForm({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState('');
   const [wall, setWall] = useState('');
+  const [openSection, setOpenSection] = useState<'display' | 'capabilities' | 'safety' | null>(
+    null
+  );
   const [capDraft, setCapDraft] = useState(() => ({
     inmail: account.capabilities.inmail,
     premium: account.capabilities.premium,
@@ -885,8 +945,6 @@ export function EditAccountForm({
     monthly: account.inmailMonthlyBudget === null ? '' : String(account.inmailMonthlyBudget),
     paid: account.inmailPaidCreditCap === null ? '' : String(account.inmailPaidCreditCap)
   }));
-
-  // The server is the record. A save elsewhere, or a read from the live
   // session, must not lose to a form somebody opened and left.
   useEffect(() => {
     setDraft(draftOf(account));
@@ -938,13 +996,12 @@ export function EditAccountForm({
   };
 
   return (
-    <details className="li-manual-fields li-acct-manage">
-      <summary>
-        <Settings2 size={13} /> Account settings
-      </summary>
+    <div className="li-account-settings">
+      <div className="li-account-settings-title">
+        <Settings2 size={15} />
+        <strong>Account controls</strong>
+      </div>
 
-      {/* A form, for the same reason the add form is one: `min` and `max` on the
-        four number fields are enforced by the browser on submit or not at all. */}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -953,119 +1010,171 @@ export function EditAccountForm({
       >
         {failure && <div className="error-banner li-acct-error">{failure}</div>}
         {wall && <Wall title="That change was refused." message={wall} />}
-
-        <div className="li-form-grid">
-          <label>
-            Name
-            <input
-              value={draft.label}
-              onChange={(event) => change({ label: event.target.value })}
-            />
-          </label>
-          <TimezoneField value={draft.timezone} onChange={(timezone) => change({ timezone })} />
+        <div
+          className="li-account-settings-tabs"
+          role="group"
+          aria-label="Account control sections"
+        >
+          <button
+            type="button"
+            className={openSection === 'display' ? 'is-active' : undefined}
+            aria-expanded={openSection === 'display'}
+            onClick={() => setOpenSection((current) => (current === 'display' ? null : 'display'))}
+          >
+            Display & timezone
+          </button>
+          <button
+            type="button"
+            className={openSection === 'capabilities' ? 'is-active' : undefined}
+            aria-expanded={openSection === 'capabilities'}
+            onClick={() =>
+              setOpenSection((current) => (current === 'capabilities' ? null : 'capabilities'))
+            }
+          >
+            LinkedIn capabilities
+          </button>
+          <button
+            type="button"
+            className={openSection === 'safety' ? 'is-active' : undefined}
+            aria-expanded={openSection === 'safety'}
+            onClick={() => setOpenSection((current) => (current === 'safety' ? null : 'safety'))}
+          >
+            Schedule & safety
+          </button>
         </div>
 
-        <ScheduleFields
-          draft={draft}
-          onChange={change}
-          idPrefix={`edit-${account.seatKey}`}
-          safety={safety}
-          bandOverride
-          proxy={account.proxy}
-        />
+        {openSection && (
+          <div className="li-account-settings-expanded">
+            {openSection === 'display' && (
+              <div className="li-form-grid">
+                <label>
+                  Display name
+                  <input
+                    value={draft.label}
+                    onChange={(event) => change({ label: event.target.value })}
+                  />
+                  <small className="li-acct-range">
+                    Normally read from LinkedIn. Change only if you want a workspace nickname.
+                  </small>
+                </label>
+                <TimezoneField
+                  value={draft.timezone}
+                  onChange={(timezone) => change({ timezone })}
+                />
+              </div>
+            )}
 
-        <fieldset className="li-span-2">
-          <legend>LinkedIn license and InMail capability</legend>
-          <p className="li-hint">
-            Mark only capabilities this account actually has. Campaign setup uses these flags to
-            keep unsupported senders out of InMail workflows.
-          </p>
-          <div className="li-form-grid">
-            <label>
-              InMail availability
-              <select
-                value={capDraft.inmail}
-                onChange={(event) =>
-                  setCapDraft((current) => ({
-                    ...current,
-                    inmail: event.target.value as typeof current.inmail
-                  }))
-                }
-              >
-                <option value="unknown">Unknown / not checked</option>
-                <option value="available">Available</option>
-                <option value="unavailable">Unavailable</option>
-              </select>
-            </label>
-            <label>
-              Monthly InMail budget
-              <input
-                type="number"
-                min={0}
-                max={10000}
-                value={capDraft.monthly}
-                placeholder="Use researched ceiling"
-                onChange={(event) =>
-                  setCapDraft((current) => ({ ...current, monthly: event.target.value }))
-                }
+            {openSection === 'capabilities' && (
+              <>
+                <p className="li-hint">
+                  Used by campaign setup to avoid assigning this account to unsupported InMail
+                  workflows.
+                </p>
+                <div className="li-form-grid">
+                  <label>
+                    InMail availability
+                    <select
+                      value={capDraft.inmail}
+                      onChange={(event) =>
+                        setCapDraft((current) => ({
+                          ...current,
+                          inmail: event.target.value as typeof current.inmail
+                        }))
+                      }
+                    >
+                      <option value="unknown">Unknown / not checked</option>
+                      <option value="available">Available</option>
+                      <option value="unavailable">Unavailable</option>
+                    </select>
+                  </label>
+                  <label>
+                    Monthly InMail budget
+                    <input
+                      type="number"
+                      min={0}
+                      max={10000}
+                      value={capDraft.monthly}
+                      placeholder="Use researched ceiling"
+                      onChange={(event) =>
+                        setCapDraft((current) => ({ ...current, monthly: event.target.value }))
+                      }
+                    />
+                  </label>
+                  <label>
+                    Paid-credit cap
+                    <input
+                      type="number"
+                      min={0}
+                      max={10000}
+                      value={capDraft.paid}
+                      placeholder="No paid credits"
+                      onChange={(event) =>
+                        setCapDraft((current) => ({ ...current, paid: event.target.value }))
+                      }
+                    />
+                  </label>
+                  <div className="li-capability-checks">
+                    <label className="li-check-row">
+                      <input
+                        type="checkbox"
+                        checked={capDraft.premium}
+                        onChange={(event) =>
+                          setCapDraft((current) => ({ ...current, premium: event.target.checked }))
+                        }
+                      />{' '}
+                      LinkedIn Premium
+                    </label>
+                    <label className="li-check-row">
+                      <input
+                        type="checkbox"
+                        checked={capDraft.salesNavigator}
+                        onChange={(event) =>
+                          setCapDraft((current) => ({
+                            ...current,
+                            salesNavigator: event.target.checked
+                          }))
+                        }
+                      />{' '}
+                      Sales Navigator
+                    </label>
+                    <label className="li-check-row">
+                      <input
+                        type="checkbox"
+                        checked={capDraft.recruiter}
+                        onChange={(event) =>
+                          setCapDraft((current) => ({
+                            ...current,
+                            recruiter: event.target.checked
+                          }))
+                        }
+                      />{' '}
+                      Recruiter
+                    </label>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {openSection === 'safety' && (
+              <ScheduleFields
+                draft={draft}
+                onChange={change}
+                idPrefix={`edit-${account.seatKey}`}
+                safety={safety}
+                bandOverride
+                proxy={account.proxy}
               />
-            </label>
-            <label>
-              Paid-credit cap
-              <input
-                type="number"
-                min={0}
-                max={10000}
-                value={capDraft.paid}
-                placeholder="No paid credits"
-                onChange={(event) =>
-                  setCapDraft((current) => ({ ...current, paid: event.target.value }))
-                }
-              />
-            </label>
-            <label className="li-check-row">
-              <input
-                type="checkbox"
-                checked={capDraft.premium}
-                onChange={(event) =>
-                  setCapDraft((current) => ({ ...current, premium: event.target.checked }))
-                }
-              />{' '}
-              LinkedIn Premium
-            </label>
-            <label className="li-check-row">
-              <input
-                type="checkbox"
-                checked={capDraft.salesNavigator}
-                onChange={(event) =>
-                  setCapDraft((current) => ({ ...current, salesNavigator: event.target.checked }))
-                }
-              />{' '}
-              Sales Navigator
-            </label>
-            <label className="li-check-row">
-              <input
-                type="checkbox"
-                checked={capDraft.recruiter}
-                onChange={(event) =>
-                  setCapDraft((current) => ({ ...current, recruiter: event.target.checked }))
-                }
-              />{' '}
-              Recruiter
-            </label>
+            )}
           </div>
-        </fieldset>
+        )}
 
         <div className="panel-footer">
-          <span>
-            The short key <code>{account.seatKey}</code> cannot change — queues, exports and inboxes
-            are filed under it.
-          </span>
+          <span />
           <button className="primary-button" type="submit" disabled={busy}>
             {busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} Save changes
           </button>
         </div>
       </form>
-    </details>
+    </div>
   );
 }

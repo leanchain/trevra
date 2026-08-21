@@ -101,8 +101,8 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
               </h3>
               {status!.devices.length === 0 ? (
                 <p>
-                  Background LinkedIn work is paused. Connect a computer from the Accounts panel
-                  below to start it.
+                  Background LinkedIn work is paused. Connect a computer from{' '}
+                  <a href="/setup/workspace">Setup → Workspace</a> to start it.
                 </p>
               ) : (
                 <p>Background LinkedIn work is paused because the paired computer is offline.</p>
@@ -116,8 +116,8 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
                   <>
                     <strong>No computer has ever been paired</strong>
                     <p>
-                      Connect a computer from the Accounts panel below to run LinkedIn work in the
-                      background.
+                      Connect a computer from <a href="/setup/workspace">Setup → Workspace</a> to
+                      run LinkedIn work in the background.
                     </p>
                   </>
                 ) : (

@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { AccountsScreen } from '../AccountsScreen';
-import { LinkedInAccounts } from '../LinkedInAccounts';
 import { LinkedInCompanionAttention } from '../LinkedInCompanion';
 import { OutreachInbox } from '../LinkedInInbox';
 import { SharedConversations } from '../SharedConversations';
@@ -13,8 +12,7 @@ import { LinkedInPosts } from '../LinkedInPosts';
 import { InboundPeople } from '../InboundPeople';
 import { Opportunities } from '../Opportunities';
 import { ActionMenu } from '../ui/action-menu';
-import { replaceNavigate, type Route } from '../ui/route';
-import { scrollToId } from '../ui/scrollToId';
+import type { Route } from '../ui/route';
 
 const OUTREACH_TABS: ReadonlyArray<{
   sub: string;
@@ -31,23 +29,8 @@ const OUTREACH_TABS: ReadonlyArray<{
     label: 'Opportunities',
     mobile: 'main'
   },
-  { sub: 'posts', path: '/outreach/posts', label: 'Posts', mobile: 'more' },
-  { sub: 'settings', path: '/outreach/settings', label: 'Settings', mobile: 'more' }
+  { sub: 'posts', path: '/outreach/posts', label: 'Posts', mobile: 'more' }
 ];
-
-const OUTREACH_LEGACY_REDIRECTS: Record<string, string> = {
-  manager: '/outreach',
-  campaigns: '/outreach',
-  plan: '/outreach',
-  activity: '/outreach',
-  leads: '/outreach',
-  accounts: '/outreach'
-};
-
-const OUTREACH_LEGACY_ANCHORS: Record<string, string> = {
-  leads: 'leads',
-  accounts: 'accounts'
-};
 
 function activeSub(sub: string): string {
   if (sub === 'new' || sub === 'campaign' || sub === 'workflow') return '';
@@ -64,27 +47,11 @@ export function OutreachView({
   onNavigate: (path: string) => void;
 }) {
   const sub = route.sub;
-  const [anchor, setAnchor] = useState<{ id: string; seq: number } | null>(null);
-  const anchorSeq = useRef(0);
+  const [messageView, setMessageView] = useState<'conversations' | 'linkedin'>('conversations');
   const [openFolds, setOpenFolds] = useState<{ leads: boolean; accounts: boolean }>({
     leads: false,
     accounts: false
   });
-
-  useEffect(() => {
-    const target = OUTREACH_LEGACY_REDIRECTS[sub];
-    if (!target) return;
-    const anchorId = OUTREACH_LEGACY_ANCHORS[sub];
-    if (anchorId) setAnchor({ id: anchorId, seq: ++anchorSeq.current });
-    replaceNavigate(sub === 'manager' && route.id === 'new' ? '/outreach/new' : target);
-  }, [sub, route.id]);
-
-  useEffect(() => {
-    if (!anchor) return;
-    const node = document.getElementById(anchor.id);
-    if (node instanceof HTMLDetailsElement) node.open = true;
-    return scrollToId(anchor.id);
-  }, [anchor]);
 
   const current = activeSub(sub);
   const moreTabs = OUTREACH_TABS.filter((tab) => tab.mobile === 'more');
@@ -129,13 +96,33 @@ export function OutreachView({
       {sub === 'inbound' && <InboundPeople setToast={setToast} />}
       {sub === 'inbox' && (
         <div className="page-stack">
-          <SharedConversations />
-          <OutreachInbox setToast={setToast} />
+          <div className="outreach-message-switch" role="group" aria-label="Message view">
+            <button
+              type="button"
+              className={`li-range${messageView === 'conversations' ? ' is-active' : ''}`}
+              aria-pressed={messageView === 'conversations'}
+              onClick={() => setMessageView('conversations')}
+            >
+              Conversations
+            </button>
+            <button
+              type="button"
+              className={`li-range${messageView === 'linkedin' ? ' is-active' : ''}`}
+              aria-pressed={messageView === 'linkedin'}
+              onClick={() => setMessageView('linkedin')}
+            >
+              LinkedIn inbox
+            </button>
+          </div>
+          {messageView === 'conversations' ? (
+            <SharedConversations />
+          ) : (
+            <OutreachInbox setToast={setToast} />
+          )}
         </div>
       )}
       {sub === 'opportunities' && <Opportunities setToast={setToast} />}
       {sub === 'posts' && <LinkedInPosts setToast={setToast} />}
-      {sub === 'settings' && <LinkedInAccounts setToast={setToast} />}
       {sub === 'new' && <OutreachManagerBuilder setToast={setToast} onNavigate={onNavigate} />}
       {sub === 'campaign' && route.id && (
         <OutreachManagerRead

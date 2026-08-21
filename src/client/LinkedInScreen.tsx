@@ -84,8 +84,10 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
   const [exclusions, setExclusions] = useState<LinkedInExclusion[]>([]);
   const [targets, setTargets] = useState('');
   const [reason, setReason] = useState('');
+  const [showAdd, setShowAdd] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [loaded, setLoaded] = useState(false);
 
   const load = async () => {
     try {
@@ -93,6 +95,8 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to load the exclusion list'));
+    } finally {
+      setLoaded(true);
     }
   };
 
@@ -118,6 +122,7 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
       setToast(`${result.added} added, ${result.updated} already on the list and updated.`);
       setTargets('');
       setReason('');
+      setShowAdd(false);
       await load();
     } catch (err) {
       setError(errorMessage(err, 'Unable to add those exclusions'));
@@ -133,60 +138,94 @@ export function LinkedInExclusions({ setToast }: { setToast: (message: string) =
           <div>
             <h3 aria-level={2}>Never contact</h3>
           </div>
+          <div className="mgr-actions">
+            {exclusions.length > 0 && (
+              <span className="status-pill">{exclusions.length} protected</span>
+            )}
+            {!showAdd && (
+              <button className="secondary-button" type="button" onClick={() => setShowAdd(true)}>
+                <Ban size={14} /> Add exclusion
+              </button>
+            )}
+          </div>
         </div>
         {error && <div className="error-banner">{error}</div>}
-        <div className="li-form-grid">
-          <label className="li-span-2">
-            Handles or profile URLs, one per line
-            <textarea
-              rows={4}
-              value={targets}
-              onChange={(event) => setTargets(event.target.value)}
-            />
-          </label>
-          <label className="li-span-2">
-            Reason
-            <input
-              value={reason}
-              onChange={(event) => setReason(event.target.value)}
-              placeholder="Asked to be left alone"
-            />
-          </label>
-        </div>
-        <div className="panel-footer">
-          <span>
-            There is no Remove button here — taking somebody off this list is a database change, on
-            purpose.
-          </span>
-          <button className="primary-button" disabled={busy} onClick={() => void add()}>
-            {busy ? <LoaderCircle className="spin" size={15} /> : <Ban size={15} />} Add to the list
-          </button>
-        </div>
-      </section>
-
-      <section className="page-panel">
-        {exclusions.length > 0 && (
-          <div className="li-table-scroll">
-            <table className="li-table">
-              <thead>
-                <tr>
-                  <th>Person</th>
-                  <th>Reason</th>
-                  <th>Added</th>
-                </tr>
-              </thead>
-              <tbody>
-                {exclusions.map((entry) => (
-                  <tr key={entry.id}>
-                    <td className="li-target">{entry.targetRef}</td>
-                    <td>{entry.reason || '—'}</td>
-                    <td>{new Date(entry.createdAt).toLocaleDateString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {showAdd && (
+          <>
+            <div className="li-form-grid">
+              <label className="li-span-2">
+                Handles or profile URLs, one per line
+                <textarea
+                  rows={4}
+                  value={targets}
+                  onChange={(event) => setTargets(event.target.value)}
+                />
+              </label>
+              <label className="li-span-2">
+                Reason
+                <input
+                  value={reason}
+                  onChange={(event) => setReason(event.target.value)}
+                  placeholder="Asked to be left alone"
+                />
+              </label>
+            </div>
+            <div className="panel-footer">
+              <span>
+                There is no Remove button here — taking somebody off this list is a database change,
+                on purpose.
+              </span>
+              <div className="mgr-actions">
+                <button
+                  className="ghost-button"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setTargets('');
+                    setReason('');
+                    setError('');
+                    setShowAdd(false);
+                  }}
+                >
+                  Cancel
+                </button>
+                <button className="primary-button" disabled={busy} onClick={() => void add()}>
+                  {busy ? <LoaderCircle className="spin" size={15} /> : <Ban size={15} />} Add to
+                  the list
+                </button>
+              </div>
+            </div>
+          </>
         )}
+
+        <div className="never-contact-list">
+          {!loaded ? (
+            <p className="empty-copy">Reading the never-contact list…</p>
+          ) : exclusions.length === 0 && !error ? (
+            <p className="workspace-empty">No one is on the never-contact list yet.</p>
+          ) : exclusions.length > 0 ? (
+            <div className="li-table-scroll">
+              <table className="li-table">
+                <thead>
+                  <tr>
+                    <th>Person</th>
+                    <th>Reason</th>
+                    <th>Added</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exclusions.map((entry) => (
+                    <tr key={entry.id}>
+                      <td className="li-target">{entry.targetRef}</td>
+                      <td>{entry.reason || '—'}</td>
+                      <td>{new Date(entry.createdAt).toLocaleDateString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
       </section>
     </div>
   );

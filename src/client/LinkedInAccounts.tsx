@@ -64,7 +64,6 @@ import { MAINTENANCE_TASK_LABELS, formatVisitWindow, queueWaitCopy } from './Lin
 import { ConfidenceTag, LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 import { Hint } from './ui/hint';
-import { ChoiceMenu } from './ui/choice-menu';
 import { useIsWorkspaceOwner } from './auth-client';
 import { useWorkspaceMembers } from './TeamScreen';
 
@@ -166,7 +165,19 @@ function stateSentence(
  * The screen.
  * ---------------------------------------------------------------------- */
 
-export function LinkedInAccounts({ setToast }: { setToast: (message: string) => void }) {
+export function LinkedInAccounts({
+  setToast,
+  compact = false,
+  focusSeatKey = null,
+  startAdding = false,
+  onClose
+}: {
+  setToast: (message: string) => void;
+  compact?: boolean;
+  focusSeatKey?: string | null;
+  startAdding?: boolean;
+  onClose?: () => void;
+}) {
   const isWorkspaceOwner = useIsWorkspaceOwner();
   const { members: workspaceMembers } = useWorkspaceMembers();
   const [activeKey, setActiveKey] = useActiveSeatKey();
@@ -177,7 +188,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
   const [safety, setSafety] = useState<LinkedInLimitsReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState('');
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState(startAdding);
   /** Only the newest refresh may replace the account list. An older request can
    * have started before a just-added account existed and must never "repair"
    * the active selection back to account #1 when it arrives late. */
@@ -265,10 +276,13 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    if (focusSeatKey) setActiveKey(focusSeatKey);
+  }, [focusSeatKey, setActiveKey]);
   useOutreachRefresh(load);
-  // The Settings tabs are the source of truth for selection. A refresh may
-  // temporarily return a partial/stale account list, but it must never turn
-  // that into a write that overrides the account the user clicked.
+  // Setup owns account configuration, but the active account store is shared with
+  // the Outreach screens that need one account context. A refresh may temporarily
+  // return a partial/stale account list, but it must never override what the user clicked.
   const active = accounts?.find((account) => account.seatKey === activeKey) ?? null;
   /**
    * The ranges every limit control is built from, the bands those limits are
@@ -298,11 +312,57 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
   }, [activeSeatKey]);
 
   const empty = accounts !== null && accounts.length === 0;
+  if (compact) {
+    return (
+      <div
+        className={`page-stack li-polished ${adding ? 'li-account-connect-content' : 'li-account-drawer-content'}`}
+      >
+        <TimezoneOptions />
+        {failure && <div className="error-banner">{failure}</div>}
+        {accounts === null ? (
+          <p className="empty-copy">{loading ? 'Reading LinkedIn account…' : 'No data.'}</p>
+        ) : adding ? (
+          <AddAccountForm
+            existingKeys={accounts.map((account) => account.seatKey)}
+            safety={safety}
+            firstOne={accounts.length === 0}
+            onCancel={() => (onClose ? onClose() : setAdding(false))}
+            onCreated={(created) => {
+              setAdding(false);
+              setToast(`${created.label} connected.`);
+              void load().then(() => {
+                setActiveKey(created.seatKey);
+                onClose?.();
+              });
+            }}
+          />
+        ) : active ? (
+          <AccountPanel
+            key={active.seatKey}
+            account={active}
+            detail={details[active.seatKey] ?? null}
+            safety={safety}
+            companion={Boolean(worker?.companionBrowser)}
+            setToast={setToast}
+            canAssignOwner={isWorkspaceOwner}
+            workspaceMembers={workspaceMembers}
+            onAssignOwner={assignAccountOwner}
+            onChanged={load}
+            onRemoved={() => {
+              setActiveKey(OWNER_ACCOUNT_KEY);
+              void load();
+            }}
+          />
+        ) : (
+          <p className="workspace-empty">That LinkedIn account is no longer available.</p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="page-stack li-polished">
       <TimezoneOptions />
-
       {failure && (
         <div className="error-banner">
           <strong>{failure}</strong>{' '}
@@ -336,30 +396,43 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
         <section className="page-panel">
           <div className="section-heading">
             <div>
-              <h3 aria-level={2}>No LinkedIn account connected yet</h3>
+              <h3 aria-level={2}>LinkedIn accounts</h3>
               <p>
-                Trevra paces, queues and reads replies per account. Add the first one and everything
-                else on Outreach has something to run against.
+                Add the accounts Trevra may use for campaigns, messages, posts, and background work.
               </p>
             </div>
-            <Users size={20} className="li-heading-icon" />
+            <button
+              className="secondary-button li-acct-nowrap"
+              type="button"
+              onClick={() => setAdding((open) => !open)}
+            >
+              <Plus size={14} /> {adding ? 'Cancel' : 'Add account'}
+            </button>
           </div>
-          <AddAccountForm
-            existingKeys={[]}
-            safety={safety}
-            firstOne
-            onCancel={null}
-            onCreated={(created) => {
-              // `load()` must land BEFORE the switch: `accounts` here is still the
-              // pre-creation list, and setting `activeKey` to a key that list does
-              // not contain yet trips the correction effect below straight back to
-              // `accounts[0]` -- the account this form just added becomes
-              // unreachable by clicking it, because the click set the very key this
-              // race keeps erasing.
-              setToast(`${created.label} added. Connect it below to start sending from it.`);
-              void load().then(() => setActiveKey(created.seatKey));
-            }}
-          />
+          {!adding && (
+            <p className="workspace-empty">
+              No LinkedIn accounts are connected to this workspace yet.
+            </p>
+          )}
+          {adding && (
+            <AddAccountForm
+              existingKeys={[]}
+              safety={safety}
+              firstOne
+              onCancel={() => setAdding(false)}
+              onCreated={(created) => {
+                setAdding(false);
+                // `load()` must land BEFORE the switch: `accounts` here is still the
+                // pre-creation list, and setting `activeKey` to a key that list does
+                // not contain yet trips the correction effect below straight back to
+                // `accounts[0]` -- the account this form just added becomes
+                // unreachable by clicking it, because the click set the very key this
+                // race keeps erasing.
+                setToast(`${created.label} connected.`);
+                void load().then(() => setActiveKey(created.seatKey));
+              }}
+            />
+          )}
         </section>
       ) : (
         <>
@@ -367,7 +440,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
             <div className="section-heading">
               <div>
                 <h3 aria-level={2}>
-                  Your LinkedIn accounts
+                  LinkedIn accounts
                   <Hint label="What switching an account changes">
                     Pick the account to work in — it follows you to the Inbox, Approve &amp; export,
                     the send queue, the plan preview, and this screen. Lead sources, your Never
@@ -439,7 +512,7 @@ export function LinkedInAccounts({ setToast }: { setToast: (message: string) => 
                 onCancel={() => setAdding(false)}
                 onCreated={(created) => {
                   setAdding(false);
-                  setToast(`${created.label} added. Connect it below to start sending from it.`);
+                  setToast(`${created.label} connected.`);
                   // Same ordering as the first-account form above, and for the same
                   // reason: switch only once `accounts` actually contains this key.
                   void load().then(() => setActiveKey(created.seatKey));
@@ -513,11 +586,11 @@ function AccountPanel({
 }) {
   const auth = detail?.auth ?? null;
   const state = accountState(account, detail);
-  // Account identity/profile facts are primary settings information, not
-  // overflow. Keep the panel open by default so a healthy account still shows
-  // the rich LinkedIn details that were previously visible on this route.
-  const [detailsOpen, setDetailsOpen] = useState(true);
-  // Sign-in. `password` is the one value here that must not outlive its own
+  // Recovery and first-time connection work stays visible. Healthy accounts
+  // collapse back to a compact connection summary by default.
+  const [detailsOpen, setDetailsOpen] = useState(
+    state === 'not-connected' || state === 'needs-signin'
+  );
   // submit: nothing else reads it and it is cleared the moment the request
   // carrying it has been made. No screen can render it back -- the API has no
   // route that returns it, by design.
@@ -764,7 +837,7 @@ function AccountPanel({
   return (
     <>
       <section className="page-panel li-acct-panel">
-        <div className="section-heading">
+        <div className="section-heading li-account-sheet-heading">
           <div>
             <h3 aria-level={2}>{account.label}</h3>
             <p>{stateSentence(state, account, detail)}</p>
@@ -775,16 +848,71 @@ function AccountPanel({
           </span>
         </div>
 
-        {/* Keep the rich account/profile details visible by default. The panel
-          is still a disclosure so an operator can collapse it explicitly, but
-          healthy accounts no longer hide their LinkedIn identity and history
-          just because they need no attention. */}
+        <div className="li-account-overview-flat" aria-label={`${account.label} account summary`}>
+          <div className="li-account-identity-line">
+            <span className="li-account-identity-mark" aria-hidden="true">
+              <Linkedin size={18} />
+            </span>
+            <div>
+              <strong>
+                {account.profileUrl ? (
+                  <a href={account.profileUrl} target="_blank" rel="noreferrer noopener">
+                    View LinkedIn profile
+                  </a>
+                ) : (
+                  account.label
+                )}
+              </strong>
+              <span>
+                {auth?.maskedEmail ?? 'No stored sign-in'} ·{' '}
+                {auth?.sessionValidAt
+                  ? `Connected · confirmed ${relativeTime(auth.sessionValidAt)}`
+                  : 'Needs sign-in'}
+              </span>
+            </div>
+          </div>
+
+          <dl className="li-account-facts-flat">
+            <div>
+              <dt>Working window</dt>
+              <dd>
+                {describeDays(account.workingDays)} · {minutesToClock(account.workStartMinute)}–
+                {minutesToClock(account.workEndMinute)} · {account.timezone}
+              </dd>
+            </div>
+            <div>
+              <dt>Connections</dt>
+              <dd>
+                {account.connectionsCount === null
+                  ? 'Unknown'
+                  : account.connectionsCount.toLocaleString()}
+                {account.detectedAt ? ` · profile read ${relativeTime(account.detectedAt)}` : ''}
+              </dd>
+            </div>
+            <div className="li-account-fact-wide">
+              <dt>Next run</dt>
+              <dd>
+                {detail?.backgroundRun
+                  ? (queueWaitCopy(detail.backgroundRun.waitingFor) ??
+                    formatVisitWindow(
+                      detail.backgroundRun.startAt,
+                      detail.backgroundRun.endAt,
+                      detail.backgroundRun.timezone
+                    ) ??
+                    'No scheduled window')
+                  : 'No scheduled run'}
+              </dd>
+            </div>
+          </dl>
+        </div>
+
+        {/* Authentication/recovery is secondary to the always-visible account summary above. */}
         <details
-          className="li-manual-fields"
+          className="li-manual-fields li-account-session-details"
           open={detailsOpen}
           onToggle={(event) => setDetailsOpen(event.currentTarget.open)}
         >
-          <summary>Details</summary>
+          <summary>Sign-in & browser session</summary>
           {detail?.backgroundRun && (
             <div className="li-next-background-run">
               <Clock3 size={17} aria-hidden="true" />
@@ -843,7 +971,6 @@ function AccountPanel({
           <div className="li-seat-card">
             <div className="li-seat-head">
               <strong>{account.label}</strong>
-              <span className="li-acct-key">{account.seatKey}</span>
             </div>
             {/* WHAT A READ LEAVES BEHIND.
 
@@ -881,24 +1008,6 @@ function AccountPanel({
               <div>
                 <dt>Timezone</dt>
                 <dd>{account.timezone}</dd>
-              </div>
-              <div>
-                <dt>Assigned to</dt>
-                <dd>
-                  {account.ownerName ?? 'Workspace owner'}
-                  {canAssignOwner && workspaceMembers.length > 0 && (
-                    <ChoiceMenu
-                      label={`Change assignment for ${account.label}`}
-                      title="Choose account owner"
-                      items={workspaceMembers.map((member) => ({
-                        id: member.userId,
-                        label: member.name
-                      }))}
-                      selectedId={account.ownerUserId}
-                      onChoose={(userId) => onAssignOwner(account, userId)}
-                    />
-                  )}
-                </dd>
               </div>
               <div>
                 <dt>Works</dt>
@@ -964,17 +1073,22 @@ function AccountPanel({
           )}
 
           {connected ? (
-            <div className="li-signin-row">
-              <span className="li-signin-id">
-                <Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}
-              </span>
-              <span>
-                {auth?.sessionValidAt
-                  ? `${companion ? 'Browser session' : 'Session'} confirmed ${relativeTime(auth.sessionValidAt)}`
-                  : 'No session yet — the sign-in has not completed.'}
-              </span>
-              <div className="li-signin-actions">
-                {auth?.hasCredentials && (
+            <div className="li-session-card">
+              <div className="li-session-row">
+                <span>Stored sign-in</span>
+                <strong>
+                  <Linkedin size={15} aria-hidden="true" />{' '}
+                  {auth?.maskedEmail ?? 'LinkedIn account'}
+                </strong>
+              </div>
+              <div className="li-session-row">
+                <span>Browser session</span>
+                <strong>
+                  Confirmed {auth?.sessionValidAt ? relativeTime(auth.sessionValidAt) : 'recently'}
+                </strong>
+              </div>
+              {auth?.hasCredentials && (
+                <div className="li-session-danger">
                   <button
                     className="ghost-button danger"
                     type="button"
@@ -988,8 +1102,8 @@ function AccountPanel({
                     )}{' '}
                     Forget stored password
                   </button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           ) : companion && !auth?.hasCredentials && !wantsCredentialsForm ? (
             <div className="li-dryrun li-acct-promise">
@@ -1011,12 +1125,19 @@ function AccountPanel({
               </div>
             </div>
           ) : storedSignIn ? (
-            <div className="li-signin-row">
-              <span className="li-signin-id">
-                <Linkedin size={15} /> {auth?.maskedEmail ?? 'LinkedIn account'}
-              </span>
-              <span>The password is stored, but no live session has been confirmed yet.</span>
-              <div className="li-signin-actions">
+            <div className="li-session-card">
+              <div className="li-session-row">
+                <span>Stored sign-in</span>
+                <strong>
+                  <Linkedin size={15} aria-hidden="true" />{' '}
+                  {auth?.maskedEmail ?? 'LinkedIn account'}
+                </strong>
+              </div>
+              <div className="li-session-row">
+                <span>Browser session</span>
+                <strong>Not confirmed yet</strong>
+              </div>
+              <div className="li-session-actions">
                 <button
                   className="secondary-button"
                   type="button"
@@ -1026,6 +1147,8 @@ function AccountPanel({
                   {signingIn ? <LoaderCircle className="spin" size={14} /> : <LogIn size={14} />}{' '}
                   Sign in
                 </button>
+              </div>
+              <div className="li-session-danger">
                 <button
                   className="ghost-button danger"
                   type="button"
@@ -1033,7 +1156,7 @@ function AccountPanel({
                   onClick={() => void forgetSignIn()}
                 >
                   {forgetting ? <LoaderCircle className="spin" size={14} /> : <Unplug size={14} />}{' '}
-                  Forget this sign-in
+                  Forget stored password
                 </button>
               </div>
             </div>
@@ -1238,29 +1361,24 @@ function AccountPanel({
               <CircleStop size={14} /> Pause this account
             </button>
           )}
-          <button
-            className="ghost-button danger li-acct-remove"
-            type="button"
-            onClick={() => setConfirmRemove(true)}
-          >
-            <Trash2 size={13} /> Remove account
-          </button>
         </div>
       </section>
 
-      <section className="page-panel">
+      <section className="page-panel li-account-usage-panel">
         <div className="section-heading">
           <div>
-            <h3 aria-level={2}>Today on {account.label}</h3>
-            <p>
-              The last 24 hours against the limits you set — a rolling window, not since midnight.
-            </p>
+            <h3 aria-level={2}>Usage · last 24 hours</h3>
+            <p>Rolling 24-hour usage against the effective limits Trevra is enforcing now.</p>
           </div>
           <KeyRound size={20} className="li-heading-icon" />
         </div>
         <div className="li-stat-row">
           {LIMIT_FIELDS.map((limit) => {
-            const ceiling = account[limit.field];
+            const configured = account[limit.field];
+            const enforced = safety?.limits.find(
+              (entry) => entry.kind === limit.kind && entry.window === 'day'
+            )?.ceiling;
+            const ceiling = enforced ?? configured;
             const used = usedToday(limit, detail);
             return (
               <LiStat
@@ -1272,10 +1390,11 @@ function AccountPanel({
                 }
                 detail={
                   ceiling === 0 ? (
-                    'turned off for this account'
+                    'turned off right now'
                   ) : (
                     <>
-                      of {ceiling} a day
+                      of {ceiling} effective today
+                      {configured !== ceiling ? ` · you set ${configured}` : ''}
                       {limit.pooledKindsLabel ? ` · ${limit.pooledKindsLabel} together` : ''}
                     </>
                   )
@@ -1284,16 +1403,59 @@ function AccountPanel({
             );
           })}
         </div>
+      </section>
 
+      <PendingInviteWithdrawalsSection setToast={setToast} />
+
+      <section className="page-panel li-account-controls-panel">
         <EditAccountForm
           account={account}
           safety={safety}
           setToast={setToast}
           onSaved={onChanged}
         />
+        {workspaceMembers.length > 1 && (
+          <div className="li-account-access-control">
+            <div>
+              <strong>Account access</strong>
+              <small>
+                Which teammate may use this LinkedIn account as a campaign sender. This does not
+                change the LinkedIn login.
+              </small>
+            </div>
+            {canAssignOwner ? (
+              <select
+                value={account.ownerUserId ?? ''}
+                aria-label={`Account access for ${account.label}`}
+                onChange={(event) => void onAssignOwner(account, event.target.value)}
+              >
+                {workspaceMembers.map((member) => (
+                  <option key={member.userId} value={member.userId}>
+                    {member.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <strong>{account.ownerName ?? 'Workspace owner'}</strong>
+            )}
+          </div>
+        )}
+        <div className="li-account-danger-zone">
+          <div>
+            <strong>Remove account</strong>
+            <small>
+              Stops this LinkedIn account in Trevra and removes its workspace configuration.
+            </small>
+          </div>
+          <button
+            className="ghost-button danger"
+            type="button"
+            onClick={() => setConfirmRemove(true)}
+          >
+            <Trash2 size={13} /> Remove account
+          </button>
+        </div>
       </section>
-
-      <PendingInviteWithdrawalsSection setToast={setToast} />
 
       {confirmPause && (
         <ConfirmDrawer
@@ -1356,10 +1518,8 @@ function AccountPanel({
  * Pending invites, and withdrawing the stale ones.
  *
  * Ported from the old `/setup/seat` screen (`LinkedInSeatSetup` in
- * LinkedInScreen.tsx) when that route became a redirect to Outreach ->
- * Settings: the capability had no reachable UI without a new home, and this
- * is it -- a collapsed section on the account it acts on, opened on demand
- * rather than fetched on every visit to this already-busy screen.
+ * LinkedInScreen.tsx). It now lives with the LinkedIn connection it acts on,
+ * collapsed and opened on demand rather than fetched on every visit.
  * ---------------------------------------------------------------------- */
 
 const WITHDRAWAL_STATUS_LABELS: Record<WithdrawalStatus, string> = {
@@ -1505,19 +1665,7 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
   const share = ceiling > 0 ? Math.min(1, pending / ceiling) : 0;
 
   return (
-    <section className="page-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>Invites nobody has answered</h3>
-          <p>
-            These do not expire out of the count. An invite that is neither accepted nor withdrawn
-            keeps using up your weekly invite capacity on LinkedIn’s side, and sending more does not
-            give any of it back.
-          </p>
-        </div>
-        <ConfidenceTag confidence="REPORTED" source={sourceNote('REPORTED')} compact />
-      </div>
-
+    <div className="li-pending-body">
       {error && <div className="error-banner">{error}</div>}
 
       {blocked && (
@@ -1530,50 +1678,47 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
         </div>
       )}
 
-      <div className="li-backlog">
-        <div className="li-backlog-head">
-          <strong className={over ? 'li-backlog-over' : ''}>{pending}</strong>
-          <span>
-            of {ceiling || '—'} unanswered invites{over ? ' — at or past the limit' : ''}
-          </span>
+      <div className="li-pending-summary">
+        <div>
+          <span>Unanswered invites</span>
+          <strong className={over ? 'li-backlog-over' : ''}>
+            {pending} <small>of {ceiling || '—'}</small>
+          </strong>
         </div>
-        <div
-          className="li-backlog-meter"
-          role="img"
-          aria-label={
-            ceiling > 0
-              ? `${pending} unanswered invites against a reported limit of ${ceiling}.`
-              : `${pending} unanswered invites. No limit was reported for this account.`
-          }
-        >
-          <i
-            className={over ? 'li-backlog-fill li-backlog-fill-over' : 'li-backlog-fill'}
-            style={{ width: `${share * 100}%` }}
-          />
-        </div>
-        <p className="li-hint">
-          {over
-            ? 'Trevra will not send another invite past this line, and it is right not to — LinkedIn counts the unanswered ' +
-              'ones too. Withdrawing the oldest ones is the only thing that gives the capacity back.'
-            : 'Trevra stops sending invites once this reaches the limit. The limit itself is a practitioner estimate rather ' +
-              'than a published number — it comes from the same reporting that puts acceptance at 25–30% above 100 invites a week.'}
-        </p>
+        <ConfidenceTag confidence="REPORTED" source={sourceNote('REPORTED')} compact />
       </div>
 
-      <div className="li-filter-row">
+      <div
+        className="li-backlog-meter"
+        role="img"
+        aria-label={
+          ceiling > 0
+            ? `${pending} unanswered invites against a reported limit of ${ceiling}.`
+            : `${pending} unanswered invites. No limit was reported for this account.`
+        }
+      >
+        <i
+          className={over ? 'li-backlog-fill li-backlog-fill-over' : 'li-backlog-fill'}
+          style={{ width: `${share * 100}%` }}
+        />
+      </div>
+
+      <div className="li-pending-toolbar">
         <label>
-          Pending longer than
-          <input
-            type="number"
-            min={0}
-            max={365}
-            value={days ?? ''}
-            onChange={(event) =>
-              setOlderThanDays(Math.max(0, Math.trunc(Number(event.target.value) || 0)))
-            }
-          />
+          Consider stale after
+          <span className="li-pending-days-input">
+            <input
+              type="number"
+              min={0}
+              max={365}
+              value={days ?? ''}
+              onChange={(event) =>
+                setOlderThanDays(Math.max(0, Math.trunc(Number(event.target.value) || 0)))
+              }
+            />
+            <span>days</span>
+          </span>
         </label>
-        <span className="li-filter-label">days</span>
         <button
           className="secondary-button"
           type="button"
@@ -1585,76 +1730,67 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
         </button>
         {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the backlog" />}
       </div>
-      <p className="panel-note">
-        Syncing opens LinkedIn’s own Sent invitations list in a browser on this machine and records
-        only what that page shows. Accepted, declined, expired and withdrawn all look identical
-        there, so an invite that has vanished from the list is recorded as vanished — Trevra will
-        not guess which of the four it was.
-      </p>
 
-      <h4 className="li-subhead" aria-level={3}>
-        Old enough to withdraw ({candidates.length})
-      </h4>
+      <details className="li-pending-help">
+        <summary>How pending invites affect sending</summary>
+        <p>
+          Unanswered invites keep occupying LinkedIn capacity until they disappear or are withdrawn.
+          Sync reads LinkedIn’s Sent invitations list; Trevra never guesses whether a vanished
+          invite was accepted, declined, expired or withdrawn.
+        </p>
+      </details>
+
       {candidates.length === 0 ? (
-        <p className="empty-copy">
-          Nothing has been waiting longer than {days ?? '—'} day(s). This is a shortlist, not a
-          decision — it shows what
-          <em> would</em> be queued, before anything is.
+        <p className="workspace-empty li-pending-empty">
+          Nothing has been waiting longer than {days ?? '—'} day(s).
         </p>
       ) : (
-        <div className="li-table-scroll">
-          <table className="li-table">
-            <thead>
-              <tr>
-                <th>Person</th>
-                <th>Waiting</th>
-                <th>Campaign</th>
-              </tr>
-            </thead>
-            <tbody>
-              {candidates.map((candidate) => (
-                <tr key={candidate.actionId}>
-                  <td className="li-target">{candidate.targetRef}</td>
-                  <td className="li-num">
-                    {candidate.pendingDays} day{candidate.pendingDays === 1 ? '' : 's'}
-                  </td>
-                  <td>{candidate.campaignId ?? '—'}</td>
+        <div className="li-pending-candidates">
+          <div className="workspace-subsection-heading">
+            <div>
+              <h4>Ready to review</h4>
+              <p>{candidates.length} invite(s) are older than your threshold.</p>
+            </div>
+          </div>
+          <div className="li-table-scroll">
+            <table className="li-table">
+              <thead>
+                <tr>
+                  <th>Person</th>
+                  <th>Waiting</th>
+                  <th>Campaign</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {candidates.map((candidate) => (
+                  <tr key={candidate.actionId}>
+                    <td className="li-target">{candidate.targetRef}</td>
+                    <td className="li-num">
+                      {candidate.pendingDays} day{candidate.pendingDays === 1 ? '' : 's'}
+                    </td>
+                    <td>{candidate.campaignId ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="li-pending-queue-action">
+            <p>
+              Queueing does not withdraw immediately. The LinkedIn worker processes these one at a
+              time inside the account’s working hours.
+            </p>
+            <button
+              className="primary-button"
+              type="button"
+              disabled={busy !== null}
+              onClick={() => setConfirming(true)}
+            >
+              {busy === 'queue' ? <LoaderCircle className="spin" size={15} /> : <Undo2 size={15} />}{' '}
+              Queue {candidates.length} withdrawal(s)
+            </button>
+          </div>
         </div>
       )}
-
-      <div className="li-two-step">
-        <Undo2 size={20} />
-        <div>
-          <strong>Queueing is not withdrawing. Pressing the button withdraws nothing.</strong>
-          <p>
-            It puts one reversible line in the queue per invite. The worker on your machine then
-            takes them one at a time, re-runs every safety check against each, and clicks Withdraw
-            at random 30–120 second gaps inside your working hours — because clearing a backlog in
-            one burst looks exactly like a sending spree. The queue below is where you see what
-            actually happened.
-          </p>
-        </div>
-      </div>
-
-      <div className="panel-footer">
-        <span>
-          Withdrawing does not un-send an invite. Trevra goes on counting the original against every
-          rolling limit, so withdrawing and re-sending cannot buy you extra volume.
-        </span>
-        <button
-          className="primary-button"
-          type="button"
-          disabled={busy !== null || candidates.length === 0}
-          onClick={() => setConfirming(true)}
-        >
-          {busy === 'queue' ? <LoaderCircle className="spin" size={15} /> : <Undo2 size={15} />}{' '}
-          Queue {candidates.length} withdrawal(s)
-        </button>
-      </div>
 
       {queue.length > 0 && (
         <>
@@ -1754,7 +1890,7 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
           onCancel={() => setConfirming(false)}
         />
       )}
-    </section>
+    </div>
   );
 }
 
@@ -1772,9 +1908,18 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
 function PendingInviteWithdrawalsSection({ setToast }: { setToast: (message: string) => void }) {
   const [open, setOpen] = useState(false);
   return (
-    <details className="li-manual-fields" onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <details
+      className="page-panel li-account-pending-panel"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary>
-        <Undo2 size={13} /> Withdraw stale pending invites
+        <span className="li-pending-disclosure-copy">
+          <Undo2 size={15} aria-hidden="true" />
+          <span>
+            <strong>Pending invites</strong>
+            <small>Unanswered invitations and withdrawal maintenance</small>
+          </span>
+        </span>
       </summary>
       {open && <PendingInviteWithdrawals setToast={setToast} />}
     </details>

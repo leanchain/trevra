@@ -16,6 +16,7 @@ import {
   LogOut,
   Pencil,
   Play,
+  Plus,
   Repeat,
   Settings2,
   ShieldCheck,
@@ -50,6 +51,7 @@ import {
   getAgentSetup,
   getAgentTokens,
   getDashboard,
+  getLinkedInManagerSeats,
   getPolicies,
   getPublicConfig,
   previewWorkspaceErasure,
@@ -69,26 +71,18 @@ import {
 import { authClient, useIsWorkspaceOwner } from './auth-client';
 import { ActiveLinkedInAccountName } from './LinkedInActiveAccount';
 import { reloadOutreach } from './LinkedInSafety';
+import { LinkedInAccounts } from './LinkedInAccounts';
 import { LinkedInExclusions, relativeTime } from './LinkedInScreen';
 import { TeamSettingsView } from './TeamScreen';
 import { LeadCaptureSetup } from './LeadCaptureSetup';
 import { ResearchView } from './views/ResearchView';
 import { trackEvent, trackPageView } from './analytics';
-import { ConfirmDrawer } from './ui/dialog';
+import { ConfirmDrawer, useDialog } from './ui/dialog';
 import { BrandMark } from './ui/BrandMark';
 import { HelpPanel, JumpPalette, ShortcutSheet } from './ui/HelpPanel';
 import { useShortcuts } from './ui/keys';
-import {
-  isAccountsPath,
-  navigate,
-  replaceNavigate,
-  usePathname,
-  useRoute,
-  type Route,
-  type Section
-} from './ui/route';
+import { navigate, useRoute, type Route, type Section } from './ui/route';
 import { SeatPauseButton, StopBar, useStopControls } from './ui/StopBar';
-import { scrollToId } from './ui/scrollToId';
 import { LedgerView } from './views/LedgerView';
 import { LoopCostView, LoopView } from './views/LoopView';
 import { OutreachView } from './views/OutreachView';
@@ -112,14 +106,6 @@ type ToastMessage = { message: string; undo?: () => void };
 
 const reducedMotion = () =>
   typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-
-/**
- * `/leads` is the legacy address for the target-account screen.
- * Target accounts now live inside Outreach at `/outreach/accounts` so old bookmarks still work.
- */
-function useAccountsRoute(): boolean {
-  return isAccountsPath(usePathname());
-}
 
 const HOSTED_MARKETING_SITE_URL =
   typeof window !== 'undefined' && window.location.hostname.startsWith('app.')
@@ -224,10 +210,6 @@ export function App() {
   const [error, setError] = useState('');
   const [needsAuth, setNeedsAuth] = useState<boolean | null>(null);
   const [route, go] = useRoute();
-  const accountsOpen = useAccountsRoute();
-  useEffect(() => {
-    if (accountsOpen) replaceNavigate('/outreach/accounts');
-  }, [accountsOpen]);
 
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toast, setToastState] = useState<ToastMessage | null>(null);
@@ -357,7 +339,6 @@ export function App() {
             />
           ))}
         </nav>
-        <div className="sidebar-promise" />
         <div className="sidebar-bottom">
           <div className="workspace-avatar">{initials(data.workspace.name)}</div>
           <div>
@@ -513,36 +494,12 @@ const HIDDEN_LIVE_REGION: React.CSSProperties = {
   pointerEvents: 'none'
 };
 
-/**
- * Setup has three live screens. Access is what may reach the workspace;
- * Workspace is what the workspace itself holds; Lead capture is the explicit
- * website/form ingress boundary. Everything else is a redirect kept for
- * bookmarks -- a URL that used to name a tab now names a section anchor.
- */
+/** Setup has three live screens: Access, Workspace, and Lead capture. */
 const SETUP_TABS = [
   { sub: '', label: 'Access', path: '/setup' },
   { sub: 'workspace', label: 'Workspace', path: '/setup/workspace' },
   { sub: 'capture', label: 'Lead capture', path: '/setup/capture' }
 ] as const;
-
-const SETUP_LEGACY_REDIRECTS: Record<string, string> = {
-  agent: '/setup',
-  spend: '/setup',
-  data: '/setup/workspace',
-  limits: '/setup/workspace',
-  team: '/setup/workspace',
-  skills: '/setup/workspace',
-  reddit: '/research',
-  seat: '/outreach/settings',
-  research: '/research'
-};
-
-/** Legacy sub -> the section it should land on inside Workspace. */
-const SETUP_LEGACY_ANCHORS: Record<string, string> = {
-  data: 'connections',
-  limits: 'limits',
-  team: 'team'
-};
 
 function SetupView({
   route,
@@ -565,25 +522,7 @@ function SetupView({
   // `/setup/team/:id` is the accept-invitation link from an email. It is a
   // full screen with no tabs: the reader has no workspace to configure yet.
   const invitationId = sub === 'team' ? route.id : null;
-  const [anchor, setAnchor] = useState<{ id: string; seq: number } | null>(null);
-  const anchorSeq = useRef(0);
-  // The shared owner signal (`useIsWorkspaceOwner`, auth-client.ts): a
-  // member never sees the export/erase block flash before disappearing.
   const isOwner = useIsWorkspaceOwner();
-
-  useEffect(() => {
-    if (invitationId) return;
-    const target = SETUP_LEGACY_REDIRECTS[sub];
-    if (!target) return;
-    const anchorId = SETUP_LEGACY_ANCHORS[sub];
-    if (anchorId) setAnchor({ id: anchorId, seq: ++anchorSeq.current });
-    replaceNavigate(target);
-  }, [sub, invitationId]);
-
-  useEffect(() => {
-    if (!anchor) return;
-    return scrollToId(anchor.id);
-  }, [anchor]);
 
   if (invitationId) {
     return (
@@ -613,37 +552,46 @@ function SetupView({
       {onCapture ? (
         <LeadCaptureSetup setToast={setToast} />
       ) : onWorkspace ? (
-        <>
-          <ConnectionsView
-            data={data}
-            reload={reload}
-            setToast={setToast}
-            busyId={busyId}
-            setBusyId={setBusyId}
-          />
-          <LimitsView setToast={setToast} />
-          <LinkedInExclusions setToast={setToast} />
-          <TeamSettingsView
-            route={route}
-            setToast={setToast}
-            reload={reload}
-            onNavigate={onNavigate}
-          />
-          {isOwner && <WorkspaceDataBlock setToast={setToast} />}
-        </>
+        <div className="workspace-layout">
+          <div className="workspace-primary">
+            <ConnectionsView
+              data={data}
+              reload={reload}
+              setToast={setToast}
+              busyId={busyId}
+              setBusyId={setBusyId}
+            />
+          </div>
+          <aside className="workspace-safety" aria-label="Workspace safety">
+            <LimitsView setToast={setToast} />
+            <LinkedInExclusions setToast={setToast} />
+          </aside>
+          <div className="workspace-team">
+            <TeamSettingsView
+              route={route}
+              setToast={setToast}
+              reload={reload}
+              onNavigate={onNavigate}
+            />
+          </div>
+          {isOwner && (
+            <div className="workspace-data">
+              <WorkspaceDataBlock setToast={setToast} />
+            </div>
+          )}
+        </div>
       ) : (
-        <>
+        <div className="setup-access-grid">
           <AgentAccessPanel setToast={setToast} />
           <HostedAgentPanel
             setToast={setToast}
             onInspectRun={(runId) => onNavigate(`/ledger/run/${runId}`)}
           />
-        </>
+        </div>
       )}
     </div>
   );
 }
-
 function AuthScreen({
   onAuthenticated,
   onBack
@@ -1202,38 +1150,43 @@ function AgentAccessPanel({ setToast }: { setToast: (message: string) => void })
       )}
 
       {tokens.length > 0 && (
-        <div className="agent-token-list">
-          {tokens.map((token) => (
-            <article key={token.id} className={token.revokedAt ? 'is-revoked' : undefined}>
-              <div>
-                <strong>{token.agentName}</strong>
-                <span>{token.name}</span>
-                <code>{token.prefix}…</code>
-              </div>
-              <span>
-                {token.revokedAt
-                  ? 'Revoked'
-                  : token.lastUsedAt
-                    ? 'Last used ' + new Date(token.lastUsedAt).toLocaleString()
-                    : 'Not used yet'}
-              </span>
-              {!token.revokedAt && (
-                <button
-                  className="ghost-button danger"
-                  disabled={busy === token.id}
-                  onClick={() => setConfirmRevoke(token)}
-                >
-                  {busy === token.id ? (
-                    <LoaderCircle className="spin" size={15} />
-                  ) : (
-                    <Trash2 size={15} />
-                  )}{' '}
-                  Revoke
-                </button>
-              )}
-            </article>
-          ))}
-        </div>
+        <details className="agent-token-history">
+          <summary>
+            Existing access · {active.length} active / {tokens.length} total
+          </summary>
+          <div className="agent-token-list">
+            {tokens.map((token) => (
+              <article key={token.id} className={token.revokedAt ? 'is-revoked' : undefined}>
+                <div>
+                  <strong>{token.agentName}</strong>
+                  <span>{token.name}</span>
+                  <code>{token.prefix}…</code>
+                </div>
+                <span>
+                  {token.revokedAt
+                    ? 'Revoked'
+                    : token.lastUsedAt
+                      ? 'Last used ' + new Date(token.lastUsedAt).toLocaleString()
+                      : 'Not used yet'}
+                </span>
+                {!token.revokedAt && (
+                  <button
+                    className="ghost-button danger"
+                    disabled={busy === token.id}
+                    onClick={() => setConfirmRevoke(token)}
+                  >
+                    {busy === token.id ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : (
+                      <Trash2 size={15} />
+                    )}{' '}
+                    Revoke
+                  </button>
+                )}
+              </article>
+            ))}
+          </div>
+        </details>
       )}
 
       {confirmHide && (
@@ -2050,7 +2003,57 @@ function HostedAgentPanel({
     </section>
   );
 }
+type LinkedInDrawerTarget = { kind: 'account'; seatKey: string; label: string };
 
+function LinkedInConnectionDrawer({
+  target,
+  setToast,
+  onClose
+}: {
+  target: LinkedInDrawerTarget;
+  setToast: (message: string) => void;
+  onClose: () => void;
+}) {
+  const dialog = useRef<HTMLElement>(null);
+  useDialog(dialog, onClose);
+
+  return createPortal(
+    <div className="drawer-backdrop" role="presentation" onClick={onClose}>
+      <section
+        ref={dialog}
+        className="drawer linkedin-connection-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={target.label}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <span className="drawer-kicker">LinkedIn</span>
+            <h3>{target.label}</h3>
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="Close LinkedIn panel"
+            onClick={onClose}
+          >
+            <X size={18} />
+          </button>
+        </header>
+        <div className="drawer-body linkedin-connection-drawer-body">
+          <LinkedInAccounts
+            setToast={setToast}
+            compact
+            focusSeatKey={target.seatKey}
+            onClose={onClose}
+          />
+        </div>
+      </section>
+    </div>,
+    document.body
+  );
+}
 function ConnectionsView({
   data,
   reload,
@@ -2065,9 +2068,34 @@ function ConnectionsView({
   setBusyId: (id: string | null) => void;
 }) {
   const [confirmDisconnect, setConfirmDisconnect] = useState<ConnectionSummary | null>(null);
+  const [linkedinDrawer, setLinkedinDrawer] = useState<LinkedInDrawerTarget | null>(null);
+  const [addConnectionMode, setAddConnectionMode] = useState<'choose' | 'linkedin' | null>(null);
+  const [linkedinAccounts, setLinkedinAccounts] = useState<Array<{
+    seatKey: string;
+    label: string;
+  }> | null>(null);
   const available: AvailableIntegration[] = data.availableIntegrations.filter(
     (item) => item.mode !== 'import'
   );
+  const addable = available.filter((item) => !item.connected);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getLinkedInManagerSeats()
+      .then((accounts) => {
+        if (!cancelled) {
+          setLinkedinAccounts(
+            accounts.map((account) => ({ seatKey: account.seatKey, label: account.label }))
+          );
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLinkedinAccounts(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [linkedinDrawer, addConnectionMode]);
 
   const openConnect = async (key: string) => {
     setBusyId(key);
@@ -2096,9 +2124,92 @@ function ConnectionsView({
       <section className="page-panel" id="connections">
         <div className="section-heading">
           <div>
-            <h3 aria-level={2}>Connected accounts</h3>
+            <h3 aria-level={2}>Connections</h3>
+            <p>External services and accounts Trevra can work with.</p>
           </div>
+          {addConnectionMode === null && (
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setAddConnectionMode('choose')}
+            >
+              <Plus size={14} /> Add connection
+            </button>
+          )}
         </div>
+
+        {addConnectionMode === 'choose' && (
+          <div className="connection-add-panel">
+            <div className="workspace-subsection-heading">
+              <div>
+                <h4>Add connection</h4>
+                <p>Choose what you want to connect to this workspace.</p>
+              </div>
+            </div>
+            <div className="connection-add-options">
+              <button
+                className="connection-add-option"
+                type="button"
+                onClick={() => setAddConnectionMode('linkedin')}
+              >
+                <span className="integration-logo">
+                  <Linkedin size={18} />
+                </span>
+                <span>
+                  <strong>LinkedIn account</strong>
+                  <small>Add another LinkedIn account to this workspace.</small>
+                </span>
+                <ChevronRight size={17} />
+              </button>
+
+              {addable.map((item) => (
+                <button
+                  className="connection-add-option"
+                  type="button"
+                  key={item.key}
+                  disabled={busyId === item.key}
+                  onClick={() => {
+                    setAddConnectionMode(null);
+                    void openConnect(item.key);
+                  }}
+                >
+                  <span className="integration-logo">{initials(item.name)}</span>
+                  <span>
+                    <strong>{item.name}</strong>
+                    <small>{item.description}</small>
+                  </span>
+                  {busyId === item.key ? (
+                    <LoaderCircle className="spin" size={17} />
+                  ) : (
+                    <ChevronRight size={17} />
+                  )}
+                </button>
+              ))}
+            </div>
+            <div className="panel-footer">
+              <span />
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => setAddConnectionMode(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {addConnectionMode === 'linkedin' && (
+          <div className="connection-add-panel connection-add-linkedin">
+            <LinkedInAccounts
+              setToast={setToast}
+              compact
+              startAdding
+              onClose={() => setAddConnectionMode(null)}
+            />
+          </div>
+        )}
+
         <div className="connection-grid">
           {data.connections.map((connection) => (
             <article className="connection-card" key={connection.id}>
@@ -2141,41 +2252,49 @@ function ConnectionsView({
               </div>
             </article>
           ))}
+
+          <article className="connection-card connection-card-linkedin">
+            <span className="integration-logo">
+              <Linkedin size={18} />
+            </span>
+            <div>
+              <h4 aria-level={3}>LinkedIn</h4>
+              {linkedinAccounts && linkedinAccounts.length > 0 ? (
+                <div className="connection-account-list" aria-label="Connected LinkedIn accounts">
+                  {linkedinAccounts.map((account) => (
+                    <button
+                      key={account.seatKey}
+                      className="connection-account-link"
+                      type="button"
+                      onClick={() =>
+                        setLinkedinDrawer({
+                          kind: 'account',
+                          seatKey: account.seatKey,
+                          label: account.label
+                        })
+                      }
+                    >
+                      {account.label}
+                    </button>
+                  ))}
+                </div>
+              ) : linkedinAccounts === null ? (
+                <span className="connection-status disconnected">Checking…</span>
+              ) : (
+                <span className="connection-status disconnected">Not connected</span>
+              )}
+            </div>
+          </article>
         </div>
       </section>
 
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>Connect a tool</h3>
-          </div>
-        </div>
-        <div className="integration-grid">
-          {available.map((item) => (
-            <article className="integration-card" key={item.key}>
-              <span className="integration-logo">{initials(item.name)}</span>
-              <div>
-                <h4 aria-level={3}>{item.name}</h4>
-                <p>{item.description}</p>
-              </div>
-              <button
-                className="secondary-button"
-                disabled={item.connected || busyId === item.key}
-                onClick={() => void openConnect(item.key)}
-              >
-                {busyId === item.key ? (
-                  <LoaderCircle className="spin" size={16} />
-                ) : item.connected ? (
-                  <Check size={16} />
-                ) : (
-                  <Link2 size={16} />
-                )}
-                {item.connected ? 'Connected' : 'Connect'}
-              </button>
-            </article>
-          ))}
-        </div>
-      </section>
+      {linkedinDrawer && (
+        <LinkedInConnectionDrawer
+          target={linkedinDrawer}
+          setToast={setToast}
+          onClose={() => setLinkedinDrawer(null)}
+        />
+      )}
 
       {confirmDisconnect && (
         <ConfirmDrawer
@@ -2213,7 +2332,6 @@ const SIDE_EFFECT_CHOICES = [
   { value: 'network-read', label: 'Reads something from outside' },
   { value: 'none', label: 'Thinks only, nothing leaves Trevra' }
 ] as const;
-
 const ACTOR_CHOICES = [
   { value: 'agent', label: 'Your agent' },
   { value: 'user', label: 'You' },
@@ -2368,6 +2486,8 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
   const isOwner = useIsWorkspaceOwner();
   const [busy, setBusy] = useState('');
   const [policies, setPolicies] = useState<WorkspacePolicy[]>([]);
+  const [policiesLoaded, setPoliciesLoaded] = useState(false);
+  const [policyLoadError, setPolicyLoadError] = useState('');
   const [confirmDeletePolicy, setConfirmDeletePolicy] = useState<WorkspacePolicy | null>(null);
   // The form renders on demand, not on every visit -- most workspaces read
   // this list far more often than they write to it. `editingPolicy` is null
@@ -2393,8 +2513,12 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
 
   useEffect(() => {
     void getPolicies()
-      .then(setPolicies)
-      .catch(() => undefined);
+      .then((next) => {
+        setPolicies(next);
+        setPolicyLoadError('');
+      })
+      .catch(() => setPolicyLoadError('Unable to read workspace limits.'))
+      .finally(() => setPoliciesLoaded(true));
   }, []);
 
   const resetDraft = () => {
@@ -2560,6 +2684,18 @@ function LimitsView({ setToast }: { setToast: (message: string) => void }) {
           </>
         )}
 
+        {policyLoadError ? (
+          <div className="error-banner">{policyLoadError}</div>
+        ) : !policiesLoaded ? (
+          <p className="empty-copy">Reading workspace limits…</p>
+        ) : policies.length === 0 && !formOpen ? (
+          <p className="workspace-empty">
+            {isOwner
+              ? 'No custom limits yet. Add a policy when this workspace needs an extra guardrail.'
+              : 'No custom workspace limits have been added.'}
+          </p>
+        ) : null}
+
         <div className="workspace-policy-list">
           {policies.map((policy) => (
             <article key={policy.id}>
@@ -2681,65 +2817,80 @@ function WorkspaceDataBlock({ setToast }: { setToast: (message: string) => void 
   };
 
   return (
-    <details className="mgr-inputs" id="workspace-data">
-      <summary>Export or erase this workspace</summary>
-      <div className="mgr-inputs-body">
-        <a className="ghost-button" href={workspaceExportDownloadPath()} download>
+    <section className="page-panel workspace-data-panel" id="workspace-data">
+      <div className="section-heading">
+        <div>
+          <h3>Workspace data</h3>
+          <p>Download a copy of this workspace or permanently remove it from Trevra.</p>
+        </div>
+      </div>
+
+      <div className="workspace-data-actions">
+        <a className="secondary-button" href={workspaceExportDownloadPath()} download>
           Export everything
         </a>
-        <button
-          type="button"
-          className="ghost-button"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              const next = await previewWorkspaceErasure();
-              setPreview(next);
-              setEraseError(null);
-              setTyped('');
-              setConfirmErase(true);
-            } catch (error) {
-              setToast(agentSetupMessage(error, 'Could not read what erasure would remove.'));
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Erase this workspace
-        </button>
 
-        {confirmErase && preview && (
-          <ConfirmDrawer
-            title="Erase this workspace"
-            tone="danger"
-            body={
-              <>
-                <p>
-                  {preview.totalRows} rows across {preview.inventory.length} tables. Not reversible.
-                </p>
-                {preview.inFlight.length > 0 && (
-                  <ul>
-                    {preview.inFlight.map((reason) => (
-                      <li key={reason}>{reason}</li>
-                    ))}
-                  </ul>
-                )}
-                <label>
-                  Type {preview.confirmationPhrase}
-                  <input value={typed} onChange={(event) => setTyped(event.target.value)} />
-                </label>
-              </>
-            }
-            confirmLabel="Erase"
-            busy={busy}
-            error={eraseError}
-            onCancel={closeDrawer}
-            onConfirm={() => void confirmErasure()}
-          />
-        )}
+        <details className="workspace-danger">
+          <summary>Danger zone</summary>
+          <div className="workspace-danger-body">
+            <p>
+              Erasing the workspace is permanent and signs this workspace out when it completes.
+            </p>
+            <button
+              type="button"
+              className="ghost-button danger"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  const next = await previewWorkspaceErasure();
+                  setPreview(next);
+                  setEraseError(null);
+                  setTyped('');
+                  setConfirmErase(true);
+                } catch (error) {
+                  setToast(agentSetupMessage(error, 'Could not read what erasure would remove.'));
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Erase this workspace
+            </button>
+          </div>
+        </details>
       </div>
-    </details>
+
+      {confirmErase && preview && (
+        <ConfirmDrawer
+          title="Erase this workspace"
+          tone="danger"
+          body={
+            <>
+              <p>
+                {preview.totalRows} rows across {preview.inventory.length} tables. Not reversible.
+              </p>
+              {preview.inFlight.length > 0 && (
+                <ul>
+                  {preview.inFlight.map((reason) => (
+                    <li key={reason}>{reason}</li>
+                  ))}
+                </ul>
+              )}
+              <label>
+                Type {preview.confirmationPhrase}
+                <input value={typed} onChange={(event) => setTyped(event.target.value)} />
+              </label>
+            </>
+          }
+          confirmLabel="Erase"
+          busy={busy}
+          error={eraseError}
+          onCancel={closeDrawer}
+          onConfirm={() => void confirmErasure()}
+        />
+      )}
+    </section>
   );
 }
 

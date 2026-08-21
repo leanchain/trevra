@@ -1,41 +1,20 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isAccountsPath, isAppPath, isLoginPath, parseRoute } from './route';
+import { isAppPath, isLoginPath, parseRoute } from './route';
 
 /* --------------------------------------------------------------------------
  * The route is the path, and it STAYS the path.
- *
- * The second describe block is not a unit test in the usual sense -- it is the
- * guard on a decision that kept being reverted. Hash routing is what an SPA
- * reaches for when nobody has told it the server will answer real URLs, so an
- * agent reading this codebase cold will reach for it again. It now fails the
- * suite instead of shipping.
  * -------------------------------------------------------------------------- */
 
 describe('parseRoute', () => {
-  it('reads a section, a sub-screen and a deep-link id off the pathname', () => {
+  it('reads live screens and deep links off the pathname', () => {
     expect(parseRoute('/outreach/inbox')).toMatchObject({
       section: 'outreach',
       sub: 'inbox',
       id: null,
       path: '/outreach/inbox'
     });
-    expect(parseRoute('/outreach/activity')).toMatchObject({
-      section: 'outreach',
-      sub: 'activity',
-      id: null,
-      path: '/outreach/activity'
-    });
-    expect(parseRoute('/outreach/accounts')).toMatchObject({
-      section: 'outreach',
-      sub: 'accounts',
-      id: null,
-      path: '/outreach/accounts'
-    });
-    // App.tsx renders this screen and lists it under "More", but THIS
-    // whitelist is the gate: while 'posts' was missing from it, the page was
-    // silently redirected to /outreach and nothing about it was reachable.
     expect(parseRoute('/outreach/posts')).toMatchObject({
       section: 'outreach',
       sub: 'posts',
@@ -54,23 +33,17 @@ describe('parseRoute', () => {
       id: 'liwf_123/licmp_123',
       path: '/outreach/workflow/liwf_123/licmp_123'
     });
-    expect(parseRoute('/research')).toMatchObject({
-      section: 'research',
-      sub: '',
-      id: null,
-      path: '/research'
-    });
-    expect(parseRoute('/outreach/manager/new')).toMatchObject({
-      section: 'outreach',
-      sub: 'manager',
-      id: 'new',
-      path: '/outreach/manager/new'
-    });
     expect(parseRoute('/ledger/run/run_abc')).toMatchObject({
       section: 'ledger',
       sub: 'run',
       id: 'run_abc',
       path: '/ledger/run/run_abc'
+    });
+    expect(parseRoute('/setup/team/inv_1')).toMatchObject({
+      section: 'setup',
+      sub: 'team',
+      id: 'inv_1',
+      path: '/setup/team/inv_1'
     });
   });
 
@@ -79,12 +52,36 @@ describe('parseRoute', () => {
     expect(parseRoute('')).toMatchObject({ section: 'loop', sub: '', path: '/loop' });
   });
 
-  it('falls back to the section root for a sub-screen that does not exist', () => {
-    expect(parseRoute('/outreach/replies')).toMatchObject({
-      section: 'outreach',
-      sub: '',
-      path: '/outreach'
-    });
+  it('falls back internally when handed a removed or unknown sub-screen', () => {
+    for (const path of [
+      '/outreach/activity',
+      '/outreach/accounts',
+      '/outreach/campaigns',
+      '/outreach/leads',
+      '/outreach/manager',
+      '/outreach/plan',
+      '/outreach/replies',
+      '/outreach/settings'
+    ]) {
+      expect(parseRoute(path), path).toMatchObject({
+        section: 'outreach',
+        sub: '',
+        path: '/outreach'
+      });
+    }
+    for (const path of [
+      '/setup/agent',
+      '/setup/data',
+      '/setup/limits',
+      '/setup/reddit',
+      '/setup/research',
+      '/setup/seat',
+      '/setup/skills',
+      '/setup/spend',
+      '/setup/team'
+    ]) {
+      expect(parseRoute(path), path).toMatchObject({ section: 'setup', sub: '', path: '/setup' });
+    }
   });
 
   it('sends an unknown section to the default rather than rendering nothing', () => {
@@ -99,28 +96,11 @@ describe('parseRoute', () => {
     });
   });
 
-  it('ignores a trailing slash, so a pasted URL and a typed one are one screen', () => {
+  it('ignores a trailing slash', () => {
     expect(parseRoute('/outreach/inbox/').path).toBe('/outreach/inbox');
   });
 
-  it('does not expose removed Money or Send queue routes', () => {
-    expect(parseRoute('/money')).toMatchObject({ section: 'loop', sub: '', path: '/loop' });
-    expect(parseRoute('/outreach/queue')).toMatchObject({
-      section: 'outreach',
-      sub: '',
-      path: '/outreach'
-    });
-  });
-
-  /**
-   * A hash-route URL is NOT read back. See ui/route.ts's header: honouring it
-   * would keep alive the ambiguity this change exists to remove.
-   */
-  it('does not honour an old hash-route URL', () => {
-    expect(parseRoute('/').path).toBe('/loop');
-  });
-
-  it('parses the three setup screens', () => {
+  it('parses the three setup tabs', () => {
     expect(parseRoute('/setup').sub).toBe('');
     expect(parseRoute('/setup/workspace')).toEqual({
       section: 'setup',
@@ -135,73 +115,61 @@ describe('parseRoute', () => {
       path: '/setup/capture'
     });
   });
-
-  /**
-   * Legacy subs must keep PARSING so SetupView can redirect them. A sub that
-   * falls out of this list parses to '' and silently lands on Access instead.
-   */
-  it('still parses every legacy setup sub', () => {
-    for (const sub of [
-      'agent',
-      'data',
-      'limits',
-      'team',
-      'skills',
-      'spend',
-      'reddit',
-      'seat',
-      'research'
-    ]) {
-      expect(parseRoute(`/setup/${sub}`).sub, sub).toBe(sub);
-    }
-    expect(parseRoute('/setup/team/inv_1').id).toBe('inv_1');
-  });
-
-  it('parses the four outreach screens', () => {
-    expect(parseRoute('/outreach')).toMatchObject({
-      section: 'outreach',
-      sub: '',
-      path: '/outreach'
-    });
-    expect(parseRoute('/outreach/new')).toMatchObject({ section: 'outreach', sub: 'new' });
-    expect(parseRoute('/outreach/inbound')).toMatchObject({ section: 'outreach', sub: 'inbound' });
-    expect(parseRoute('/outreach/inbox')).toMatchObject({ section: 'outreach', sub: 'inbox' });
-    expect(parseRoute('/outreach/posts')).toMatchObject({ section: 'outreach', sub: 'posts' });
-    expect(parseRoute('/outreach/settings')).toMatchObject({
-      section: 'outreach',
-      sub: 'settings'
-    });
-  });
-
-  it('keeps legacy outreach subs parseable so the view can redirect them', () => {
-    for (const sub of ['manager', 'campaigns', 'plan', 'activity', 'leads', 'accounts']) {
-      expect(parseRoute(`/outreach/${sub}`)).toMatchObject({ section: 'outreach', sub });
-    }
-    expect(parseRoute('/outreach/manager/new')).toMatchObject({ sub: 'manager', id: 'new' });
-    expect(parseRoute('/outreach/campaigns/abc')).toMatchObject({ sub: 'campaigns', id: 'abc' });
-  });
 });
 
 describe('isAppPath', () => {
-  it('claims every section and shell path', () => {
+  it('claims every live shell route', () => {
     for (const path of [
-      '/loop',
-      '/outreach/inbox',
-      '/ledger/run/x',
-      '/research',
-      '/setup/team',
-      '/leads',
+      '/',
       '/login',
-      '/'
+      '/loop',
+      '/loop/cost',
+      '/outreach',
+      '/outreach/new',
+      '/outreach/inbound',
+      '/outreach/inbox',
+      '/outreach/opportunities',
+      '/outreach/posts',
+      '/outreach/campaign/licmp_1',
+      '/outreach/workflow/liwf_1',
+      '/outreach/workflow/liwf_1/licmp_1',
+      '/ledger',
+      '/ledger/run/run_1',
+      '/research',
+      '/setup',
+      '/setup/workspace',
+      '/setup/capture',
+      '/setup/team/inv_1'
     ]) {
       expect(isAppPath(path), path).toBe(true);
     }
   });
 
-  /**
-   * MUST STAY IN STEP WITH `APP_PATH_HEADS` in src/server/index.ts. A path the
-   * client claims and the server 404s is a broken reload.
-   */
+  it('does not claim removed redirect-only routes', () => {
+    for (const path of [
+      '/leads',
+      '/outreach/accounts',
+      '/outreach/activity',
+      '/outreach/campaigns',
+      '/outreach/leads',
+      '/outreach/manager',
+      '/outreach/manager/new',
+      '/outreach/plan',
+      '/outreach/settings',
+      '/setup/agent',
+      '/setup/data',
+      '/setup/limits',
+      '/setup/reddit',
+      '/setup/research',
+      '/setup/seat',
+      '/setup/skills',
+      '/setup/spend',
+      '/setup/team'
+    ]) {
+      expect(isAppPath(path), path).toBe(false);
+    }
+  });
+
   it('leaves shipped documents, files and API routes to the server', () => {
     for (const path of [
       '/money',
@@ -217,12 +185,9 @@ describe('isAppPath', () => {
     }
   });
 
-  it('names the two shell paths that are not sections', () => {
+  it('recognizes the login address', () => {
     expect(isLoginPath('/login')).toBe(true);
     expect(isLoginPath('/setup')).toBe(false);
-    expect(isAccountsPath('/leads')).toBe(true);
-    expect(isAccountsPath('/leads/acc_1')).toBe(true);
-    expect(isAccountsPath('/loop')).toBe(false);
   });
 });
 

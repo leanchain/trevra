@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bot, Copy, LoaderCircle, Pause, Play, Trash2, UserPlus } from 'lucide-react';
+import { Bot, Copy, LoaderCircle, Pause, Play, Plus, Trash2, UserPlus } from 'lucide-react';
 import {
   ApiError,
   addTeamMember,
   createAgent,
   getAgents,
   getAgentTokens,
-  updateAgent
+  getWorkspaceSkills,
+  updateAgent,
+  type WorkspaceSkillManifest
 } from './api';
 import type { AgentPrincipal, AgentTokenSummary } from '../shared/types';
 import { authClient, useIsWorkspaceOwner } from './auth-client';
 import { relativeTime } from './LinkedInScreen';
 import { reloadOutreach } from './LinkedInSafety';
 import { ConfirmDrawer } from './ui/dialog';
-import { Button, Field, Input, Select } from './ui/primitives';
+import { Button, Field, Input, Select, Textarea } from './ui/primitives';
 import type { Route } from './ui/route';
 
 /**
@@ -126,6 +128,56 @@ export function TeamSettingsView({
   }
   return <TeamMembersPanel setToast={setToast} onNavigate={onNavigate} />;
 }
+function AgentSkillPicker({
+  skills,
+  selected,
+  onToggle
+}: {
+  skills: WorkspaceSkillManifest[];
+  selected: string[];
+  onToggle: (skillId: string) => void;
+}) {
+  const enabled = skills.filter((skill) => skill.enabled);
+  const disabledCount = skills.length - enabled.length;
+  return (
+    <details className="agent-skill-picker">
+      <summary>
+        Skills{' '}
+        <span>
+          {selected.length} of {enabled.length} selected
+        </span>
+      </summary>
+      <div className="agent-skill-list">
+        {enabled.map((skill) => (
+          <label key={skill.id} className="agent-skill-option">
+            <input
+              type="checkbox"
+              checked={selected.includes(skill.id)}
+              onChange={() => onToggle(skill.id)}
+            />
+            <span>
+              <strong>{skill.name}</strong>
+              <small>{skill.description}</small>
+              <small>
+                {skill.sideEffect === 'none'
+                  ? 'Computation only'
+                  : skill.sideEffect === 'network-read'
+                    ? 'Reads public network data'
+                    : 'External write'}
+                {skill.requiresApproval ? ' · approval required' : ''}
+              </small>
+            </span>
+          </label>
+        ))}
+        {disabledCount > 0 && (
+          <p className="empty-copy">
+            {disabledCount} workspace skills are disabled and cannot be assigned.
+          </p>
+        )}
+      </div>
+    </details>
+  );
+}
 
 function AgentTeamPanel({
   isOwner,
@@ -138,10 +190,20 @@ function AgentTeamPanel({
 }) {
   const [agents, setAgents] = useState<AgentPrincipal[]>([]);
   const [tokens, setTokens] = useState<AgentTokenSummary[]>([]);
+  const [skills, setSkills] = useState<WorkspaceSkillManifest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [skillsLoading, setSkillsLoading] = useState(true);
   const [error, setError] = useState('');
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
+  const [instructions, setInstructions] = useState('');
+  const [skillIds, setSkillIds] = useState<string[]>([]);
+  const [showCreate, setShowCreate] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPurpose, setEditPurpose] = useState('');
+  const [editInstructions, setEditInstructions] = useState('');
+  const [editSkillIds, setEditSkillIds] = useState<string[]>([]);
   const [busy, setBusy] = useState('');
 
   const load = useCallback(async () => {
@@ -162,6 +224,30 @@ function AgentTeamPanel({
     void load();
   }, [load]);
 
+  useEffect(() => {
+    void getWorkspaceSkills()
+      .then((next) => {
+        setSkills(next);
+        setSkillIds(next.filter((skill) => skill.enabled).map((skill) => skill.id));
+      })
+      .catch((err) =>
+        setError(err instanceof Error ? err.message : 'Unable to read workspace skills.')
+      )
+      .finally(() => setSkillsLoading(false));
+  }, []);
+
+  const enabledSkillIds = () => skills.filter((skill) => skill.enabled).map((skill) => skill.id);
+  const assignedSkillIds = (agent: AgentPrincipal): string[] => {
+    const configured = agent.config.skillIds;
+    if (!Array.isArray(configured)) return enabledSkillIds();
+    const enabled = new Set(enabledSkillIds());
+    return configured.filter((skillId) => enabled.has(skillId));
+  };
+  const skillName = (skillId: string) =>
+    skills.find((skill) => skill.id === skillId)?.name ?? skillId;
+  const toggle = (current: string[], skillId: string) =>
+    current.includes(skillId) ? current.filter((id) => id !== skillId) : [...current, skillId];
+
   const create = async () => {
     const agentName = name.trim();
     const agentPurpose = purpose.trim();
@@ -169,13 +255,51 @@ function AgentTeamPanel({
     setBusy('create');
     setError('');
     try {
-      const created = await createAgent({ name: agentName, purpose: agentPurpose });
+      const created = await createAgent({
+        name: agentName,
+        purpose: agentPurpose,
+        instructions: instructions.trim(),
+        skillIds
+      });
       setName('');
       setPurpose('');
-      setToast(`${created.name} joined the GTM team.`);
+      setInstructions('');
+      setSkillIds(enabledSkillIds());
+      setShowCreate(false);
+      setToast(`${created.name} joined the GTM team with ${skillIds.length} skills.`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create that Agent.');
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const beginEdit = (agent: AgentPrincipal) => {
+    setEditingId(agent.id);
+    setEditName(agent.name);
+    setEditPurpose(agent.purpose);
+    setEditInstructions(agent.config.instructions ?? '');
+    setEditSkillIds(assignedSkillIds(agent));
+    setError('');
+  };
+
+  const saveEdit = async (agent: AgentPrincipal) => {
+    if (!editName.trim() || !editPurpose.trim()) return;
+    setBusy(`edit-${agent.id}`);
+    setError('');
+    try {
+      const updated = await updateAgent(agent.id, {
+        name: editName.trim(),
+        purpose: editPurpose.trim(),
+        instructions: editInstructions.trim(),
+        skillIds: editSkillIds
+      });
+      setEditingId(null);
+      setToast(`${updated.name} updated.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to update that Agent.');
     } finally {
       setBusy('');
     }
@@ -215,11 +339,23 @@ function AgentTeamPanel({
       <div className="section-heading">
         <div>
           <h3>Agents</h3>
-          <p>
-            Durable GTM workers. Credentials authenticate an Agent; runs record what that Agent did.
-          </p>
+          <p>Define each worker’s job, operating instructions, and the GTM skills it may use.</p>
         </div>
-        {!loading && <span className="status-pill">{agents.length} on team</span>}
+        <div className="mgr-actions">
+          {!loading && <span className="status-pill">{agents.length} on team</span>}
+          {isOwner && !showCreate && (
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setEditingId(null);
+                setSkillIds(enabledSkillIds());
+                setShowCreate(true);
+              }}
+            >
+              <Plus size={14} /> Add Agent
+            </Button>
+          )}
+        </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
@@ -228,57 +364,40 @@ function AgentTeamPanel({
           <LoaderCircle className="spin" size={14} /> Reading Agents…
         </p>
       ) : agents.length === 0 ? (
-        <p className="empty-copy">No Agents yet.</p>
+        <p className="workspace-empty">No Agents yet. Use Add Agent to define the first worker.</p>
       ) : (
-        <div className="li-table-scroll compact">
-          <table className="li-table">
-            <thead>
-              <tr>
-                <th>Agent</th>
-                <th>Purpose</th>
-                <th>Status</th>
-                <th>Capabilities</th>
-                <th>Activity</th>
-                {isOwner && <th />}
-              </tr>
-            </thead>
-            <tbody>
-              {agents.map((agent) => (
-                <tr key={agent.id}>
-                  <td>
-                    <strong>{agent.name}</strong>
-                    {agent.isDefault && <div className="empty-copy">Default</div>}
-                  </td>
-                  <td>{agent.purpose}</td>
-                  <td>{agent.status}</td>
-                  <td>
-                    <span className="empty-copy">{authorityFor(agent.id)}</span>
-                  </td>
-                  <td>
-                    <div>
-                      {agent.runCount} run{agent.runCount === 1 ? '' : 's'} ·{' '}
-                      {agent.activeTokenCount} active credential
-                      {agent.activeTokenCount === 1 ? '' : 's'}
-                    </div>
-                    <div className="empty-copy">
-                      {agent.scheduleEnabled ? 'Scheduled work on' : 'No schedule'}
-                    </div>
-                    {agent.latestRunId && (
-                      <button
-                        type="button"
-                        className="li-mini-button"
-                        onClick={() => onNavigate(`/ledger/run/${agent.latestRunId}`)}
+        <div className="workspace-agent-list">
+          {agents.map((agent) => {
+            const assigned = assignedSkillIds(agent);
+            const editing = editingId === agent.id;
+            return (
+              <article className="workspace-agent-card" key={agent.id}>
+                <div className="workspace-agent-head">
+                  <div>
+                    <div className="workspace-agent-name">
+                      <strong>{agent.name}</strong>
+                      {agent.isDefault && <span>Default</span>}
+                      <span
+                        className={`connection-status ${agent.status === 'active' ? 'connected' : ''}`}
                       >
-                        Latest run · {agent.latestRunStatus ?? 'unknown'}
-                      </button>
-                    )}
-                  </td>
+                        {agent.status}
+                      </span>
+                    </div>
+                    <p>{agent.purpose}</p>
+                  </div>
                   {isOwner && (
-                    <td>
+                    <div className="mgr-actions">
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => beginEdit(agent)}
+                      >
+                        Edit
+                      </button>
                       {agent.status === 'active' ? (
                         <button
                           type="button"
-                          className="li-mini-button"
+                          className="ghost-button"
                           disabled={busy === agent.id}
                           onClick={() => void setStatus(agent, 'paused')}
                         >
@@ -286,13 +405,13 @@ function AgentTeamPanel({
                             <LoaderCircle className="spin" size={13} />
                           ) : (
                             <Pause size={13} />
-                          )}{' '}
+                          )}
                           Pause
                         </button>
                       ) : (
                         <button
                           type="button"
-                          className="li-mini-button"
+                          className="ghost-button"
                           disabled={busy === agent.id}
                           onClick={() => void setStatus(agent, 'active')}
                         >
@@ -300,53 +419,206 @@ function AgentTeamPanel({
                             <LoaderCircle className="spin" size={13} />
                           ) : (
                             <Play size={13} />
-                          )}{' '}
+                          )}
                           Resume
                         </button>
                       )}
-                    </td>
+                    </div>
                   )}
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                </div>
+
+                {agent.config.instructions && (
+                  <div className="workspace-agent-instructions">
+                    <strong>Instructions</strong>
+                    <p>{agent.config.instructions}</p>
+                  </div>
+                )}
+
+                <div className="workspace-agent-meta">
+                  <span>{assigned.length} skills</span>
+                  <span>{agent.runCount} runs</span>
+                  <span>{agent.activeTokenCount} active credentials</span>
+                  <span>{agent.scheduleEnabled ? 'Scheduled' : 'No schedule'}</span>
+                </div>
+
+                <div className="workspace-agent-skills">
+                  {skillsLoading ? (
+                    <span className="empty-copy">Reading skills…</span>
+                  ) : assigned.length === 0 ? (
+                    <span className="empty-copy">No modular skills assigned.</span>
+                  ) : (
+                    <>
+                      {assigned.slice(0, 6).map((skillId) => (
+                        <span key={skillId}>{skillName(skillId)}</span>
+                      ))}
+                      {assigned.length > 6 && <span>+{assigned.length - 6} more</span>}
+                    </>
+                  )}
+                </div>
+
+                <details className="agent-access-details">
+                  <summary>Credential access</summary>
+                  <p>{authorityFor(agent.id)}</p>
+                  <p>
+                    Skills control which modular GTM tools this Agent can use. Credential scopes
+                    separately control which Trevra API surfaces its token can reach.
+                  </p>
+                  {isOwner && (
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={() => onNavigate('/setup')}
+                    >
+                      Manage credentials & schedule
+                    </button>
+                  )}
+                </details>
+
+                {agent.latestRunId && (
+                  <button
+                    type="button"
+                    className="li-mini-button"
+                    onClick={() => onNavigate(`/ledger/run/${agent.latestRunId}`)}
+                  >
+                    Latest run · {agent.latestRunStatus ?? 'unknown'}
+                  </button>
+                )}
+
+                {editing && isOwner && (
+                  <div className="workspace-agent-editor">
+                    <Field label="Agent name">
+                      <Input
+                        value={editName}
+                        onChange={(event) => setEditName(event.target.value)}
+                      />
+                    </Field>
+                    <Field label="Purpose" hint="A short description of the job this Agent owns.">
+                      <Textarea
+                        rows={3}
+                        value={editPurpose}
+                        onChange={(event) => setEditPurpose(event.target.value)}
+                      />
+                    </Field>
+                    <Field
+                      label="Operating instructions"
+                      hint="Persistent instructions added to this Agent’s run prompt."
+                    >
+                      <Textarea
+                        rows={6}
+                        value={editInstructions}
+                        onChange={(event) => setEditInstructions(event.target.value)}
+                        placeholder="Prioritize qualified ecommerce accounts. Cite evidence. Do not draft outreach until the account is scored…"
+                      />
+                    </Field>
+                    <AgentSkillPicker
+                      skills={skills}
+                      selected={editSkillIds}
+                      onToggle={(skillId) => setEditSkillIds((current) => toggle(current, skillId))}
+                    />
+                    <div className="mgr-actions">
+                      <Button variant="ghost" onClick={() => setEditingId(null)}>
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="primary"
+                        disabled={
+                          busy === `edit-${agent.id}` || !editName.trim() || !editPurpose.trim()
+                        }
+                        onClick={() => void saveEdit(agent)}
+                      >
+                        {busy === `edit-${agent.id}` && <LoaderCircle className="spin" size={14} />}
+                        Save Agent
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </article>
+            );
+          })}
         </div>
       )}
 
-      {isOwner && (
-        <div className="li-filter-row" style={{ marginTop: 16 }}>
-          <Field label="Agent name">
-            <Input
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="Scout"
+      {isOwner && showCreate && (
+        <div className="workspace-subsection workspace-agent-create">
+          <div className="workspace-subsection-heading">
+            <div>
+              <h4>Add Agent</h4>
+              <p>
+                Create a distinct worker with its own purpose, instructions, skills, credentials,
+                runs, and schedule.
+              </p>
+            </div>
+          </div>
+          <div className="workspace-agent-editor">
+            <Field label="Agent name">
+              <Input
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="Scout"
+              />
+            </Field>
+            <Field label="Purpose" hint="What job should this Agent own?">
+              <Textarea
+                rows={3}
+                value={purpose}
+                onChange={(event) => setPurpose(event.target.value)}
+                placeholder="Research and qualify target accounts for the outbound team."
+              />
+            </Field>
+            <Field
+              label="Operating instructions"
+              hint="Multiline guidance that is injected into every hosted or CLI run for this Agent."
+            >
+              <Textarea
+                rows={6}
+                value={instructions}
+                onChange={(event) => setInstructions(event.target.value)}
+                placeholder="Start with account evidence and recent signals. Prefer first-party sources. Explain why an account qualifies before preparing the next action…"
+              />
+            </Field>
+            <AgentSkillPicker
+              skills={skills}
+              selected={skillIds}
+              onToggle={(skillId) => setSkillIds((current) => toggle(current, skillId))}
             />
-          </Field>
-          <Field label="Purpose">
-            <Input
-              value={purpose}
-              onChange={(event) => setPurpose(event.target.value)}
-              placeholder="Research and qualify target accounts"
-            />
-          </Field>
-          <Button
-            variant="primary"
-            disabled={busy === 'create' || !name.trim() || !purpose.trim()}
-            onClick={() => void create()}
-          >
-            {busy === 'create' ? <LoaderCircle className="spin" size={14} /> : <Bot size={14} />}
-            Add Agent
-          </Button>
+            <div className="mgr-actions">
+              <Button
+                variant="ghost"
+                disabled={busy === 'create'}
+                onClick={() => {
+                  setName('');
+                  setPurpose('');
+                  setInstructions('');
+                  setSkillIds(enabledSkillIds());
+                  setShowCreate(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={busy === 'create' || !name.trim() || !purpose.trim() || skillsLoading}
+                onClick={() => void create()}
+              >
+                {busy === 'create' ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <Bot size={14} />
+                )}
+                Create Agent
+              </Button>
+            </div>
+          </div>
         </div>
       )}
+
       <p className="empty-copy">
-        Agents cannot approve their own consequential external actions. Workspace policy,
-        suppressions, channel limits, and provider Connections remain authoritative.
+        Skills are an Agent’s modular GTM tools. Credential scopes are separate access permissions.
+        Agents still cannot approve their own consequential external actions.
       </p>
     </section>
   );
 }
-
 function TeamMembersPanel({
   setToast,
   onNavigate
@@ -384,6 +656,7 @@ function TeamMembersPanel({
 
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<'owner' | 'member'>('member');
+  const [showInvite, setShowInvite] = useState(false);
   const [addBusy, setAddBusy] = useState(false);
   const [addError, setAddError] = useState('');
 
@@ -400,6 +673,7 @@ function TeamMembersPanel({
       await addTeamMember({ email: trimmed, role });
       setEmail('');
       setRole('member');
+      setShowInvite(false);
       setToast(
         `Invitation created for ${trimmed}. Trevra will email it automatically when SMTP is configured.`
       );
@@ -478,158 +752,186 @@ function TeamMembersPanel({
 
   return (
     <div className="page-stack">
-      <AgentTeamPanel isOwner={isOwner} setToast={setToast} onNavigate={onNavigate} />
-
-      <section className="page-panel" id="team">
-        <div className="section-heading">
-          <div>
-            <h3>Who is in this workspace</h3>
-          </div>
+      <div className="workspace-team-grid">
+        <div className="workspace-team-column">
+          <AgentTeamPanel isOwner={isOwner} setToast={setToast} onNavigate={onNavigate} />
         </div>
 
-        {isPending ? (
-          <p className="empty-copy">Reading the member list…</p>
-        ) : (
-          <div className="li-table-scroll compact">
-            <table className="li-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Email</th>
-                  <th>Role</th>
-                  {isOwner && <th />}
-                </tr>
-              </thead>
-              <tbody>
-                {members.map((member) => (
-                  <tr key={member.id}>
-                    <td>{member.name}</td>
-                    <td>{member.email}</td>
-                    <td>{member.role}</td>
-                    {isOwner && (
-                      <td>
-                        {member.role !== 'owner' && (
-                          <button
-                            className="li-mini-button li-mini-danger"
-                            type="button"
-                            disabled={removeBusy}
-                            onClick={() => setConfirmRemove(member)}
-                          >
-                            <Trash2 size={13} /> Remove
-                          </button>
-                        )}
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      {/* Owner-only, per the design doc's credential-management carve-out
-        extended to "who is in the workspace at all" -- see the file header. A
-        member simply does not see this section; the server 403 on
-        `/api/team/members` is the actual boundary. */}
-      {isOwner && (
-        <section className="page-panel">
-          <div className="section-heading">
-            <div>
-              <h3>Add a teammate</h3>
+        <div className="workspace-team-column">
+          <section className="page-panel" id="team">
+            <div className="section-heading">
+              <div>
+                <h3>People & access</h3>
+                <p>See who can enter this workspace and invite the next teammate from one place.</p>
+              </div>
+              <div className="mgr-actions">
+                {!isPending && <span className="status-pill">{members.length} people</span>}
+                {isOwner && !showInvite && (
+                  <Button variant="secondary" onClick={() => setShowInvite(true)}>
+                    <UserPlus size={14} /> Invite person
+                  </Button>
+                )}
+              </div>
             </div>
-          </div>
 
-          {addError && <div className="error-banner">{addError}</div>}
-
-          <div className="li-filter-row">
-            <Field label="Email">
-              <Input
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="teammate@example.com"
-              />
-            </Field>
-            <Field label="Role">
-              <Select
-                value={role}
-                onChange={(event) => setRole(event.target.value as 'owner' | 'member')}
-              >
-                <option value="member">Member</option>
-                <option value="owner">Owner</option>
-              </Select>
-            </Field>
-            <Button
-              variant="primary"
-              disabled={addBusy || !email.trim()}
-              onClick={() => void addTeammate()}
-            >
-              {addBusy ? <LoaderCircle className="spin" size={14} /> : <UserPlus size={14} />}
-              Add teammate
-            </Button>
-          </div>
-        </section>
-      )}
-
-      {isOwner && (
-        <section className="page-panel">
-          <div className="section-heading">
-            <div>
-              <h3>Pending invitations</h3>
-            </div>
-          </div>
-
-          {invitationsError && <div className="error-banner">{invitationsError}</div>}
-
-          {invitationsLoading ? (
-            <p className="empty-copy">Reading pending invitations…</p>
-          ) : invitations.length === 0 ? (
-            <p className="empty-copy">Nothing pending.</p>
-          ) : (
-            <div className="li-table-scroll compact">
-              <table className="li-table">
-                <thead>
-                  <tr>
-                    <th>Email</th>
-                    <th>Role</th>
-                    <th>Expires</th>
-                    <th />
-                  </tr>
-                </thead>
-                <tbody>
-                  {invitations.map((invitation) => (
-                    <tr key={invitation.id}>
-                      <td>{invitation.email}</td>
-                      <td>{invitation.role === 'owner' ? 'Owner' : 'Member'}</td>
-                      <td>{relativeTime(invitation.expiresAt)}</td>
-                      <td>
-                        <div className="li-row-actions">
-                          <button
-                            className="li-mini-button"
-                            type="button"
-                            onClick={() => void copyInviteLink(invitation.id)}
-                          >
-                            <Copy size={13} /> Copy invite link
-                          </button>
-                          <button
-                            className="li-mini-button li-mini-danger"
-                            type="button"
-                            disabled={cancelBusy}
-                            onClick={() => setConfirmCancelInvite(invitation)}
-                          >
-                            <Trash2 size={13} /> Cancel
-                          </button>
-                        </div>
-                      </td>
+            {isPending ? (
+              <p className="empty-copy">Reading the member list…</p>
+            ) : members.length === 0 ? (
+              <p className="workspace-empty">No workspace members were returned.</p>
+            ) : (
+              <div className="li-table-scroll compact">
+                <table className="li-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Email</th>
+                      <th>Role</th>
+                      {isOwner && <th />}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      )}
+                  </thead>
+                  <tbody>
+                    {members.map((member) => (
+                      <tr key={member.id}>
+                        <td>{member.name}</td>
+                        <td>{member.email}</td>
+                        <td>{member.role}</td>
+                        {isOwner && (
+                          <td>
+                            {member.role !== 'owner' && (
+                              <button
+                                className="li-mini-button li-mini-danger"
+                                type="button"
+                                disabled={removeBusy}
+                                onClick={() => setConfirmRemove(member)}
+                              >
+                                <Trash2 size={13} /> Remove
+                              </button>
+                            )}
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {isOwner && showInvite && (
+              <div className="workspace-subsection">
+                <div className="workspace-subsection-heading">
+                  <div>
+                    <h4>Invite someone</h4>
+                    <p>They receive workspace access only after accepting the invitation.</p>
+                  </div>
+                </div>
+                {addError && <div className="error-banner">{addError}</div>}
+                <div className="li-filter-row">
+                  <Field label="Email">
+                    <Input
+                      type="email"
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                      placeholder="teammate@example.com"
+                    />
+                  </Field>
+                  <Field label="Role">
+                    <Select
+                      value={role}
+                      onChange={(event) => setRole(event.target.value as 'owner' | 'member')}
+                    >
+                      <option value="member">Member</option>
+                      <option value="owner">Owner</option>
+                    </Select>
+                  </Field>
+                  <div className="mgr-actions">
+                    <Button
+                      variant="ghost"
+                      disabled={addBusy}
+                      onClick={() => {
+                        setEmail('');
+                        setRole('member');
+                        setAddError('');
+                        setShowInvite(false);
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      variant="primary"
+                      disabled={addBusy || !email.trim()}
+                      onClick={() => void addTeammate()}
+                    >
+                      {addBusy ? (
+                        <LoaderCircle className="spin" size={14} />
+                      ) : (
+                        <UserPlus size={14} />
+                      )}
+                      Send invite
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {isOwner &&
+              (invitationsLoading || Boolean(invitationsError) || invitations.length > 0) && (
+                <div className="workspace-subsection">
+                  <div className="workspace-subsection-heading">
+                    <h4>Pending invitations</h4>
+                    {!invitationsLoading && invitations.length > 0 && (
+                      <span>{invitations.length} pending</span>
+                    )}
+                  </div>
+                  {invitationsError && <div className="error-banner">{invitationsError}</div>}
+                  {invitationsLoading ? (
+                    <p className="empty-copy">Reading pending invitations…</p>
+                  ) : invitations.length > 0 ? (
+                    <div className="li-table-scroll compact">
+                      <table className="li-table">
+                        <thead>
+                          <tr>
+                            <th>Email</th>
+                            <th>Role</th>
+                            <th>Expires</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {invitations.map((invitation) => (
+                            <tr key={invitation.id}>
+                              <td>{invitation.email}</td>
+                              <td>{invitation.role === 'owner' ? 'Owner' : 'Member'}</td>
+                              <td>{relativeTime(invitation.expiresAt)}</td>
+                              <td>
+                                <div className="li-row-actions">
+                                  <button
+                                    className="li-mini-button"
+                                    type="button"
+                                    onClick={() => void copyInviteLink(invitation.id)}
+                                  >
+                                    <Copy size={13} /> Copy invite link
+                                  </button>
+                                  <button
+                                    className="li-mini-button li-mini-danger"
+                                    type="button"
+                                    disabled={cancelBusy}
+                                    onClick={() => setConfirmCancelInvite(invitation)}
+                                  >
+                                    <Trash2 size={13} /> Cancel
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+          </section>
+        </div>
+      </div>
 
       {confirmRemove && (
         <ConfirmDrawer

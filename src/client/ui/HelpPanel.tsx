@@ -44,7 +44,7 @@ const HELP: Record<Section, HelpTopic> = {
   },
   outreach: {
     heading: 'Outreach',
-    does: 'Manage LinkedIn accounts, lead lists, workflows, campaigns, and replies.',
+    does: 'Build and run outreach campaigns, manage messages and opportunities, and publish posts. LinkedIn account setup lives in Setup → Workspace.',
     vocabulary: [
       { term: 'HARD FACT', meaning: 'A limit published or enforced by LinkedIn.' },
       { term: 'REPORTED', meaning: 'A practitioner-reported limit not confirmed by LinkedIn.' },
@@ -108,13 +108,18 @@ const HELP: Record<Section, HelpTopic> = {
   },
   setup: {
     heading: 'Setup',
-    does: 'What can reach your workspace, what it may spend, and what it may do. Visited rarely after the first week. Agent access comes first because nothing else in Trevra works until an agent can reach the workspace.',
+    does: 'Configure workspace access, integrations, LinkedIn accounts, safety limits, people, lead capture, and workspace data. Visited rarely after the first week.',
     vocabulary: [
       { term: 'Agent token', meaning: 'A secret used by an agent to access the workspace.' },
       { term: 'Your key', meaning: 'Your encrypted model-provider API key.' },
       { term: 'Side effect', meaning: 'What a skill can read or change outside the workspace.' },
       { term: 'Skill', meaning: 'One task an agent can run.' },
-      { term: 'Hard limit', meaning: 'A rule the agent cannot override.' }
+      { term: 'Hard limit', meaning: 'A rule the agent cannot override.' },
+      {
+        term: 'LinkedIn account',
+        meaning:
+          'A workspace connection used by campaigns, messages, posts, and background LinkedIn work.'
+      }
     ],
     more: (
       <>
@@ -260,16 +265,21 @@ export function ShortcutSheet({ onClose }: { onClose: () => void }) {
 }
 
 /* -------------------------------------------------------------------------- */
-
 const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   { path: '/loop', label: 'Loop', hint: 'What the loop is doing, and where it is stuck' },
   { path: '/loop/cost', label: 'What this cost', hint: 'Spent, sent, produced — one period' },
   { path: '/outreach', label: 'Outreach · Campaigns', hint: 'Campaigns, people and companies' },
   { path: '/outreach/new', label: 'Outreach · New campaign', hint: 'Build and start one' },
+  { path: '/outreach/inbound', label: 'Outreach · Inbound', hint: 'Captured people and requests' },
   {
     path: '/outreach/inbox',
     label: 'Outreach · Messages',
-    hint: 'Replies and conversations with campaign contacts'
+    hint: 'Conversations and LinkedIn inbox controls'
+  },
+  {
+    path: '/outreach/opportunities',
+    label: 'Outreach · Opportunities',
+    hint: 'Commercial next steps'
   },
   {
     path: '/outreach/posts',
@@ -287,14 +297,17 @@ const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
     label: 'Research',
     hint: 'Discovered threads and company research, across every platform'
   },
-  { path: '/setup/agent', label: 'Setup · Agent access', hint: 'Connect Claude Code or Codex' },
+  { path: '/setup', label: 'Setup · Access', hint: 'Agent access, hosted compute and spending' },
   {
-    path: '/setup',
-    label: 'Setup · The spending cap',
-    hint: 'The monthly cap and the switch, inside Agent access'
+    path: '/setup/workspace',
+    label: 'Setup · Workspace',
+    hint: 'Connections, limits, Agents, people and workspace data'
   },
-  { path: '/setup/data', label: 'Setup · Connections', hint: 'Where your data comes from' },
-  { path: '/setup/limits', label: 'Setup · Limits', hint: 'Hard limits and never-contact list' }
+  {
+    path: '/setup/capture',
+    label: 'Setup · Lead capture',
+    hint: 'Website and form ingestion sources'
+  }
 ];
 
 /**

@@ -700,34 +700,12 @@ p {
   color: var(--green);
   box-shadow: var(--t-shadow-sm);
 }
-.sidebar-promise {
-  margin-top: auto;
-  margin-bottom: 18px;
-  padding: 12px;
-  border-radius: var(--t-r-sm);
-  background: color-mix(in srgb, var(--t-surface) 60%, transparent);
-  display: flex;
-  gap: 9px;
-  color: var(--green);
-}
-.sidebar-promise strong,
-.sidebar-promise span {
-  display: block;
-}
-.sidebar-promise strong {
-  font-size: var(--t-text-xs);
-}
-.sidebar-promise span {
-  font-size: var(--t-text-xs);
-  color: var(--muted);
-  margin-top: 3px;
-  line-height: 1.35;
-}
 .sidebar-bottom {
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 9px;
+  margin-top: auto;
   padding: 12px 8px 0;
   border-top: 1px solid var(--line);
 }
@@ -879,6 +857,9 @@ h1 {
 .metrics-grid-four {
   grid-template-columns: repeat(4, 1fr);
 }
+.metrics-grid-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 .metric-card {
   background: transparent;
   border: 0;
@@ -991,6 +972,314 @@ h1 {
 .page-stack {
   display: grid;
   gap: 18px;
+}
+.workspace-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.85fr);
+  gap: 18px;
+  align-items: start;
+}
+.setup-access-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 18px;
+  align-items: start;
+}
+.setup-access-grid > * {
+  min-width: 0;
+}
+.research-toolbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 2px;
+}
+.research-toolbar .section-heading {
+  flex: 1 1 auto;
+  padding-bottom: 0;
+}
+.research-toolbar .li-filter-row {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+}
+.research-feed-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr);
+  gap: 18px;
+  align-items: start;
+}
+.research-feed-grid > :only-child {
+  grid-column: 1 / -1;
+}
+.research-thread-panel,
+.research-brief-panel {
+  min-width: 0;
+}
+.research-brief-panel .client-card-large {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.workspace-primary,
+.workspace-safety,
+.workspace-team,
+.workspace-data {
+  min-width: 0;
+}
+.workspace-safety {
+  display: grid;
+  gap: 18px;
+}
+.workspace-team,
+.workspace-data {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: none;
+  justify-self: stretch;
+}
+.workspace-team > .page-stack,
+.workspace-team .page-panel,
+.workspace-data .page-panel {
+  width: 100%;
+  max-width: none;
+}
+.workspace-team-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+.workspace-team-column {
+  min-width: 0;
+}
+.workspace-team .li-table-scroll.compact .li-table {
+  width: 100%;
+  max-width: none;
+}
+.workspace-team .li-filter-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  width: 100%;
+  align-items: end;
+}
+.workspace-team .li-filter-row > .ui-field,
+.workspace-team .li-filter-row > .ui-button {
+  width: 100%;
+}
+.workspace-team .li-filter-row > .ui-button {
+  justify-content: center;
+}
+.workspace-agent-list {
+  display: grid;
+  gap: 12px;
+}
+.workspace-agent-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.workspace-agent-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.workspace-agent-head > div:first-child {
+  min-width: 0;
+}
+.workspace-agent-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.workspace-agent-name > span:not(.connection-status) {
+  padding: 2px 7px;
+  border-radius: var(--t-r-pill);
+  background: var(--t-surface);
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+}
+.workspace-agent-head p,
+.workspace-agent-instructions p,
+.agent-access-details p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.workspace-agent-instructions {
+  padding: 10px 11px;
+  border-left: 3px solid var(--green);
+  background: var(--panel);
+  border-radius: var(--t-r-sm);
+}
+.workspace-agent-instructions strong {
+  font-size: var(--t-text-xs);
+}
+.workspace-agent-meta,
+.workspace-agent-skills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.workspace-agent-meta span,
+.workspace-agent-skills > span {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-pill);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+}
+.agent-access-details,
+.agent-skill-picker {
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  background: var(--panel);
+}
+.agent-access-details > summary,
+.agent-skill-picker > summary {
+  min-height: var(--t-tap);
+  padding: 9px 11px;
+  cursor: pointer;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+}
+.agent-skill-picker > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-skill-picker > summary span {
+  color: var(--muted);
+  font-weight: var(--t-w-body);
+}
+.agent-access-details p {
+  padding: 0 11px 11px;
+}
+.workspace-agent-editor {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.agent-skill-list {
+  display: grid;
+  gap: 2px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+.agent-skill-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: flex-start;
+  padding: 8px;
+  border-radius: var(--t-r-sm);
+  cursor: pointer;
+}
+.agent-skill-option:hover {
+  background: var(--t-surface-2);
+}
+.agent-skill-option input {
+  margin-top: 3px;
+}
+.agent-skill-option span,
+.agent-skill-option strong,
+.agent-skill-option small {
+  display: block;
+}
+.agent-skill-option strong {
+  font-size: var(--t-text-xs);
+}
+.agent-skill-option small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  line-height: 1.4;
+}
+.workspace-agent-create .workspace-agent-editor > .ui-button {
+  width: 100%;
+  justify-content: center;
+}
+.workspace-empty {
+  margin: 0;
+  padding: 14px 15px;
+  border: 1px dashed var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.5;
+}
+.workspace-subsection {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.workspace-subsection-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.workspace-subsection-heading h4 {
+  margin: 0;
+  font-size: var(--t-text-sm);
+}
+.workspace-subsection-heading p,
+.workspace-subsection-heading span {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.workspace-data-actions {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.35fr) minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  align-items: start;
+  justify-items: stretch;
+}
+.workspace-data-actions > .secondary-button {
+  width: 100%;
+  justify-content: center;
+}
+.workspace-danger {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.workspace-danger > summary {
+  padding: 12px 14px;
+  color: var(--red);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+  cursor: pointer;
+}
+.workspace-danger-body {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  padding: 14px;
+  border-top: 1px solid var(--line);
+}
+.workspace-danger-body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.workspace-safety .policy-editor {
+  grid-template-columns: 1fr;
 }
 .section-heading {
   display: flex;
@@ -1290,14 +1579,17 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 11px;
+  align-items: stretch;
 }
 .connection-card,
 .integration-card {
+  height: 100%;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--t-r-md);
   padding: 15px;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
 }
@@ -1319,15 +1611,662 @@ button:disabled {
 }
 .connection-card p,
 .integration-card p {
-  max-width: var(--t-measure);
   margin: 0;
   color: var(--muted);
   font-size: var(--t-text-xs);
   line-height: 1.4;
 }
+.connection-account-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+.connection-account-link {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-pill);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+  cursor: pointer;
+}
+.connection-account-link:hover {
+  border-color: var(--green);
+  color: var(--green);
+}
 .connection-actions {
   display: flex;
   gap: 6px;
+}
+.connection-add-panel {
+  margin-bottom: 14px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.connection-add-panel .workspace-subsection-heading {
+  margin-bottom: 12px;
+}
+.connection-add-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.connection-add-option {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+  color: var(--ink);
+  padding: 14px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.connection-add-option:hover:not(:disabled) {
+  border-color: var(--green);
+}
+.connection-add-option > span:nth-child(2) {
+  display: grid;
+  gap: 3px;
+}
+.connection-add-option strong {
+  font-size: var(--t-text-sm);
+}
+.connection-add-option small {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.4;
+}
+.connection-add-option:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+.connection-add-linkedin > .page-stack {
+  gap: 0;
+}
+.drawer.linkedin-connection-drawer {
+  width: min(1120px, calc(100% - 24px));
+  max-width: none;
+}
+.linkedin-connection-drawer-body {
+  padding: 24px 28px 32px;
+}
+.linkedin-connection-drawer-body .page-panel {
+  width: 100%;
+  max-width: none;
+}
+
+/* The account sheet is intentionally vertical. Monitoring and maintenance are
+   different jobs, so Usage, Pending invites and Account controls each get the
+   full reading width instead of competing side-by-side. */
+.li-account-drawer-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.li-account-drawer-content > .li-acct-panel,
+.li-account-drawer-content > .li-account-usage-panel,
+.li-account-drawer-content > .li-account-pending-panel,
+.li-account-drawer-content > .li-account-controls-panel {
+  grid-column: 1;
+}
+
+.linkedin-connection-drawer .li-account-sheet-heading h3 {
+  display: none;
+}
+.linkedin-connection-drawer .li-account-sheet-heading p {
+  margin-top: 0;
+  font-size: var(--t-text-sm);
+}
+/* One flat summary instead of cards inside a card. The account name already
+   lives in the drawer header; this block only answers identity, working window,
+   recent profile state and what happens next. */
+.li-account-overview-flat {
+  margin: 16px 0 18px;
+  padding: 2px 0 0;
+}
+.li-account-identity-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 15px;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.li-account-identity-mark {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: var(--t-r-sm);
+  background: var(--green-3);
+  color: var(--green);
+}
+.li-account-identity-line > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.li-account-identity-line strong {
+  font-size: var(--t-text-sm);
+}
+.li-account-identity-line strong a {
+  color: var(--green);
+  text-decoration: none;
+}
+.li-account-identity-line strong a:hover {
+  text-decoration: underline;
+}
+.li-account-identity-line span:not(.li-account-identity-mark) {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.45;
+}
+.li-account-facts-flat {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 28px;
+  margin: 0;
+}
+.li-account-facts-flat > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.32fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.li-account-facts-flat > .li-account-fact-wide {
+  grid-column: 1 / -1;
+}
+.li-account-facts-flat dt {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+}
+.li-account-facts-flat dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  font-size: var(--t-text-sm);
+  font-weight: var(--t-w-strong);
+  overflow-wrap: anywhere;
+}
+/* Identity already lives in the overview, so the recovery disclosure only
+/* The flat summary already carries identity and next-run status, so the
+   recovery disclosure only contains browser/session operations. */
+.linkedin-connection-drawer .li-account-session-details .li-seat-card,
+.linkedin-connection-drawer .li-account-session-details > .li-next-background-run,
+.linkedin-connection-drawer .li-account-session-details .li-maintenance-schedule {
+  display: none;
+}
+.li-account-connect-content {
+  display: block;
+}
+.li-acct-connect-simple {
+  display: grid;
+  gap: 14px;
+  max-width: 860px;
+}
+.li-connect-credentials {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 10px 12px;
+  align-items: end;
+}
+.li-connect-credentials label {
+  display: grid;
+  gap: 6px;
+  font-size: var(--t-text-xs);
+  font-weight: 700;
+}
+.li-connect-credentials input {
+  width: 100%;
+  min-height: var(--t-tap);
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+  padding: 10px 11px;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+}
+.li-connect-credentials > small {
+  grid-column: 1 / 3;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  line-height: 1.45;
+}
+.li-connect-credentials > button {
+  min-height: var(--t-tap);
+  grid-column: 3;
+  grid-row: 1;
+}
+.li-connect-waiting {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.li-connect-footer {
+  margin-top: 0;
+}
+
+.li-account-settings {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.li-account-settings-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--ink);
+  font-size: var(--t-text-sm);
+}
+.li-account-settings-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.li-account-settings-tabs > button {
+  min-width: 0;
+  min-height: var(--t-tap);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+  text-align: left;
+  cursor: pointer;
+}
+.li-account-settings-tabs > button::after {
+  content: '⌄';
+  flex: none;
+  color: var(--muted);
+  font-size: var(--t-text-sm);
+  line-height: 1;
+}
+.li-account-settings-tabs > button:hover,
+.li-account-settings-tabs > button.is-active {
+  border-color: var(--t-green-200);
+  background: var(--green-3);
+  color: var(--green);
+}
+.li-account-settings-tabs > button.is-active::after {
+  content: '⌃';
+  color: var(--green);
+}
+.li-account-settings-expanded {
+  margin-top: 10px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-field);
+}
+.li-account-settings-expanded > .li-hint:first-child {
+  margin-top: 0;
+}
+.li-account-settings-expanded > .li-form-grid:last-child,
+.li-account-settings-expanded > .li-form-grid:only-child {
+  margin-bottom: 0;
+}
+.linkedin-connection-drawer .li-account-settings {
+  margin-top: 20px;
+  padding-top: 18px;
+}
+.linkedin-connection-drawer .li-account-controls-panel .li-account-settings {
+  margin: 0;
+  padding: 0;
+  border-top: 0;
+}
+.linkedin-connection-drawer .li-account-settings-title {
+  margin-bottom: 12px;
+  font-size: var(--t-text-md);
+}
+.linkedin-connection-drawer .li-account-session-details {
+  margin-top: 4px;
+  padding: 0 14px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--panel);
+}
+.linkedin-connection-drawer .li-account-session-details:not([open]) {
+  padding-bottom: 0;
+}
+.linkedin-connection-drawer .li-account-session-details > summary {
+  display: flex;
+  width: calc(100% + 28px);
+  margin: 0 -14px;
+  padding: 12px 14px;
+  color: var(--ink);
+}
+.linkedin-connection-drawer .li-account-session-details[open] > summary {
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.li-session-card {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-field);
+  overflow: hidden;
+}
+.li-session-row {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--t-line-soft);
+  align-items: center;
+}
+.li-session-row > span {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+}
+.li-session-row > strong {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--t-text-sm);
+  overflow-wrap: anywhere;
+}
+.li-session-actions,
+.li-session-danger {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 11px 14px;
+}
+.li-session-danger {
+  border-top: 1px solid var(--t-line-soft);
+  background: color-mix(in srgb, var(--red-bg) 45%, transparent);
+}
+.linkedin-connection-drawer .li-seat-actions {
+  margin: 14px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.li-capability-checks {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding-top: 4px;
+}
+.li-account-access-control,
+.li-account-danger-zone {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.4fr);
+  gap: 18px;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.li-account-access-control > div,
+.li-account-danger-zone > div {
+  display: grid;
+  gap: 4px;
+}
+.li-account-access-control > div > strong,
+.li-account-danger-zone > div > strong {
+  font-size: var(--t-text-sm);
+}
+.li-account-access-control small,
+.li-account-danger-zone small {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.45;
+}
+.li-account-access-control select {
+  width: 100%;
+  min-height: var(--t-tap);
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+  padding: 9px 11px;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+}
+.li-account-danger-zone > button {
+  justify-self: end;
+}
+.linkedin-connection-drawer .li-account-pending-panel {
+  min-height: 0;
+  padding: 0 18px 18px;
+  overflow: visible;
+}
+.linkedin-connection-drawer .li-account-pending-panel > summary {
+  list-style: none;
+  display: flex;
+  width: calc(100% + 36px);
+  min-height: 58px;
+  margin: 0 -18px;
+  padding: 14px 18px;
+  color: var(--ink);
+  background: var(--t-field);
+  cursor: pointer;
+}
+.linkedin-connection-drawer .li-account-pending-panel > summary::-webkit-details-marker {
+  display: none;
+}
+.linkedin-connection-drawer .li-account-pending-panel[open] > summary {
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+.li-pending-disclosure-copy {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.li-pending-disclosure-copy > svg {
+  color: var(--green);
+  flex: none;
+}
+.li-pending-disclosure-copy > span {
+  display: grid;
+  gap: 2px;
+}
+.li-pending-disclosure-copy strong {
+  font-size: var(--t-text-sm);
+}
+.li-pending-disclosure-copy small {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.li-pending-body {
+  display: grid;
+  gap: 14px;
+}
+.li-pending-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: end;
+}
+.li-pending-summary > div {
+  display: grid;
+  gap: 3px;
+}
+.li-pending-summary > div > span {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+}
+.li-pending-summary > div > strong {
+  color: var(--green);
+  font-size: var(--t-text-2xl);
+  line-height: 1.05;
+}
+.li-pending-summary > div > strong > small {
+  color: var(--muted);
+  font-size: var(--t-text-sm);
+  font-weight: var(--t-w-body);
+}
+.li-pending-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+  flex-wrap: wrap;
+}
+.li-pending-toolbar > label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+}
+.li-pending-days-input {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-weight: var(--t-w-body);
+}
+.li-pending-days-input input {
+  width: 84px;
+  min-height: var(--t-tap);
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+  padding: 9px 10px;
+  color: var(--ink);
+}
+.li-pending-help {
+  border-top: 1px solid var(--t-line-soft);
+  padding-top: 10px;
+}
+.li-pending-help > summary {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+  cursor: pointer;
+}
+.li-pending-help p {
+  max-width: var(--t-measure);
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.55;
+}
+.li-pending-empty {
+  margin: 0;
+  padding: 12px 0 2px;
+}
+.li-pending-candidates {
+  display: grid;
+  gap: 12px;
+  padding-top: 4px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.li-pending-queue-action {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.li-pending-queue-action p {
+  max-width: var(--t-measure);
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.5;
+}
+
+/* Usage itself is a 2×2 grid, never 4-across in the sheet. */
+.linkedin-connection-drawer .li-account-usage-panel .li-stat-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.linkedin-connection-drawer .li-account-usage-panel .li-stat {
+  border-right: 0;
+  border-bottom: 1px solid var(--line);
+}
+.linkedin-connection-drawer .li-account-usage-panel .li-stat:nth-child(odd) {
+  border-right: 1px solid var(--line);
+}
+.linkedin-connection-drawer .li-account-usage-panel .li-stat:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+@media (max-width: 900px) {
+  .drawer.linkedin-connection-drawer {
+    width: 100%;
+  }
+  .linkedin-connection-drawer-body {
+    padding: 18px;
+  }
+  .li-connect-credentials {
+    grid-template-columns: 1fr;
+  }
+  .li-connect-credentials > small,
+  .li-connect-credentials > button {
+    grid-column: 1;
+  }
+  .li-connect-credentials > button {
+    grid-row: auto;
+  }
+  @media (max-width: 680px) {
+    .li-account-facts-flat,
+    .linkedin-connection-drawer .li-account-usage-panel .li-stat-row,
+    .li-account-settings-tabs,
+    .li-account-access-control,
+    .li-account-danger-zone {
+      grid-template-columns: 1fr;
+    }
+  }
+  .li-account-facts-flat > .li-account-fact-wide {
+    grid-column: 1;
+  }
+  .li-account-facts-flat > div,
+  .li-session-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .li-account-danger-zone > button {
+    justify-self: start;
+  }
+  .li-session-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .li-pending-queue-action {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .li-account-settings-grid > .li-account-safety-section {
+    grid-column: 1;
+  }
+  .linkedin-connection-drawer .li-account-usage-panel .li-stat,
+  .linkedin-connection-drawer .li-account-usage-panel .li-stat:nth-child(odd) {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .linkedin-connection-drawer .li-account-usage-panel .li-stat:last-child {
+    border-bottom: 0;
+  }
 }
 .connection-status {
   display: inline-flex;
@@ -1827,12 +2766,32 @@ button:disabled {
     grid-template-columns: repeat(2, 1fr);
   }
 }
-@media (max-width: 980px) {
-  /* The client panel reflows below the main column. It used to be deleted. */
-  .content-grid {
+@media (max-width: 1180px) {
+  .workspace-layout {
     grid-template-columns: 1fr;
   }
-  .connection-grid,
+  .workspace-team,
+  .workspace-data {
+    grid-column: auto;
+  }
+}
+@media (max-width: 980px) {
+  /* The client panel reflows below the main column. It used to be deleted. */
+  .content-grid,
+  .workspace-team-grid,
+  .research-feed-grid {
+    grid-template-columns: 1fr;
+  }
+  .research-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .research-toolbar .li-filter-row {
+    justify-content: flex-start;
+  }
+  .workspace-data-actions {
+    grid-template-columns: 1fr;
+  }
   .integration-grid {
     grid-template-columns: 1fr;
   }
@@ -1842,6 +2801,12 @@ button:disabled {
   .client-card-value,
   .client-next {
     grid-column: 2 / -1;
+  }
+}
+@media (max-width: 680px) {
+  .connection-grid,
+  .connection-add-options {
+    grid-template-columns: 1fr;
   }
 }
 @media (max-width: 760px) {
@@ -1862,16 +2827,19 @@ button:disabled {
     padding: 22px 20px calc(74px + env(safe-area-inset-bottom, 0px));
   }
   .metrics-grid,
-  .metrics-grid-four {
+  .metrics-grid-four,
+  .metrics-grid-two {
     grid-template-columns: 1fr;
   }
   .metrics-grid .metric-card,
-  .metrics-grid-four .metric-card {
+  .metrics-grid-four .metric-card,
+  .metrics-grid-two .metric-card {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
   .metrics-grid .metric-card:last-child,
-  .metrics-grid-four .metric-card:last-child {
+  .metrics-grid-four .metric-card:last-child,
+  .metrics-grid-two .metric-card:last-child {
     border-bottom: 0;
   }
   .topbar h1 {
@@ -2236,10 +3204,20 @@ button:disabled {
   font-family: var(--t-mono);
   font-size: var(--t-text-xs);
 }
+.agent-token-history {
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.agent-token-history > summary {
+  padding: 12px 0;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-strong);
+}
 .agent-token-list {
   display: grid;
   gap: 8px;
-  margin-top: 14px;
 }
 .agent-token-list article {
   display: grid;
@@ -9645,19 +10623,9 @@ button:disabled {
 
 /* Outreach simple mode: campaigns + messages + settings, with specialist
    surfaces under More and only the high-signal campaign data in the main path.
-
-   `.mgr-simple-hide` rather than the bare `.mgr-inputs` idiom it is built on:
-   this file used to write `.outreach-simple .mgr-inputs`, back when every
-   `.mgr-inputs` disclosure under `.outreach-simple` was manager-screen
-   overflow this rule was meant to bury. The Find people and Target accounts
-   folds (`#leads`, `#accounts`) were absorbed into this same `.outreach-simple`
-   tree later and happen to reuse `.mgr-inputs` for their OWN disclosures --
-   "Add more accounts", "Daily lead limit" -- which the blanket selector then
-   buried right along with the manager screen's overflow, on a rule that had
-   no idea a second, unrelated meaning of the class had moved in underneath
-   it. `.mgr-simple-hide` is the opt-in: only the two disclosures that still
-   mean "manager screen overflow" (`LinkedInManagerRead.tsx`'s "More results"
-   and "Campaign inputs") carry it. */
+   Manager-specific overflow (`More results`, `Campaign inputs`, manual-task
+   duplication) stays hidden here; the dedicated inbox and detail toggles keep
+   those controls reachable where they belong. */
 .outreach-simple .section-heading > div > p,
 .outreach-simple .onboarding-head p,
 .outreach-simple .onboarding-steps small,
@@ -9680,13 +10648,8 @@ button:disabled {
 .outreach-simple .panel-footer > span {
   display: none;
 }
-/* The other two rules above are structural (`.section-heading > div > p`,
-   `.panel-footer > span`) rather than a class this codebase can opt in or out
-   of -- they were written to bury subtitle copy and disabled-button captions
-   across the manager/builder screens, and both patterns are common enough
-   that giving every OTHER instance an opt-in class would be the riskier
-   change. #leads and #accounts are the two islands absorbed into this tree
-   that still need their own copy, so they are named back in instead. */
+/* Leads and accounts are specialist folds embedded in the campaign route;
+   unlike manager chrome, their explanatory copy and button captions matter. */
 .outreach-simple #leads .section-heading > div > p,
 .outreach-simple #accounts .section-heading > div > p {
   display: block;
@@ -9694,6 +10657,17 @@ button:disabled {
 .outreach-simple #leads .panel-footer > span,
 .outreach-simple #accounts .panel-footer > span {
   display: inline;
+}
+
+.outreach-message-switch {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  width: fit-content;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
 }
 
 /* Post composer: formatting toolbar + contenteditable body + live preview.
@@ -9704,7 +10678,8 @@ button:disabled {
 .li-post-composer {
   display: grid;
   gap: 12px;
-  max-width: var(--t-measure);
+  width: 100%;
+  max-width: none;
 }
 .li-post-toolbar {
   display: flex;
@@ -9906,20 +10881,22 @@ button:disabled {
   white-space: nowrap;
 }
 
-/* Queue/history list, below the composer. `.li-post-status` is the same chip
-   shape as `.li-chip` (inline-flex, small radius, bold chip text) kept as its
-   own class because the JSX never also sets `.li-chip` -- but its colors
-   reuse the exact vocabulary `.li-status-*`/`.li-campaign-*` already spend:
-   muted for a state nothing is doing anything about (draft not yet
-   committed, canceled stopped by a person -- same read as `.li-status-
-   withdrawn`), blue for queued (scheduled, mirrors `.li-status-planned`),
-   amber for "in progress or stalled, needs a look" (publishing, and missed --
-   the grace window lapsed and the user has to reschedule or discard, the same
-   "stopped, waiting on you" amber `.li-status-held` uses), green for success,
-   red for a real failure. */
+/* Composer and recent posts use the desktop width together; narrower screens
+   stack them back into the same reading order. */
 .li-posts-screen {
   display: grid;
-  gap: 28px;
+  grid-template-columns: minmax(0, 1.3fr) minmax(340px, 0.8fr);
+  gap: 18px;
+  align-items: start;
+}
+.li-posts-compose-panel,
+.li-posts-history-panel {
+  min-width: 0;
+}
+@media (max-width: 1180px) {
+  .li-posts-screen {
+    grid-template-columns: 1fr;
+  }
 }
 .li-post-list {
   list-style: none;
@@ -11426,6 +12403,13 @@ button:disabled {
 
 .agent-reveal-actions {
   justify-content: flex-end;
+}
+.mgr-meta-compact {
+  gap: 6px 14px;
+  padding-block: 4px;
+}
+.mgr-meta-compact span {
+  white-space: nowrap;
 }
 
 .loop-read-error,
