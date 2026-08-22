@@ -17,23 +17,29 @@ describe('MarketingScreen', () => {
 
   it('connects sourced evidence to a safe payload reveal', () => {
     const html = renderToStaticMarkup(<MarketingApp />);
-    expect(html).toContain('Illustrative example—not customer data.');
     expect(html).toContain('HARD FACT');
     expect(html).toContain('REPORTED');
     expect(html).toContain('Reveal the exact payload');
-    expect(html).toContain('cannot trigger an external action');
+    expect(html).not.toContain('Illustrative example');
+    expect(html).not.toContain('Not customer data');
     expect(html).not.toContain('Approve this run');
     expect(html).not.toContain('Approved — released to you');
   });
 
   it('keeps the landing message narrow', () => {
     const html = renderToStaticMarkup(<MarketingApp />);
-    expect(html).toContain('Your GTM agent does the work. You approve what happens.');
-    expect(html).toContain('Agent works. Trevra checks. You decide.');
-    expect(html).toContain('Let the agent work. Keep the final say.');
+    expect(html).toContain('Know who’s worth selling to before you reach out.');
+    expect(html).toContain('Research first. Act with conviction.');
+    expect(html).toContain('Customer Research');
+    expect(html).toContain('high-potential customers');
     expect(html).not.toContain('public modules');
     expect(html).not.toContain('module-row');
     expect(html).not.toContain('Every consequential action travels');
+    expect(html).not.toContain('GTM');
+    expect(html).not.toContain('account');
+    expect(html).not.toContain('—');
+    expect(html).toContain('aria-label="GitHub"');
+    expect(html).not.toContain('> Source</a>');
   });
 
   it('names the real conversion state', () => {

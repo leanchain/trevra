@@ -115,16 +115,18 @@ export function MarketingScreen({
               </a>
             </nav>
           </details>
-          <ThemeToggle />
           <a
             className="nav-source"
             href={sourceHref}
             target="_blank"
             rel="noreferrer"
+            aria-label="GitHub"
+            title="GitHub"
             onClick={() => trackEvent('marketing_source_cta')}
           >
-            <Github size={16} aria-hidden="true" /> Source
+            <Github size={17} aria-hidden="true" />
           </a>
+          <ThemeToggle />
           <a className="launch-nav-cta" data-hosted-cta href={primaryHref} onClick={handlePrimary}>
             {navLabel} <ArrowRight size={16} aria-hidden="true" />
           </a>
@@ -133,10 +135,11 @@ export function MarketingScreen({
 
       <section className="launch-hero" id="top">
         <div className="hero-copy">
-          <h1>Your GTM agent does the work. You approve what happens.</h1>
+          <h1>Know who’s worth selling to before you reach out.</h1>
           <p className="hero-lede">
-            Connect Claude Code or Codex. It researches accounts, prioritizes work, and prepares
-            outreach. Trevra stops consequential actions until you approve exactly what will happen.
+            Trevra researches companies, people, and buying signals to show you where the real
+            opportunities are, so you focus on a few high-potential customers instead of blasting
+            hundreds of cold emails.
           </p>
           <div className="launch-actions">
             <a className="launch-button" data-hosted-cta href={primaryHref} onClick={handlePrimary}>
@@ -151,14 +154,14 @@ export function MarketingScreen({
         <figure className="hero-evidence">
           <div className="evidence-card">
             <div className="evidence-head">
-              <span>Prepared outreach</span>
-              <em>waiting for you</em>
+              <span>Customer Research</span>
+              <em>continuous · evidence backed</em>
             </div>
             <ol className="evidence-list">
               <li className="evidence-signal">
                 <span className="evidence-kind">FOUND</span>
                 <span>
-                  <strong>Three linked signals support this account</strong>
+                  <strong>Research found three signals that make this company matter now</strong>
                   <span className="evidence-source">
                     <span>HARD FACT ×2 · REPORTED ×1</span>
                     <span>3 source links</span>
@@ -166,9 +169,19 @@ export function MarketingScreen({
                 </span>
               </li>
               <li className="evidence-signal">
+                <span className="evidence-kind">SCORED</span>
+                <span>
+                  <strong>This company stands out from the rest</strong>
+                  <span className="evidence-source">
+                    <span>why-now signal matched</span>
+                    <span>priority 9.1 / 10</span>
+                  </span>
+                </span>
+              </li>
+              <li className="evidence-signal">
                 <span className="evidence-kind">READY</span>
                 <span>
-                  <strong>One personalized email is prepared</strong>
+                  <strong>One researched opportunity is ready for action</strong>
                   <span className="evidence-source">
                     <span>1 recipient</span>
                     <span>not sent</span>
@@ -203,31 +216,39 @@ export function MarketingScreen({
               </div>
             </dl>
           </div>
-          <figcaption>
-            <strong>Illustrative example—not customer data.</strong> This preview cannot trigger an
-            external action.
-          </figcaption>
         </figure>
       </section>
 
       <section className="launch-section workspace-section" id="how" aria-labelledby="how-title">
         <div className="split-heading">
-          <h2 id="how-title">Agent works. Trevra checks. You decide.</h2>
-          <p>That is the whole loop. The app exists so you can inspect the evidence and decide.</p>
+          <h2 id="how-title">Research first. Act with conviction.</h2>
+          <p>
+            The goal is not more activity. Trevra keeps research fresh, verifies why a company
+            matters now, and ranks the opportunities where focused attention can create the most
+            value.
+          </p>
         </div>
 
-        <ol className="simple-loop" aria-label="How Trevra works">
+        <ol className="simple-loop" aria-label="Trevra research workflow">
           <li>
-            <strong>Agent works</strong>
-            <span>Researches, scores, and prepares the next GTM action.</span>
+            <strong>1. Research</strong>
+            <span>Continuously scan companies, communities, conversations, and sources.</span>
           </li>
           <li>
-            <strong>Trevra checks</strong>
-            <span>Applies policy and locks the exact action behind a hash.</span>
+            <strong>2. Verify</strong>
+            <span>Connect evidence so every why-now signal has a source behind it.</span>
           </li>
           <li>
-            <strong>You decide</strong>
-            <span>Approve or reject. Trevra records what happened.</span>
+            <strong>3. Rank</strong>
+            <span>Surface the few companies where fit, timing, and evidence are strongest.</span>
+          </li>
+          <li>
+            <strong>4. Act</strong>
+            <span>Prepare a specific next move for the opportunities worth your attention.</span>
+          </li>
+          <li>
+            <strong>5. Learn</strong>
+            <span>Replies and outcomes sharpen the next round of research and prioritization.</span>
           </li>
         </ol>
 
@@ -255,16 +276,16 @@ export function MarketingScreen({
           <div className="workspace-canvas">
             <header className="workspace-canvas-head">
               <div>
-                <span>Loop / decision queue</span>
-                <h3>One action needs your approval.</h3>
+                <span>Research / opportunity queue</span>
+                <h3>Research found the company worth your attention.</h3>
               </div>
               <span className="workspace-status">Needs approval</span>
             </header>
             <div className="workspace-case">
               <div className="workspace-case-copy">
                 <span className="workspace-case-type">Why now</span>
-                <h4>Three linked signals support this outreach.</h4>
-                <p>The finding, sources, policy result, and exact action stay in one place.</p>
+                <h4>Three linked signals explain why this company matters now.</h4>
+                <p>The evidence, sources, priority, and next action stay connected in one place.</p>
                 <div className="workspace-proof-tags" aria-label="Evidence types">
                   <span>HARD FACT ×2</span>
                   <span>REPORTED ×1</span>
@@ -294,7 +315,7 @@ export function MarketingScreen({
                     </dd>
                   </div>
                 </dl>
-                <details className="workspace-payload" aria-describedby="workspace-demo-note">
+                <details className="workspace-payload">
                   <summary>
                     <ShieldCheck size={17} aria-hidden="true" />
                     <span className="payload-summary-closed">Reveal the exact payload</span>
@@ -306,22 +327,17 @@ export function MarketingScreen({
                       <strong>To:</strong> one approved recipient
                     </p>
                     <p>
-                      <strong>Subject:</strong> approval boundaries for agent-run GTM
+                      <strong>Subject:</strong> approval boundaries for agent-run outreach
                     </p>
                     <p>
                       I saw your team is building agent infrastructure. Are you putting a hard
-                      approval boundary around external GTM actions?
+                      approval boundary around external sales actions?
                     </p>
                   </div>
                 </details>
               </div>
             </div>
           </div>
-
-          <figcaption id="workspace-demo-note">
-            Illustrative example—not customer data. Revealing the payload cannot trigger an external
-            action.
-          </figcaption>
         </figure>
       </section>
 
@@ -423,7 +439,7 @@ export function MarketingScreen({
             </span>
             <strong>Trevra</strong>
           </a>
-          <p>Agent-run GTM with a human approval gate.</p>
+          <p>Continuous research. Focused outreach. Human approval.</p>
         </div>
         <div>
           <strong>Product</strong>

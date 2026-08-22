@@ -744,8 +744,9 @@ html:has(.static-launch) {
 }
 
 .nav-source {
-  min-height: var(--t-tap);
-  padding: 0 10px;
+  width: var(--t-tap);
+  height: var(--t-tap);
+  padding: 0;
 }
 
 .launch-nav-cta {
@@ -1795,15 +1796,16 @@ html:has(.static-launch) {
   margin: 0 0 32px;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   border-block: 1px solid var(--launch-line);
   list-style: none;
 }
 .simple-loop li {
-  padding: 20px 24px 20px 0;
+  min-width: 0;
+  padding: 18px 16px 18px 0;
 }
 .simple-loop li + li {
-  padding-left: 24px;
+  padding-left: 16px;
   border-left: 1px solid var(--launch-line);
 }
 .simple-loop strong,
@@ -1813,7 +1815,7 @@ html:has(.static-launch) {
 .simple-loop strong {
   margin-bottom: 6px;
   color: var(--launch-ink);
-  font-size: var(--t-text-md);
+  font-size: var(--t-text-sm);
 }
 .simple-loop span {
   color: var(--launch-muted);

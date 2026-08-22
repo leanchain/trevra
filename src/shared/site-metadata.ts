@@ -28,12 +28,12 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
   {
     question: 'What is Trevra?',
     answer:
-      'Trevra sits between your GTM agent and the systems it can affect. The agent does the research and preparation; Trevra holds consequential actions for your decision.'
+      'Trevra researches potential customers, connects buying signals to evidence, and helps your agent prepare focused outreach. Actions like sending messages still follow the approval rules you set.'
   },
   {
     question: 'What can my agent do?',
     answer:
-      'It can research accounts and people, score evidence, plan work, and prepare outreach or CRM activity through MCP. Agent tokens cannot approve or execute consequential actions.'
+      'It can research companies and people, score evidence, prioritize opportunities, and prepare outreach or CRM updates. The agent cannot approve or execute consequential actions.'
   },
   {
     question: 'Can it send outreach without me?',
@@ -42,7 +42,7 @@ export const FAQ_ITEMS: ReadonlyArray<FaqItem> = [
   },
   {
     question: 'Do I need a CRM?',
-    answer: 'No. Trevra can be your founder GTM workspace or work alongside an existing CRM.'
+    answer: 'No. Trevra can be your sales research workspace or work alongside an existing CRM.'
   },
   {
     question: 'What gets recorded?',
