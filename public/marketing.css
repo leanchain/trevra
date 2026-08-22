@@ -400,40 +400,66 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --m-slab: #1b2b21;
-    --m-slab-inset: #0f1a14;
-    --m-slab-muted: #94a89a; /* 5.6:1 on the lifted slab */
-    --m-slab-line: rgba(255, 255, 255, 0.09);
-    --m-slab-line-soft: rgba(255, 255, 255, 0.05);
-    --m-slab-wash: rgba(255, 255, 255, 0.03);
-    --m-slab-wash-2: rgba(255, 255, 255, 0.06);
-    --m-slab-shadow: 0 22px 50px -24px rgba(0, 0, 0, 0.7);
-    --m-cta: #10402a;
-    --m-cta-ink: #eaf4ed; /* 10.1:1 on --m-cta */
-    --m-cta-ink-2: rgba(234, 244, 237, 0.86);
-    --m-cta-line: rgba(234, 244, 237, 0.42);
-    --m-cta-wash: rgba(234, 244, 237, 0.1);
-    --m-cta-btn: #e9f0eb;
-    --m-cta-btn-ink: #0d2818;
+    --launch-bg: #0a0e0c;
+    --launch-surface: #111714;
+    --launch-surface-2: #181f1b;
+    --launch-ink: #f1f5f2;
+    --launch-muted: #a4afa8;
+    --launch-line: #29322d;
+    --launch-line-strong: #414d46;
+    --launch-green: #63c98f;
+    --launch-green-bright: #82d7a7;
+    --launch-green-soft: #183326;
+    --m-slab: #151c18;
+    --m-slab-inset: #0d1210;
+    --m-slab-ink: #f0f5f1;
+    --m-slab-muted: #a6b1aa;
+    --m-slab-code: #d5eadc;
+    --m-slab-green: #79d5a1;
+    --m-slab-line: rgba(255, 255, 255, 0.11);
+    --m-slab-line-soft: rgba(255, 255, 255, 0.065);
+    --m-slab-wash: rgba(255, 255, 255, 0.04);
+    --m-slab-wash-2: rgba(255, 255, 255, 0.075);
+    --m-slab-shadow: 0 24px 54px -24px rgba(0, 0, 0, 0.78);
+    --m-cta: #143a26;
+    --m-cta-ink: #f2f7f3;
+    --m-cta-ink-2: rgba(242, 247, 243, 0.86);
+    --m-cta-line: rgba(242, 247, 243, 0.38);
+    --m-cta-wash: rgba(242, 247, 243, 0.09);
+    --m-cta-btn: #eef4f0;
+    --m-cta-btn-ink: #10281a;
   }
 }
 
 :root[data-theme='dark'] {
-  --m-slab: #1b2b21;
-  --m-slab-inset: #0f1a14;
-  --m-slab-muted: #94a89a;
-  --m-slab-line: rgba(255, 255, 255, 0.09);
-  --m-slab-line-soft: rgba(255, 255, 255, 0.05);
-  --m-slab-wash: rgba(255, 255, 255, 0.03);
-  --m-slab-wash-2: rgba(255, 255, 255, 0.06);
-  --m-slab-shadow: 0 22px 50px -24px rgba(0, 0, 0, 0.7);
-  --m-cta: #10402a;
-  --m-cta-ink: #eaf4ed;
-  --m-cta-ink-2: rgba(234, 244, 237, 0.86);
-  --m-cta-line: rgba(234, 244, 237, 0.42);
-  --m-cta-wash: rgba(234, 244, 237, 0.1);
-  --m-cta-btn: #e9f0eb;
-  --m-cta-btn-ink: #0d2818;
+  --launch-bg: #0a0e0c;
+  --launch-surface: #111714;
+  --launch-surface-2: #181f1b;
+  --launch-ink: #f1f5f2;
+  --launch-muted: #a4afa8;
+  --launch-line: #29322d;
+  --launch-line-strong: #414d46;
+  --launch-green: #63c98f;
+  --launch-green-bright: #82d7a7;
+  --launch-green-soft: #183326;
+  --m-slab: #151c18;
+  --m-slab-inset: #0d1210;
+  --m-slab-ink: #f0f5f1;
+  --m-slab-muted: #a6b1aa;
+  --m-slab-code: #d5eadc;
+  --m-slab-green: #79d5a1;
+  --m-slab-line: rgba(255, 255, 255, 0.11);
+  --m-slab-line-soft: rgba(255, 255, 255, 0.065);
+  --m-slab-wash: rgba(255, 255, 255, 0.04);
+  --m-slab-wash-2: rgba(255, 255, 255, 0.075);
+  --m-slab-shadow: 0 24px 54px -24px rgba(0, 0, 0, 0.78);
+  --m-cta: #143a26;
+  --m-cta-ink: #f2f7f3;
+  --m-cta-ink-2: rgba(242, 247, 243, 0.86);
+  --m-cta-line: rgba(242, 247, 243, 0.38);
+  --m-cta-wash: rgba(242, 247, 243, 0.09);
+  --m-cta-btn: #eef4f0;
+  --m-cta-btn-ink: #10281a;
 }
 
 :root.theme-turning,
@@ -478,6 +504,13 @@ html:has(.static-launch) {
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   line-height: 1.55;
+}
+
+:root[data-theme='dark'] .static-launch {
+  background:
+    radial-gradient(circle at 14% 4%, rgba(88, 191, 131, 0.07), transparent 28rem),
+    radial-gradient(circle at 86% 11%, rgba(195, 145, 65, 0.045), transparent 22rem),
+    var(--launch-bg);
 }
 
 .static-launch:focus {
@@ -545,18 +578,13 @@ html:has(.static-launch) {
 .skip-link:focus-visible {
   transform: translateY(0);
 }
-
-/* --- Nav ---------------------------------------------------------------- */
-
-/* Full-bleed so it can be sticky without content scrolling through the page
-   gutters, with the content held to the page measure by padding. 5,600px of
-   document with the only action in the first screen was the reason to make it
-   follow. */
+/* Expanded at the top; collapses into a floating glass bar after scroll. */
 .launch-nav {
   position: sticky;
   top: 0;
   z-index: var(--m-z-nav);
   width: 100%;
+  margin-inline: auto;
   min-height: 76px;
   padding-inline: max(20px, calc((100% - var(--t-page)) / 2));
   display: grid;
@@ -567,6 +595,33 @@ html:has(.static-launch) {
   background: color-mix(in srgb, var(--launch-bg) 86%, transparent);
   backdrop-filter: blur(14px) saturate(1.4);
   -webkit-backdrop-filter: blur(14px) saturate(1.4);
+  transition:
+    top 180ms ease,
+    width 180ms ease,
+    min-height 180ms ease,
+    padding 180ms ease,
+    border-radius 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease,
+    backdrop-filter 180ms ease;
+}
+
+.launch-nav.is-compact {
+  top: 12px;
+  width: min(calc(100% - 24px), calc(var(--t-page) + 48px));
+  min-height: 60px;
+  margin-inline: auto;
+  padding-inline: 12px;
+  gap: 18px;
+  border: 1px solid color-mix(in srgb, var(--launch-line-strong) 78%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--launch-surface) 66%, transparent);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, white 36%, transparent) inset,
+    0 12px 34px -24px color-mix(in srgb, var(--launch-ink) 42%, transparent);
+  backdrop-filter: blur(24px) saturate(1.7);
+  -webkit-backdrop-filter: blur(24px) saturate(1.7);
 }
 
 .launch-logo {
@@ -580,6 +635,10 @@ html:has(.static-launch) {
   text-decoration: none;
   font-size: var(--t-text-xl);
   letter-spacing: var(--t-track-heading);
+  transition:
+    min-height 180ms ease,
+    gap 180ms ease,
+    font-size 180ms ease;
 }
 
 .launch-logo > span {
@@ -590,6 +649,23 @@ html:has(.static-launch) {
   border-radius: var(--t-r-sm);
   background: var(--launch-ink);
   color: var(--launch-bg);
+  transition:
+    width 180ms ease,
+    height 180ms ease,
+    border-radius 180ms ease;
+}
+
+.launch-nav.is-compact .launch-logo {
+  min-width: 40px;
+  min-height: 40px;
+  gap: 8px;
+  font-size: var(--t-text-lg);
+}
+
+.launch-nav.is-compact .launch-logo > span {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
 }
 
 /* The mark is inline SVG filled with currentColor: one glyph, both polarities. */
@@ -606,6 +682,10 @@ html:has(.static-launch) {
   display: flex;
   align-items: center;
   gap: 26px;
+  transition: gap 180ms ease;
+}
+.launch-nav.is-compact > nav {
+  gap: 20px;
 }
 
 .launch-nav > nav a,
@@ -624,14 +704,16 @@ html:has(.static-launch) {
   color: var(--launch-ink);
 }
 
-/* The disclosure panel hangs from this box, not from its own 44px summary:
-   anchored to the summary it opened past the left edge of a 390px viewport. */
 .launch-nav-actions {
   position: relative;
   display: flex;
   justify-content: flex-end;
   align-items: center;
   gap: 10px;
+  transition: gap 180ms ease;
+}
+.launch-nav.is-compact .launch-nav-actions {
+  gap: 6px;
 }
 
 .launch-nav-menu {
@@ -648,6 +730,13 @@ html:has(.static-launch) {
   color: var(--launch-muted);
   list-style: none;
   cursor: pointer;
+}
+.launch-nav.is-compact .launch-nav-menu > summary {
+  width: 40px;
+  height: 40px;
+  border-color: color-mix(in srgb, var(--launch-line) 82%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--launch-surface) 54%, transparent);
 }
 .launch-nav-menu > summary::-webkit-details-marker {
   display: none;
@@ -675,6 +764,13 @@ html:has(.static-launch) {
   background: var(--launch-surface);
   box-shadow: var(--t-shadow-lg);
 }
+.launch-nav.is-compact .launch-nav-menu > nav {
+  border-color: color-mix(in srgb, var(--launch-line-strong) 72%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--launch-surface) 76%, transparent);
+  backdrop-filter: blur(24px) saturate(1.6);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+}
 .launch-nav-menu > nav a {
   display: flex;
   align-items: center;
@@ -701,8 +797,12 @@ html:has(.static-launch) {
   color: var(--launch-muted);
   background: color-mix(in srgb, var(--launch-surface) 75%, transparent);
   cursor: pointer;
+  transition:
+    width 180ms ease,
+    height 180ms ease,
+    border-radius 180ms ease,
+    background 180ms ease;
 }
-
 .theme-toggle:hover {
   border-color: var(--launch-line-strong);
   color: var(--launch-ink);
@@ -747,6 +847,20 @@ html:has(.static-launch) {
   width: var(--t-tap);
   height: var(--t-tap);
   padding: 0;
+  transition:
+    width 180ms ease,
+    height 180ms ease,
+    border-radius 180ms ease,
+    background 180ms ease;
+}
+
+.launch-nav.is-compact .theme-toggle,
+.launch-nav.is-compact .nav-source {
+  width: 40px;
+  height: 40px;
+  border: 1px solid color-mix(in srgb, var(--launch-line) 82%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--launch-surface) 54%, transparent);
 }
 
 .launch-nav-cta {
@@ -755,6 +869,15 @@ html:has(.static-launch) {
   background: var(--launch-ink);
   color: var(--launch-bg);
   font-size: var(--t-text-sm);
+  transition:
+    min-height 180ms ease,
+    padding 180ms ease,
+    border-radius 180ms ease;
+}
+.launch-nav.is-compact .launch-nav-cta {
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 12px;
 }
 .launch-nav-cta:hover {
   background: var(--t-green-700);
@@ -2564,11 +2687,23 @@ details[open] > summary .disclosure-chevron {
     min-height: 66px;
     padding-inline: 14px;
   }
+  .launch-nav.is-compact {
+    top: 8px;
+    width: min(calc(100% - 16px), calc(var(--t-page) + 48px));
+    min-height: 54px;
+    padding-inline: 8px;
+    gap: 10px;
+    border-radius: 16px;
+  }
   .nav-source {
     display: none;
   }
   .launch-nav-cta {
     padding: 9px 12px;
+  }
+  .launch-nav.is-compact .launch-nav-cta {
+    min-height: 38px;
+    padding: 8px 11px;
   }
   .launch-nav-cta svg {
     display: none;

@@ -74,7 +74,20 @@
     setTheme(currentTheme() === 'dark' ? 'light' : 'dark');
   });
 
+  function syncNavCompactState() {
+    var navs = document.querySelectorAll('.launch-nav');
+    var shouldExpand = window.scrollY <= 4;
+    var shouldCompact = window.scrollY > 32;
+
+    for (var i = 0; i < navs.length; i += 1) {
+      if (shouldExpand) navs[i].classList.remove('is-compact');
+      else if (shouldCompact) navs[i].classList.add('is-compact');
+    }
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     labelToggles(currentTheme());
+    syncNavCompactState();
+    window.addEventListener('scroll', syncNavCompactState, { passive: true });
   });
 })();

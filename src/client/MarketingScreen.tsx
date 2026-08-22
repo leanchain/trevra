@@ -1,12 +1,10 @@
-import { useEffect, useState } from 'react';
 import { ArrowRight, ChevronDown, Github, Menu, Server, ShieldCheck } from 'lucide-react';
 import { FAQ_ITEMS } from '../shared/site-metadata';
-import { getPublicConfig } from './api';
 import { trackEvent } from './analytics';
 import { BrandMark } from './ui/BrandMark';
 
 const REPO_URL = 'https://github.com/leanchain/trevra';
-const FOUNDER_FALLBACK = 'founder@usetrevra.com';
+const FOUNDER_EMAIL = 'pankaj@usetrevra.com';
 
 const NAV_LINKS = [
   { href: '#how', label: 'How it works' },
@@ -55,20 +53,10 @@ export function MarketingScreen({
   hostedAppUrl = '',
   githubUrl = ''
 }: MarketingScreenProps) {
-  const [supportEmail, setSupportEmail] = useState(
-    import.meta.env?.VITE_SUPPORT_EMAIL?.trim() ?? ''
-  );
   const primaryHref = hostedAppUrl || '#hosted';
   const primaryLabel = hostedAppUrl ? 'Open workspace' : 'Request hosted access';
   const navLabel = hostedAppUrl ? 'Workspace' : 'Request access';
   const sourceHref = githubUrl || REPO_URL;
-
-  useEffect(() => {
-    if (supportEmail) return;
-    void getPublicConfig()
-      .then((config) => setSupportEmail(config.supportEmail))
-      .catch(() => undefined);
-  }, [supportEmail]);
 
   const handlePrimary = (event: React.MouseEvent<HTMLAnchorElement>) => {
     trackEvent('marketing_primary_cta', {
@@ -79,7 +67,7 @@ export function MarketingScreen({
     onGetStarted();
   };
 
-  const founderHref = `mailto:${supportEmail || FOUNDER_FALLBACK}`;
+  const founderHref = `mailto:${FOUNDER_EMAIL}`;
   const hostedHref = `${founderHref}?subject=${encodeURIComponent('Hosted workspace')}`;
   const conversionHref = hostedAppUrl || hostedHref;
 

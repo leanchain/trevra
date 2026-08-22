@@ -35,6 +35,7 @@ describe('MarketingScreen', () => {
     expect(html).not.toContain('public modules');
     expect(html).not.toContain('module-row');
     expect(html).not.toContain('Every consequential action travels');
+    expect(html).toContain('mailto:pankaj@usetrevra.com');
     expect(html).not.toContain('GTM');
     expect(html).not.toContain('account');
     expect(html).not.toContain('—');

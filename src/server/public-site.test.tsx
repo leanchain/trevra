@@ -339,6 +339,7 @@ describe('the server-rendered public documents', () => {
       ['how-it-works', howItWorksDoc]
     ] as const) {
       expect(doc, name).toMatch(/<main class="static-launch"[ >]/);
+      expect(doc, name).toContain('mailto:pankaj@usetrevra.com');
       expect(
         classesIn(doc).filter((className) => !styled(className)),
         name

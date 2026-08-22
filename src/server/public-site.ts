@@ -626,7 +626,7 @@ function siteFooter(config: SiteConfig): string {
     `<div class="footer-brand">${brandLink()}<p>The open-source runtime, ledger and approval gate for agent-run go-to-market.</p></div>` +
     `<div><strong>Product</strong><a href="/#approval">The gate</a><a href="/#deploy">Deploy</a></div>` +
     `<div><strong>Source</strong><a href="https://github.com/leanchain/trevra" target="_blank" rel="noreferrer">GitHub repository</a><a href="/catalog/modules.json">Catalog JSON</a><a href="/catalog/trevra.sbom.cdx.json">SBOM (CycloneDX)</a><a href="/llms.txt">Context for language models</a></div>` +
-    `<div><strong>Company</strong><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:${escapeAttr(config.supportEmail)}">Talk to the founder</a></div>` +
+    `<div><strong>Company</strong><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="mailto:pankaj@usetrevra.com">Talk to the founder · pankaj@usetrevra.com</a></div>` +
     `<p class="footer-note">&copy; ${new Date().getUTCFullYear()} ${escapeHtml(config.name)}. Built in the open.</p>` +
     `</footer>`
   );
