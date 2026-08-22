@@ -298,27 +298,33 @@ export const ENFORCEMENT_SCAN_WEEKDAYS: readonly number[] = [2, 3];
 export const INMAIL_MONTHLY_QUOTA = 50;
 
 /**
- * Warm-up multipliers by week, index 0 = week 1. REPORTED (1.4): "wk1 passive
- * only (views/likes, 0 invites) -> wk2 5-10 light actions, 0-5 invites -> wk3+
- * ramp to ~10/day". Any week past the table is 1.0 -- the band ceiling itself.
+ * Account-level active-outreach warm-up multipliers by week, index 0 = week 1.
  *
- * These apply to ACTIVE kinds only. See PASSIVE_KINDS.
+ * A warm-up must be a RAMP, not a seven-day off switch. The previous
+ * `[0, 0.4, 0.7]` made every active outreach kind disappear for an account's
+ * first week in Trevra, even when the LinkedIn account itself was established.
+ * That produced exactly the product failure a ramp is supposed to avoid: a
+ * campaign sits inert for days, then wakes up later with no execution history.
+ *
+ * The conservative warm-up BAND still applies during these three weeks. For an
+ * connection request its band is 10/day, so this table yields 5/day in week 1,
+ * 8/day in week 2, and 10/day in week 3. This is intentionally useful from day one. The separate campaign-day ramp, rolling
+ * windows, acceptance throttle, day-over-day variance clamp, business hours and
+ * pause/cooldown checks all continue to constrain that number. Week 4+ moves to
+ * the steady band.
+ *
+ * These apply to ACTIVE kinds only and never replace the other safety gates. See PASSIVE_KINDS.
  */
-export const WARMUP_MULTIPLIERS: readonly number[] = [0, 0.4, 0.7];
+export const WARMUP_MULTIPLIERS = Object.freeze([0.5, 0.8, 1] as const);
 
 /** Weeks the ramp lasts. Week WARMUP_WEEKS+1 onward is `steady`. */
 export const WARMUP_WEEKS = WARMUP_MULTIPLIERS.length;
 
 /**
- * Kinds the warm-up ramp does NOT zero. REPORTED (1.4): week 1 is "passive
- * only (views/likes, 0 invites)" -- passive activity is the warm-up, not a
- * thing the warm-up suppresses.
- *
- * Multiplying these by the week-1 zero would mean a brand-new seat does
- * literally nothing for seven days and then starts acting, which is the
- * "Slide and Spike" shape from 1.3 -- the engine would manufacture the exact
- * signature it exists to prevent. A warm-up that performs no actions is not a
- * warm-up.
+ * Kinds the account warm-up multiplier does not reduce. Passive activity is
+ * already bounded by the conservative warm-up band and every other pacing
+ * check, and it is useful activity while an account establishes execution
+ * history.
  *
  * Only the multiplier is bypassed. Passive kinds are still subject to the
  * posture band, the rolling windows, the day-over-day variance clamp, the
@@ -328,11 +334,10 @@ export const WARMUP_WEEKS = WARMUP_MULTIPLIERS.length;
  * perform them, and all three belong here with no exception: a follow, a like
  * and an endorsement are things a member does while READING, not things they
  * send. Nobody has to accept one, none of them consumes an invite, and none
- * produces the acceptance-rate signal 1.3's spam heuristic reads.
+ * produces the acceptance-rate signal the spam heuristic reads.
  *
  * `reply` is deliberately NOT here. A reply is a message somebody receives,
- * which is the whole distinction this list draws, and warming up an account by
- * messaging strangers is not a warm-up.
+ * which is the whole distinction this list draws.
  *
  * Typed as strings rather than PacedKind so a kind can join the moment the
  * driver can perform it, without this list needing the pacing table to exist

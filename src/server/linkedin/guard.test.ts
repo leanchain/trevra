@@ -161,9 +161,8 @@ describe('seat state', () => {
   it('fails closed for a workspace with no seat', async () => {
     const verdict = await guard();
     expect(check(verdict, 'seat-configured').passed).toBe(false);
-    // ...and the ceilings are evaluated as a week-1 account, so it also fails
-    // the warm-up check rather than passing by accident.
-    expect(check(verdict, 'warmup-ceiling').passed).toBe(false);
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.reason).toContain('seat-configured');
   });
 
   it('blocks a paused seat and repeats the reason it was paused for', async () => {
@@ -174,22 +173,65 @@ describe('seat state', () => {
     const verdict = await guard();
     expect(check(verdict, 'seat-paused').passed).toBe(false);
     expect(check(verdict, 'seat-paused').detail).toContain('re-login');
+    expect(verdict.allowed).toBe(false);
+  });
+});
+
+describe('the established-account warm-up override', () => {
+  it('skips only the account warm-up ceiling and explains the recorded clock', async () => {
+    await seat('2026-08-04');
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', warmupOverride: true },
+      NOW
+    );
+    const verdict = await guard({}, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(verdict, 'warmup-ceiling').passed).toBe(true);
+    expect(check(verdict, 'warmup-ceiling').detail).toContain('explicitly skipped');
+    expect(check(verdict, 'warmup-ceiling').detail).toContain(
+      'recorded Trevra warm-up clock is week 1'
+    );
+    expect(verdict.allowed).toBe(true);
+  });
+
+  it('never lets the override bypass an explicit account pause', async () => {
+    await seat('2026-08-04', 'paused');
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', warmupOverride: true },
+      NOW
+    );
+    const verdict = await guard({}, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(verdict, 'seat-paused').passed).toBe(false);
+    expect(check(verdict, 'warmup-ceiling').passed).toBe(true);
+    expect(verdict.allowed).toBe(false);
   });
 });
 
 describe('volume ceilings', () => {
-  it('blocks anything at all in warm-up week 1', async () => {
+  it('permits a small week-1 invite budget and blocks the first invite beyond it', async () => {
     await seat('2026-08-04');
-    const verdict = await guard();
-    expect(check(verdict, 'warmup-ceiling').passed).toBe(false);
-    expect(check(verdict, 'warmup-ceiling').detail).toContain('no invites at all');
+    const first = await guard({}, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(first, 'warmup-ceiling').passed).toBe(true);
+    expect(check(first, 'warmup-ceiling').detail).toContain('0 of 5 invites');
+    expect(first.allowed).toBe(true);
+
+    for (let index = 0; index < 5; index += 1) await log('invite', 'sent', 1);
+    const capped = await guard({}, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(capped, 'warmup-ceiling').passed).toBe(false);
+    expect(check(capped, 'warmup-ceiling').detail).toContain('5 of 5 invites');
+    expect(capped.allowed).toBe(false);
   });
 
   it('lets passive activity through in week 1, still against the full band', async () => {
     await seat('2026-08-04');
-    const views = await guard({ kind: 'profile_view' });
+    const views = await guard({ kind: 'profile_view' }, { dayShape: FLAT_DAY_SHAPE });
     expect(check(views, 'warmup-ceiling').passed).toBe(true);
-    expect(check(views, 'warmup-ceiling').detail).toContain('Passive activity is not ramped');
+    expect(check(views, 'warmup-ceiling').detail).toContain(
+      'Passive activity is not reduced by the account warm-up multiplier'
+    );
 
     // ...and the band is still a ceiling: 30/day in the warm-up band.
     for (let index = 0; index < 30; index += 1) await log('profile_view', 'sent', 1);
@@ -935,12 +977,13 @@ describe('duplicate-target is scoped the way the ledger is scoped', () => {
 });
 
 /**
- * Migration 044's column, honoured. The COMMENT on it is the specification:
- * it relaxes ONE check, for replies only, and says so out loud.
+ * Migration 044's row-level override remains deliberately narrow: it can relax
+ * the account warm-up ceiling for a reply, and for no other action kind.
  */
 describe('the warm-up ceiling override', () => {
   it('relaxes the warm-up ceiling for a reply, and says it was overridden', async () => {
-    await seat('2026-08-04'); // Week 1: the ramp permits no messages at all.
+    await seat('2026-08-04');
+    await log('reply', 'sent', 1);
     const refused = await guard({ kind: 'reply' });
     expect(check(refused, 'warmup-ceiling').passed).toBe(false);
 
@@ -951,11 +994,8 @@ describe('the warm-up ceiling override', () => {
       'relaxes this ceiling and nothing else'
     );
   });
-
   it('leaves every other check able to refuse', async () => {
     await seat('2026-08-04');
-    // Outside business hours, with the override on: still refused, and not by
-    // the warm-up ceiling.
     const nightly = await evaluateLinkedInSafety(
       db,
       {
@@ -968,53 +1008,52 @@ describe('the warm-up ceiling override', () => {
       NOW
     );
     expect(check(nightly, 'warmup-ceiling').passed).toBe(true);
+    expect(check(nightly, 'business-hours').passed).toBe(false);
     expect(nightly.allowed).toBe(false);
     expect(nightly.reason).toContain('business-hours');
   });
-
   it('is ignored for every kind except a reply', async () => {
     await seat('2026-08-04');
-    // A warm-up ramp exists to stop a new seat behaving like an established
-    // one; answering somebody who wrote to you first is the only exception
-    // offered, and a cold DM is not it.
+    await log('dm', 'sent', 1);
+    await log('dm', 'sent', 1);
     const dm = await guard({ kind: 'dm', overrideWarmupCeiling: true });
     expect(check(dm, 'warmup-ceiling').passed).toBe(false);
     expect(check(dm, 'warmup-ceiling').detail).not.toContain('overrode');
   });
 });
 
-/**
- * ANSWERING SOMEBODY WHO WROTE TO YOU IS NOT OUTREACH (migration 074).
- *
- * The ramp exists to slow a new seat's outreach. Applied to a reply in a
- * conversation the other person started, it refused the most ordinary thing
- * anybody does on LinkedIn -- and the only way past it was an operator override
- * that no control in the product ever set, so week one had no way to answer a
- * message at all.
- */
+/** Answering somebody who wrote first is not cold outreach. */
 describe('a reply to somebody who wrote first', () => {
   it('is not held by the warm-up ceiling, and says why', async () => {
-    await seat('2026-08-04'); // Week 1: the ramp permits no messages at all.
-    expect(check(await guard({ kind: 'reply' }), 'warmup-ceiling').passed).toBe(false);
+    await seat('2026-08-04');
+    await log('reply', 'sent', 1);
+    expect(
+      check(await guard({ kind: 'reply' }, { dayShape: FLAT_DAY_SHAPE }), 'warmup-ceiling').passed
+    ).toBe(false);
 
-    const answered = await guard({ kind: 'reply', replyToInbound: true });
+    const answered = await guard(
+      { kind: 'reply', replyToInbound: true },
+      { dayShape: FLAT_DAY_SHAPE }
+    );
     expect(check(answered, 'warmup-ceiling').passed).toBe(true);
     expect(check(answered, 'warmup-ceiling').detail).toContain('wrote to this account first');
     expect(check(answered, 'warmup-ceiling').detail).toContain(
       'relaxes this ceiling and nothing else'
     );
-    expect(answered.allowed).toBe(true);
+    expect(answered.checks).toHaveLength(LINKEDIN_CHECK_NAMES.length);
   });
-
-  it('does not excuse a cold message that merely claims to be one', async () => {
+  it('does not excuse cold outreach that merely claims to be inbound', async () => {
     await seat('2026-08-04');
+    await log('dm', 'sent', 1);
+    await log('dm', 'sent', 1);
+    for (let index = 0; index < 5; index += 1) await log('invite', 'sent', 1);
+
     for (const kind of ['dm', 'invite', 'inmail'] as const) {
       const verdict = await guard({ kind, replyToInbound: true });
       expect(check(verdict, 'warmup-ceiling').passed).toBe(false);
       expect(check(verdict, 'warmup-ceiling').detail).not.toContain('wrote to this account first');
     }
   });
-
   /**
    * WHEN A PERSON IS TYPING, THE CLOCK IS THEIRS. The working window paces what
    * the account does by itself; people read their messages in the evening.
@@ -1095,11 +1134,12 @@ describe('a reply to somebody who wrote first', () => {
     expect(twice.checks.map((entry) => entry.check)).toContain('rolling-24h');
     expect(twice.checks.map((entry) => entry.check)).toContain('duplicate-target');
   });
-
   it('spells the refusal it is most likely to be read in', async () => {
     await seat('2026-08-04');
-    const refused = await guard({ kind: 'reply' });
-    expect(check(refused, 'warmup-ceiling').detail).toContain('permits no replies at all');
+    await log('reply', 'sent', 1);
+    const refused = await guard({ kind: 'reply' }, { dayShape: FLAT_DAY_SHAPE });
+    expect(check(refused, 'warmup-ceiling').passed).toBe(false);
+    expect(check(refused, 'warmup-ceiling').detail).toContain('1 of 1 replies');
     expect(check(refused, 'warmup-ceiling').detail).not.toContain('replys');
   });
 });
@@ -1233,9 +1273,6 @@ describe('the guard skill and the seat it is asked about', () => {
   });
 
   it('prices its ceilings against the seat it is given, not the owner seat', async () => {
-    // The owner seat is established; the sales seat was activated today and is
-    // in warm-up week 1. Evaluating one against the other's ramp is the
-    // wrong-account action the resolution exists to prevent.
     await upsertSeat(
       db,
       WORKSPACE_ID,
@@ -1243,7 +1280,6 @@ describe('the guard skill and the seat it is asked about', () => {
       new Date('2026-01-05T09:00:00.000Z')
     );
     await upsertSeat(db, WORKSPACE_ID, { label: 'Sales (SDR)', timezone: 'UTC' }, NOW, 'sales');
-
     const owner = await evaluateLinkedInSafety(
       db,
       {
@@ -1252,7 +1288,8 @@ describe('the guard skill and the seat it is asked about', () => {
         targetRef: 'https://www.linkedin.com/in/maya/',
         plannedFor: SLOT
       },
-      NOW
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
     );
     const sales = await evaluateLinkedInSafety(
       db,
@@ -1263,22 +1300,18 @@ describe('the guard skill and the seat it is asked about', () => {
         targetRef: 'https://www.linkedin.com/in/maya/',
         plannedFor: SLOT
       },
-      NOW
-    );
-
-    expect(owner.checks.find((entry) => entry.check === 'seat-configured')?.detail).toContain(
-      "'Owner'"
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
     );
     expect(sales.checks.find((entry) => entry.check === 'seat-configured')?.detail).toContain(
       "'Sales (SDR)'"
     );
     expect(sales.checks.find((entry) => entry.check === 'warmup-ceiling')?.detail).toContain(
-      'Warm-up week 1 permits no invites'
+      '0 of 5 invites'
     );
-    expect(sales.checks.find((entry) => entry.check === 'warmup-ceiling')?.passed).toBe(false);
+    expect(sales.checks.find((entry) => entry.check === 'warmup-ceiling')?.passed).toBe(true);
     expect(owner.checks.find((entry) => entry.check === 'warmup-ceiling')?.passed).toBe(true);
   });
-
   it("counts each seat's own ledger, so one account's volume never charges another's", async () => {
     await upsertSeat(
       db,

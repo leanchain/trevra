@@ -9,8 +9,14 @@ import {
   type AdmissionPolicy
 } from './admission.js';
 import { getLeadList } from './lead-lists.js';
-import { effectivePosture, getSeat, OWNER_SEAT_KEY } from './seats.js';
-import { bandFor, effectiveDailyCeiling, seatOperatorLimit, type PacedKind } from './limits.js';
+import { effectivePosture, getSeat, OWNER_SEAT_KEY, warmupWeekOf } from './seats.js';
+import {
+  bandFor,
+  effectiveDailyCeiling,
+  seatOperatorLimit,
+  warmupMultiplierFor,
+  type PacedKind
+} from './limits.js';
 import {
   delayMilliseconds,
   diagnoseWorkflow,
@@ -2291,7 +2297,11 @@ export async function previewManagedCampaignLaunch(
         seatOperatorLimit(seat, paced),
         seat.safetyBandOverride
       );
-      const dayOne = campaignActionLimit(ceiling, null, now);
+      const warmupMultiplier = seat.warmupOverride
+        ? 1
+        : warmupMultiplierFor(paced, warmupWeekOf(seat.activatedAt, now));
+      const accountToday = Math.floor(ceiling * warmupMultiplier);
+      const dayOne = campaignActionLimit(accountToday, null, now);
       capacity[kind] = (capacity[kind] ?? 0) + dayOne;
     }
   }

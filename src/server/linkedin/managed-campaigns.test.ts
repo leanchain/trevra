@@ -960,6 +960,34 @@ describe('campaign admission forecasting', () => {
     expect(forecast.reasons.join(' ')).toContain('recent execution outcomes');
   });
 
+  it('includes non-zero account warm-up in launch capacity and honors the established-account override', async () => {
+    await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE);
+    await upsertSeat(db, WORKSPACE, { label: 'Fresh owner', timezone: 'Europe/Zurich' }, NOW);
+    const listId = await leadList('Warm-up preview', ['warmup-preview']);
+    const workflowId = await workflow('Warm-up preview');
+
+    const warming = await previewManagedCampaignLaunch(
+      db,
+      { workspaceId: WORKSPACE, leadListId: listId, workflowId },
+      NOW
+    );
+    // Warm-up band 10/day x 50% account ramp = 5/day; campaign day 1 at 20% = 1.
+    expect(warming.dayOneCapacity.invite).toBe(1);
+
+    await upsertSeat(
+      db,
+      WORKSPACE,
+      { label: 'Fresh owner', timezone: 'Europe/Zurich', warmupOverride: true },
+      NOW
+    );
+    const established = await previewManagedCampaignLaunch(
+      db,
+      { workspaceId: WORKSPACE, leadListId: listId, workflowId },
+      NOW
+    );
+    expect(established.dayOneCapacity.invite).toBe(3);
+  });
+
   it('previews provider enrichment credits separately from emails already on the list', async () => {
     const list = await createLeadList(
       db,

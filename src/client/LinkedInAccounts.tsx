@@ -186,7 +186,6 @@ export function LinkedInAccounts({
   const [details, setDetails] = useState<Record<string, LinkedInSeatResponse>>({});
   const [reports, setReports] = useState<Record<string, LinkedInLimitsReport>>({});
   const [worker, setWorker] = useState<LinkedInWorkerStatus | null>(null);
-  const [safety, setSafety] = useState<LinkedInLimitsReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [failure, setFailure] = useState('');
   const [adding, setAdding] = useState(startAdding);
@@ -297,20 +296,11 @@ export function LinkedInAccounts({
    * do not: no control here falls back to a number nobody checked.
    */
   const activeSeatKey = active?.seatKey;
-  useEffect(() => {
-    let cancelled = false;
-    void getLinkedInLimits(activeSeatKey).then(
-      (report) => {
-        if (!cancelled) setSafety(report);
-      },
-      () => {
-        if (!cancelled) setSafety(null);
-      }
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [activeSeatKey]);
+  // `load()` already fetches the limits report for every account. Derive the
+  // active report from that same refreshed map instead of keeping a second
+  // independently-fetched copy that could remain stale after saving account
+  // settings while the selected seat key stayed the same.
+  const safety = activeSeatKey ? (reports[activeSeatKey] ?? null) : null;
 
   const empty = accounts !== null && accounts.length === 0;
   if (compact) {
@@ -888,6 +878,21 @@ function AccountPanel({
                   ? 'Unknown'
                   : account.connectionsCount.toLocaleString()}
                 {account.detectedAt ? ` · profile read ${relativeTime(account.detectedAt)}` : ''}
+              </dd>
+            </div>
+            <div>
+              <dt>Account warm-up</dt>
+              <dd>
+                {account.warmupOverride
+                  ? 'Skipped for this established account'
+                  : detail
+                    ? detail.warmupWeek > detail.warmupWeeks
+                      ? 'Complete'
+                      : `Week ${detail.warmupWeek} of ${detail.warmupWeeks}${safety ? ` · ${Math.round(safety.seat.warmupMultiplier * 100)}% active-outreach multiplier` : ''}`
+                    : 'Status unavailable'}
+                {account.activatedAt
+                  ? ` · clock recorded ${new Date(account.activatedAt).toLocaleString()}`
+                  : ''}
               </dd>
             </div>
             <div className="li-account-fact-wide">

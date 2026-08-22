@@ -339,8 +339,44 @@ describe('the API never sends', () => {
 });
 
 describe('GET /api/linkedin/limits', () => {
+  it('reports a skipped account warm-up as full account multiplier while keeping the raw clock visible', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_A,
+      { label: 'Established owner', timezone: 'Europe/Zurich', warmupOverride: true },
+      new Date()
+    );
+    const body = (await as(sessionA).get('/api/linkedin/limits').expect(200)).body as {
+      seat: {
+        posture: string;
+        warmupWeek: number;
+        warmupWeeks: number;
+        warmupMultiplier: number;
+        warmupOverride: boolean;
+      };
+      limits: Array<{ kind: string; window: string; ceiling: number; boundBy: string }>;
+    };
+    expect(body.seat).toMatchObject({
+      posture: 'steady',
+      warmupWeek: 1,
+      warmupWeeks: 3,
+      warmupMultiplier: 1,
+      warmupOverride: true
+    });
+    const inviteDay = body.limits.find(
+      (limit) => limit.kind === 'invite' && limit.window === 'day'
+    );
+    expect(inviteDay?.ceiling).toBeGreaterThan(0);
+    expect(inviteDay?.boundBy).not.toBe('warmup-multiplier');
+  });
+
   it('reports every ceiling with the rule that bound it and its confidence tag', async () => {
-    await seat(WORKSPACE_A);
+    await upsertSeat(
+      db,
+      WORKSPACE_A,
+      { label: 'Pankaj (founder)', timezone: 'Europe/Zurich' },
+      new Date()
+    );
 
     const body = (await as(sessionA).get('/api/linkedin/limits').expect(200)).body as {
       seat: { configured: boolean; posture: string; warmupWeek: number; band: string };
@@ -364,7 +400,6 @@ describe('GET /api/linkedin/limits', () => {
     expect(body.seat.posture).toBe('warmup');
     expect(body.limits.length).toBeGreaterThan(0);
 
-    // Nothing is flattened to a bare number: every entry carries provenance.
     for (const limit of body.limits) {
       expect(limit.boundBy).toBeTruthy();
       expect(limit.rule.length).toBeGreaterThan(10);
@@ -372,7 +407,6 @@ describe('GET /api/linkedin/limits', () => {
       expect(limit.source).toMatch(/linkedin-outreach-plan\.md/);
     }
 
-    // Exactly one number in the whole table is published by LinkedIn.
     const inmailMonth = body.limits.find(
       (limit) => limit.kind === 'inmail' && limit.window === 'month'
     );
@@ -386,6 +420,7 @@ describe('GET /api/linkedin/limits', () => {
     expect(inviteDay?.confidence).toBe('REPORTED');
     expect(inviteDay?.boundBy).toBe('warmup-multiplier');
     expect(inviteDay?.ceiling).toBeLessThan(inviteDay?.bandCeiling ?? 0);
+    expect(inviteDay?.ceiling).toBeGreaterThan(0);
 
     expect(body.signals.acceptance.confidence).toBe('REPORTED');
     expect(body.signals.dayOverDay.confidence).toBe('REPORTED');

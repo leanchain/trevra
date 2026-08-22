@@ -221,6 +221,97 @@ describe('managed campaign runner', () => {
     ).toEqual({ high: 0, low: 0, normal: 1 });
   });
 
+  it('queues a small amount of active outreach during the first account warm-up week', async () => {
+    await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE);
+    await upsertSeat(
+      db,
+      WORKSPACE,
+      {
+        label: 'Fresh owner',
+        timezone: 'UTC',
+        workingDays: [1, 2, 3, 4, 5],
+        workStartMinute: 480,
+        workEndMinute: 1080
+      },
+      NOW
+    );
+    const workflow = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Fresh-seat invite',
+        steps: [
+          {
+            id: 'invite',
+            action: 'connection_request',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          }
+        ]
+      },
+      NOW
+    );
+    const listId = await seededList('Fresh-seat leads', [
+      { first: 'Ava', last: 'Fresh', company: 'Acme', slug: 'ava-fresh' },
+      { first: 'Ben', last: 'Fresh', company: 'Acme', slug: 'ben-fresh' }
+    ]);
+    await runningCampaign(listId, workflow.id, 'Fresh-seat campaign');
+
+    const tick = await runManagedCampaigns(db, WORKSPACE, NOW);
+    const plannedInvites = (await actions()).filter((action) => action.kind === 'invite');
+
+    expect(tick.actionsPlanned).toBe(1);
+    expect(plannedInvites).toHaveLength(1);
+    expect(plannedInvites[0]?.status).toBe('planned');
+  });
+
+  it('lets an explicitly established account skip account warm-up while keeping the campaign ramp', async () => {
+    await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE);
+    await upsertSeat(
+      db,
+      WORKSPACE,
+      {
+        label: 'Established owner',
+        timezone: 'UTC',
+        warmupOverride: true,
+        workingDays: [1, 2, 3, 4, 5],
+        workStartMinute: 480,
+        workEndMinute: 1080
+      },
+      NOW
+    );
+    const workflow = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Established-seat invite',
+        steps: [
+          {
+            id: 'invite',
+            action: 'connection_request',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          }
+        ]
+      },
+      NOW
+    );
+    const listId = await seededList('Established-seat leads', [
+      { first: 'Eli', last: 'Established', company: 'Acme', slug: 'eli-established' },
+      { first: 'Fay', last: 'Established', company: 'Acme', slug: 'fay-established' },
+      { first: 'Gia', last: 'Established', company: 'Acme', slug: 'gia-established' },
+      { first: 'Hal', last: 'Established', company: 'Acme', slug: 'hal-established' }
+    ]);
+    await runningCampaign(listId, workflow.id, 'Established-seat campaign');
+
+    const tick = await runManagedCampaigns(db, WORKSPACE, NOW);
+    const plannedInvites = (await actions()).filter((action) => action.kind === 'invite');
+
+    expect(tick.actionsPlanned).toBe(3);
+    expect(plannedInvites).toHaveLength(3);
+    expect(plannedInvites.every((action) => action.status === 'planned')).toBe(true);
+  });
+
   it('shares one sender ceiling across competing campaigns instead of recreating it per campaign', async () => {
     await upsertSeat(db, WORKSPACE, { dailyProfileViewLimit: 10, safetyBandOverride: true }, NOW);
     await db

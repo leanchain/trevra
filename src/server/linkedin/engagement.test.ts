@@ -27,7 +27,9 @@ const SEAT = ownerSeat(WORKSPACE_ID);
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db
-    .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE_ID, 'LinkedIn Engagement Test', NOW.toISOString());
   await db.prepare('DELETE FROM linkedin_actions WHERE workspace_id=?').run(WORKSPACE_ID);
   await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
@@ -51,14 +53,31 @@ describe('recordEngagement', () => {
   // exhaustively in actions.test.ts); this just proves the pass-through
   // itself does not drop the field.
   it('threads queuedByUserId through to the ledger row', async () => {
-    await db.prepare('INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING')
-      .run('usr_engagement_test', WORKSPACE_ID, 'engagement-test@example.com', 'Engagement Tester', NOW.toISOString());
+    await db
+      .prepare(
+        'INSERT INTO users (id,workspace_id,email,name,created_at) VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING'
+      )
+      .run(
+        'usr_engagement_test',
+        WORKSPACE_ID,
+        'engagement-test@example.com',
+        'Engagement Tester',
+        NOW.toISOString()
+      );
     const filed = await recordEngagement(
       db,
-      { workspaceId: WORKSPACE_ID, kind: 'like', targetRef: 'https://linkedin.com/in/target', status: 'planned', source: 'manual', queuedByUserId: 'usr_engagement_test' },
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'like',
+        targetRef: 'https://linkedin.com/in/target',
+        status: 'planned',
+        source: 'manual',
+        queuedByUserId: 'usr_engagement_test'
+      },
       NOW
     );
-    const row = await db.prepare('SELECT queued_by_user_id FROM linkedin_actions WHERE id=?')
+    const row = await db
+      .prepare('SELECT queued_by_user_id FROM linkedin_actions WHERE id=?')
       .get<{ queued_by_user_id: string | null }>(filed.id);
     expect(row?.queued_by_user_id).toBe('usr_engagement_test');
   });
@@ -87,9 +106,12 @@ describe('the ceilings', () => {
   it('never lets a warm-up ceiling reach zero, which is what makes these kinds a warm-up', () => {
     for (const kind of ENGAGEMENT_KINDS) {
       expect(engagementBandFor(kind, 'warmup').perDay).toBeGreaterThanOrEqual(1);
-      // Even if the multiplier were ever applied by mistake, week 1 is the
-      // zero, so this records what such a mistake would cost.
-      expect(Math.floor(engagementBandFor(kind, 'warmup').perDay * WARMUP_MULTIPLIERS[0])).toBe(0);
+      // Passive kinds bypass this multiplier in production. Even if that
+      // contract regressed, the active week-1 multiplier is non-zero, so the
+      // engagement ceiling still cannot be accidentally turned off.
+      expect(
+        Math.floor(engagementBandFor(kind, 'warmup').perDay * WARMUP_MULTIPLIERS[0])
+      ).toBeGreaterThanOrEqual(1);
     }
   });
 
@@ -99,14 +121,20 @@ describe('the ceilings', () => {
   // quieter one would be incoherent whatever the numbers were.
   it('sits strictly below the one passive kind that has a reported band', () => {
     for (const kind of ENGAGEMENT_KINDS) {
-      expect(engagementBandFor(kind, 'warmup').perDay).toBeLessThan(LINKEDIN_LIMITS.profile_view.warmup.perDay);
-      expect(engagementBandFor(kind, 'steady').perDay).toBeLessThan(LINKEDIN_LIMITS.profile_view.steady.perDay);
+      expect(engagementBandFor(kind, 'warmup').perDay).toBeLessThan(
+        LINKEDIN_LIMITS.profile_view.warmup.perDay
+      );
+      expect(engagementBandFor(kind, 'steady').perDay).toBeLessThan(
+        LINKEDIN_LIMITS.profile_view.steady.perDay
+      );
     }
   });
 
   it('ramps up from warm-up to steady, never down', () => {
     for (const kind of ENGAGEMENT_KINDS) {
-      expect(engagementBandFor(kind, 'steady').perDay).toBeGreaterThan(engagementBandFor(kind, 'warmup').perDay);
+      expect(engagementBandFor(kind, 'steady').perDay).toBeGreaterThan(
+        engagementBandFor(kind, 'warmup').perDay
+      );
     }
   });
 
@@ -163,8 +191,12 @@ describe('the ledger', () => {
 
   it('keeps the kinds independent, so a follow does not block a like', async () => {
     await log('follow', 'https://www.linkedin.com/in/a/', 1);
-    expect(await hasEngagementTarget(db, SEAT, 'follow', 'https://www.linkedin.com/in/a/')).toBe(true);
-    expect(await hasEngagementTarget(db, SEAT, 'like', 'https://www.linkedin.com/in/a/')).toBe(false);
+    expect(await hasEngagementTarget(db, SEAT, 'follow', 'https://www.linkedin.com/in/a/')).toBe(
+      true
+    );
+    expect(await hasEngagementTarget(db, SEAT, 'like', 'https://www.linkedin.com/in/a/')).toBe(
+      false
+    );
   });
 
   it('reports what is left of a daily ceiling, floored at zero', async () => {
@@ -178,7 +210,12 @@ describe('the ledger', () => {
 });
 
 describe('the gate', () => {
-  const input = { workspaceId: WORKSPACE_ID, kind: 'like' as const, targetRef: 'https://www.linkedin.com/in/a/', plannedFor: SLOT };
+  const input = {
+    workspaceId: WORKSPACE_ID,
+    kind: 'like' as const,
+    targetRef: 'https://www.linkedin.com/in/a/',
+    plannedFor: SLOT
+  };
 
   /**
    * FAIL-CLOSED ACROSS THE INTEGRATION EDIT. Until `limits.ts` lists these
@@ -207,7 +244,13 @@ describe('the gate', () => {
     const seen: Array<{ passed: LinkedInSafetyInput; excludeActionId: string | null }> = [];
     const stub: typeof evaluateLinkedInSafety = async (_db, passed, _now, options = {}) => {
       seen.push({ passed, excludeActionId: options.excludeActionId ?? null });
-      return { allowed: true, reason: null, checks: [], automationMode: 'prepare-only', automationReason: 'stub' };
+      return {
+        allowed: true,
+        reason: null,
+        checks: [],
+        automationMode: 'prepare-only',
+        automationReason: 'stub'
+      };
     };
 
     const verdict = await evaluateEngagementSafety(db, input, NOW, {
@@ -218,7 +261,13 @@ describe('the gate', () => {
 
     expect(verdict.allowed).toBe(true);
     expect(seen).toHaveLength(1);
-    expect(seen[0].passed).toEqual({ workspaceId: WORKSPACE_ID, seatKey: 'owner', kind: 'like', targetRef: input.targetRef, plannedFor: SLOT });
+    expect(seen[0].passed).toEqual({
+      workspaceId: WORKSPACE_ID,
+      seatKey: 'owner',
+      kind: 'like',
+      targetRef: input.targetRef,
+      plannedFor: SLOT
+    });
     // The gate is told which row is the subject of the question; it is not
     // told to skip a check.
     expect(seen[0].excludeActionId).toBe('lact_under_evaluation');

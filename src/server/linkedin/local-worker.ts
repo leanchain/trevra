@@ -1894,9 +1894,6 @@ export function postgresLocalWorkerStore(
     async claimNextDueAction(batchId, now, exclude = []) {
       // CLAIM AND SELECT IN ONE STATEMENT. `FOR UPDATE SKIP LOCKED` means two
       // workers on the same box take different rows instead of the same one,
-      // and `claimed_at IS NULL` means a held row (unknown outcome) is never
-      // handed out again.
-      //
       // THE CLAIM NOW CARRIES A NAME AND A DEADLINE. `claimed_at` alone said
       // only "somebody took this", which on one machine was enough and on a
       // fleet is the strandable state: nothing could say WHICH worker took it,
@@ -1904,8 +1901,15 @@ export function postgresLocalWorkerStore(
       // row records `claimed_by` (this process) and `lease_expires_at` (now +
       // the lease), the running batch pushes that deadline forward before every
       // action, and `reapExpiredActionLeases` releases what a dead worker left
-      // behind. Nothing about the deliberate hold changes: it is marked with
-      // `settlement_hold_at` and no reaper can see it.
+      // behind. Nothing about the deliberate unknown-outcome hold changes.
+      //
+      // Managed-campaign state is deliberately NOT filtered here. A queued row
+      // may have become stale because the member replied, ended, was paused, or
+      // moved to another workflow node after the row was planned. Filtering it
+      // out at claim time would strand it forever as status='planned'. We claim
+      // it, then `actionExecutionState` re-reads the authoritative campaign/member
+      // cursor immediately before any browser side effect: reversible pause is
+      // released/deferred, and terminal/stale work is settled skipped.
       const row = await db
         .prepare(
           `
@@ -1925,32 +1929,9 @@ export function postgresLocalWorkerStore(
             -- not claimable rather than claimable-and-unsendable, for the same
             -- reason as the body rule above.
             AND (kind <> 'reply' OR (thread_urn IS NOT NULL AND thread_urn <> ''))
-            -- Managed campaign rows are executable only while BOTH the campaign
-            -- and this lead are live. Campaign/member pause is a runtime safety
-            -- boundary, not merely a planner hint. Legacy/manual rows have no
-            -- campaign_member_id and keep their existing behaviour.
-            AND (
-              campaign_member_id IS NULL OR EXISTS (
-                SELECT 1
-                FROM linkedin_campaign_members m
-                JOIN linkedin_campaigns c
-                  ON c.workspace_id=m.workspace_id AND c.id=m.campaign_id
-                WHERE m.workspace_id=linkedin_actions.workspace_id
-                  AND m.id=linkedin_actions.campaign_member_id
-                  AND c.status='running'
-                  AND m.status IN ('active','waiting')
-                  AND m.current_step_id=linkedin_actions.workflow_step_id
-                  AND NOT EXISTS (
-                    SELECT 1 FROM linkedin_actions r
-                    WHERE r.workspace_id=linkedin_actions.workspace_id
-                      AND r.campaign_member_id=linkedin_actions.campaign_member_id
-                      AND r.status='replied'
-                  )
-              )
-            )
-            -- Rows this pass already deferred on a branch that has no answer
-            -- yet. Excluded by id so the loop moves on instead of re-claiming
-            -- the same undecided row until the pass is exhausted.
+            -- Rows this pass already deferred on a branch/state that may become
+            -- executable later. Excluded by id so the loop moves on instead of
+            -- re-claiming the same row until the pass is exhausted.
             AND NOT (id = ANY(?::text[]))
           ORDER BY
             (CASE WHEN sla_deadline_at IS NOT NULL AND sla_deadline_at <= ?::timestamptz THEN 1 ELSE 0 END) DESC,
@@ -1960,17 +1941,7 @@ export function postgresLocalWorkerStore(
           LIMIT 1
         )
         -- campaign_id, replay_scope and override_warmup_ceiling are selected
-        -- for ONE consumer: the pre-send re-evaluation of the safety gate.
-        -- Without them that call could not run the campaign-day ramp (it was
-        -- told no campaign was named, on every real send), could not ask the
-        -- ledger's own scoped replay question, and could not honour an override
-        -- an operator had already recorded on the row.
-        -- for ONE consumer: the pre-send re-evaluation of the safety gate.
-        -- Without them that call could not run the campaign-day ramp (it was
-        -- told no campaign was named, on every real send), could not ask the
-        -- ledger's own scoped replay question, could not honour an override an
-        -- operator had already recorded on the row, and could not tell a row a
-        -- person queued by hand from one the planner placed.
+        -- for the pre-send re-evaluation of the safety gate.
         RETURNING id, workspace_id, seat_key, kind, target_ref,
                   TO_CHAR(planned_for AT TIME ZONE 'UTC', ${UTC_ISO_FORMAT}) AS planned_for,
                   body, subject, thread_urn, campaign_id, workflow_step_id, replay_scope, override_warmup_ceiling,

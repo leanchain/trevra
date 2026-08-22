@@ -746,26 +746,27 @@ export async function evaluateLinkedInSafety(
   // Passive kinds skip the ramp -- see PASSIVE_KINDS. They are still checked
   // here, just against the full ceiling: only the multiplier is bypassed.
   //
-  // THE RAMP MULTIPLIES `effectiveDailyLimit`, NOT `band.perDay`. That is what
-  // makes the override lift a CAP without ever lifting a RAMP: week 2 of an
-  // overridden seat is 40% of the operator's number instead of 40% of ours, and
-  // it is still 40%. It also makes the ramp respect an operator who asked for
-  // LESS than the band, which the old `band.perDay x multiplier` quietly did
-  // not.
-  const multiplier = warmupMultiplierFor(input.kind, warmupWeek);
+  // THE RAMP MULTIPLIES `effectiveDailyLimit`, NOT `band.perDay`. The safety-
+  // band override therefore changes the number being ramped, not the account-
+  // warm-up policy itself. `warmupOverride` is the separate, explicit control
+  // that may set this multiplier to 1 for an established account. This also
+  // makes the ramp respect an operator who asked for LESS than the band, which
+  // the old `band.perDay x multiplier` quietly did not.
+  const multiplier = seat?.warmupOverride ? 1 : warmupMultiplierFor(input.kind, warmupWeek);
   const warmupCeiling = Math.floor(effectiveDailyLimit * multiplier);
   const warmupPassed = used24 + 1 <= warmupCeiling;
   // Migration 044, honoured for `reply` and ignored for everything else. See
   // `LinkedInSafetyInput.overrideWarmupCeiling`.
   const overrideWarmup = input.overrideWarmupCeiling === true && input.kind === 'reply';
-  // Migration 074, the same shape and the same single check: this reply answers
-  // a person who wrote first, which is not the outreach the ramp slows.
+  // Migration 074: this reply answers a person who wrote first, which is not
+  // the cold outreach the account ramp slows.
   const answeringInbound = input.replyToInbound === true && input.kind === 'reply';
-  const warmupDetail =
-    warmupCeiling === 0
-      ? `Warm-up week ${warmupWeek} permits no ${pluralKind(input.kind)} at all (${ceilingSource} x ${multiplier}). ${seat === undefined ? 'No seat is configured, so this is paced as a brand-new one; detect the seat to start its ramp.' : "Wait for the ramp. It is keyed to how long this seat has been automated, not to the account's age, so there is nothing to declare that would lift it."}`
+  const warmupDetail = seat?.warmupOverride
+    ? `Account warm-up is explicitly skipped for this established account. Its recorded Trevra warm-up clock is week ${warmupWeek} of ${WARMUP_WEEKS}, but the account-level multiplier is 1.0; campaign ramping and every other safety ceiling still apply.`
+    : warmupCeiling === 0
+      ? `The effective ${pluralKind(input.kind)} ceiling is 0/day (${ceilingSource} x ${multiplier}). The active-outreach account warm-up multiplier itself is non-zero; check this account's configured daily limit or other zero ceiling.`
       : isPassiveKind(input.kind) && warmupWeek <= WARMUP_WEEKS
-        ? `${used24} of ${warmupCeiling} ${pluralKind(input.kind)} used in the last 24h. Passive activity is not ramped during warm-up; it is what the warm-up consists of.`
+        ? `${used24} of ${warmupCeiling} ${pluralKind(input.kind)} used in the last 24h. Passive activity is not reduced by the account warm-up multiplier.`
         : `${used24} of ${warmupCeiling} ${pluralKind(input.kind)} used in the last 24h (warm-up week ${warmupWeek}: ${ceilingSource} x ${multiplier}).`;
   checks.push({
     check: 'warmup-ceiling',
@@ -778,9 +779,6 @@ export async function evaluateLinkedInSafety(
           : warmupDetail
     )
   });
-
-  // THE SECOND RAMP, and it is a different clock from the one above.
-  //
   // `warmup-ceiling` ramps by WEEK since this SEAT was first automated.
   // This one ramps by DAY since this CAMPAIGN was started: 20/40/60/80/100%
   // over days 1..5, implemented once in `managed-campaigns.ts` and READ here
@@ -805,7 +803,7 @@ export async function evaluateLinkedInSafety(
     passed: pacingPass(campaignLimit === null || campaignUsed24 + 1 <= campaignLimit),
     detail: pacingDetail(
       campaign !== undefined && campaignLimit !== null
-        ? `${campaignUsed24} of ${campaignLimit} ${pluralKind(input.kind)} used by this campaign in the last 24 hours: campaign day ${campaignDayOf(campaign.startedAt, now)} is ${(campaignWarmupFraction(campaign.startedAt, now) * 100).toFixed(0)}% of the seat's ${effectiveDailyLimit}/day ceiling. The campaign ramp and the per-seat warm-up both apply; whichever is stricter binds.`
+        ? `${campaignUsed24} of ${campaignLimit} ${pluralKind(input.kind)} used by this campaign in the last 24 hours: campaign day ${campaignDayOf(campaign.startedAt, now)} is ${(campaignWarmupFraction(campaign.startedAt, now) * 100).toFixed(0)}% of the seat's ${effectiveDailyLimit}/day ceiling. ${seat?.warmupOverride ? 'Account warm-up is explicitly skipped for this established account, so this campaign ramp still applies on its own.' : 'The campaign ramp and the per-seat warm-up both apply; whichever is stricter binds.'}`
         : campaignId === null
           ? `No campaign was named for this action, so the campaign-day ramp does not apply and only the per-seat warm-up week does. The ramp shapes managed campaigns -- the ones this deployment runs itself.`
           : `Campaign '${campaignId}' is not a managed campaign in this workspace (a managed campaign has a workflow and has been started), so the 20/40/60/80/100% campaign-day ramp does not apply to it. The per-seat warm-up above still does.`

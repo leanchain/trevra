@@ -1085,10 +1085,12 @@ export interface LinkedInLimitsReport {
     band: BandName;
     /**
      * This seat's operator has opted their own configured ceilings in ahead of
-     * Trevra's stricter researched band. Warm-up still ramps whichever ceiling
-     * applies -- this says which one, never whether one applies at all.
+     * Trevra's stricter researched band. This says which ceiling applies; the
+     * account warm-up is a separate control and may itself be explicitly skipped.
      */
     safetyBandOverride: boolean;
+    /** Account-level Trevra warm-up was explicitly skipped by the operator. */
+    warmupOverride: boolean;
   };
   limits: LinkedInCeiling[];
   /**

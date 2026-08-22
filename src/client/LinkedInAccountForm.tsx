@@ -220,7 +220,7 @@ export const isWall = (error: unknown) => error instanceof ApiError && error.sta
  * The schedule and the ceilings, written once and used by both forms.
  * ---------------------------------------------------------------------- */
 
-interface AccountDraft {
+export interface AccountDraft {
   label: string;
   timezone: string;
   workingDays: number[];
@@ -232,6 +232,8 @@ interface AccountDraft {
   dailyFollowLimit: string;
   /** See `BandOverrideField`: whose daily ceiling binds, the operator's or Trevra's. */
   safetyBandOverride: boolean;
+  /** Explicit operator opt-out from Trevra's account-level automation warm-up. */
+  warmupOverride: boolean;
   /**
    * A NEW proxy URL to store, or ''.
    *
@@ -268,6 +270,7 @@ const emptyDraft = (timezone: string, ranges: OperatorRanges | null): AccountDra
   // A new account never opts out of the researched band on the way in: an
   // opt-out made before the account has sent anything is not an informed one.
   safetyBandOverride: false,
+  warmupOverride: false,
   proxyUrl: '',
   proxyRemove: false
 });
@@ -283,6 +286,7 @@ const draftOf = (account: LinkedInSeat): AccountDraft => ({
   dailyProfileViewLimit: String(account.dailyProfileViewLimit),
   dailyFollowLimit: String(account.dailyFollowLimit),
   safetyBandOverride: account.safetyBandOverride,
+  warmupOverride: account.warmupOverride,
   // Never prefilled: the stored URL carries a password and the server has no
   // route that returns one.
   proxyUrl: '',
@@ -290,7 +294,7 @@ const draftOf = (account: LinkedInSeat): AccountDraft => ({
 });
 
 /** Refuses in the operator's words before the server refuses in its own. */
-function draftToPatch(draft: AccountDraft, ranges: OperatorRanges | null) {
+export function draftToPatch(draft: AccountDraft, ranges: OperatorRanges | null) {
   const label = draft.label.trim();
   if (!label)
     throw new Error(
@@ -347,9 +351,51 @@ function draftToPatch(draft: AccountDraft, ranges: OperatorRanges | null) {
     workStartMinute,
     workEndMinute,
     safetyBandOverride: draft.safetyBandOverride,
+    warmupOverride: draft.warmupOverride,
     ...proxyPatch,
     ...limits
   };
+}
+
+export interface CapabilityDraft {
+  inmail: 'unknown' | 'available' | 'unavailable';
+  premium: boolean;
+  salesNavigator: boolean;
+  recruiter: boolean;
+  monthly: string;
+  paid: string;
+}
+
+export function capabilityDraftToPatch(draft: CapabilityDraft) {
+  const parseCredits = (raw: string, label: string): number | null => {
+    if (raw.trim() === '') return null;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0 || value > 10000)
+      throw new Error(`${label} must be a whole number from 0 to 10000.`);
+    return value;
+  };
+  return {
+    inmail: draft.inmail,
+    premium: draft.premium,
+    salesNavigator: draft.salesNavigator,
+    recruiter: draft.recruiter,
+    inmailMonthlyBudget: parseCredits(draft.monthly, 'InMail monthly budget'),
+    inmailPaidCreditCap: parseCredits(draft.paid, 'InMail paid credit cap')
+  };
+}
+
+export function capabilityPatchChanged(
+  account: LinkedInSeat,
+  patch: ReturnType<typeof capabilityDraftToPatch>
+): boolean {
+  return (
+    account.capabilities.inmail !== patch.inmail ||
+    account.capabilities.premium !== patch.premium ||
+    account.capabilities.salesNavigator !== patch.salesNavigator ||
+    account.capabilities.recruiter !== patch.recruiter ||
+    account.inmailMonthlyBudget !== patch.inmailMonthlyBudget ||
+    account.inmailPaidCreditCap !== patch.inmailPaidCreditCap
+  );
 }
 
 /* -------------------------------------------------------------------------
@@ -454,13 +500,14 @@ function ProxyField({
   );
 }
 
-function ScheduleFields({
+export function ScheduleFields({
   draft,
   onChange,
   idPrefix,
   safety,
   bandOverride = false,
-  proxy = null
+  proxy = null,
+  activatedAt = null
 }: {
   draft: AccountDraft;
   onChange: (patch: Partial<AccountDraft>) => void;
@@ -471,6 +518,8 @@ function ScheduleFields({
   bandOverride?: boolean;
   /** The stored proxy, redacted by the server. Null for an account that does not exist yet. */
   proxy?: LinkedInSeat['proxy'] | null;
+  /** When Trevra first started automating this account; the durable warm-up clock. */
+  activatedAt?: string | null;
 }) {
   const ranges = safety?.operatorRanges ?? null;
 
@@ -519,6 +568,37 @@ function ScheduleFields({
           />
         </label>
       </div>
+
+      {bandOverride && (
+        <>
+          <h4 className="li-subhead" aria-level={3}>
+            Account warm-up
+          </h4>
+          <p className="li-hint">
+            This is separate from each campaign&rsquo;s 5-day ramp. Trevra recorded this
+            account&rsquo;s automation clock when it was first connected
+            {activatedAt ? `: ${new Date(activatedAt).toLocaleString()}` : ''}.
+            {safety
+              ? ` The recorded clock is week ${safety.seat.warmupWeek} of ${safety.seat.warmupWeeks}.`
+              : ''}
+          </p>
+          <label className="li-inline-check">
+            <input
+              type="checkbox"
+              checked={draft.warmupOverride}
+              onChange={(event) => onChange({ warmupOverride: event.target.checked })}
+            />
+            <span>Skip Trevra account warm-up for this established LinkedIn account</span>
+          </label>
+          <p className="li-hint">
+            {draft.warmupOverride
+              ? 'After saving, the account-level multiplier is 100% immediately. Campaign warm-up, daily limits, rolling limits, working hours and other safety checks still apply.'
+              : safety
+                ? `Current account multiplier: ${Math.round(safety.seat.warmupMultiplier * 100)}% for active outreach.`
+                : 'Account warm-up is currently enabled.'}
+          </p>
+        </>
+      )}
 
       <h4 className="li-subhead" aria-level={3}>
         Most this account may do in 24 hours
@@ -601,9 +681,10 @@ function ScheduleFields({
  * researched default and the other is an informed choice.
  *
  * WHAT IT CANNOT DO is written last and plainly: it changes WHICH ceiling is
- * ramped, never whether one is. The seat's warm-up week and the per-campaign day
- * ramp both still multiply whatever ceiling ends up binding, and both numbers
- * quoted below come from the server that applies them.
+ * used, never whether the separate pacing controls exist. The campaign-day ramp
+ * still applies, and the account warm-up applies unless the operator separately
+ * uses the established-account warm-up override. Every number quoted below
+ * comes from the server that applies it.
  */
 function BandOverrideField({
   draft,
@@ -661,13 +742,14 @@ function BandOverrideField({
       )}
 
       <p className="li-hint">
-        Warm-up and campaign ramps still apply either way.{' '}
-        {safety
-          ? safety.seat.warmupWeek > safety.seat.warmupWeeks
-            ? `This account has finished its ${safety.seat.warmupWeeks}-week warm-up.`
-            : `Account warm-up: week ${safety.seat.warmupWeek} of ${safety.seat.warmupWeeks}.`
-          : 'The account warm-up still applies.'}{' '}
-        Campaign ramp:{' '}
+        {draft.warmupOverride
+          ? 'Account warm-up is set to be skipped after you save. '
+          : safety
+            ? safety.seat.warmupWeek > safety.seat.warmupWeeks
+              ? `This account has finished its ${safety.seat.warmupWeeks}-week warm-up. `
+              : `Account warm-up: week ${safety.seat.warmupWeek} of ${safety.seat.warmupWeeks}, ${Math.round(safety.seat.warmupMultiplier * 100)}% active-outreach multiplier. `
+            : 'The account warm-up applies. '}
+        Campaign ramp still applies:{' '}
         {ramp && ramp.length > 0
           ? ramp.map((fraction) => `${Math.round(fraction * 100)}%`).join(' → ')
           : 'applies'}
@@ -938,7 +1020,7 @@ export function EditAccountForm({
   const [openSection, setOpenSection] = useState<'display' | 'capabilities' | 'safety' | null>(
     null
   );
-  const [capDraft, setCapDraft] = useState(() => ({
+  const [capDraft, setCapDraft] = useState<CapabilityDraft>(() => ({
     inmail: account.capabilities.inmail,
     premium: account.capabilities.premium,
     salesNavigator: account.capabilities.salesNavigator,
@@ -967,22 +1049,26 @@ export function EditAccountForm({
     setFailure('');
     setWall('');
     try {
-      await updateLinkedInManagerSeat(account.seatKey, draftToPatch(draft, ranges));
-      const monthly = capDraft.monthly.trim() === '' ? null : Number(capDraft.monthly);
-      const paid = capDraft.paid.trim() === '' ? null : Number(capDraft.paid);
-      if (
-        (monthly !== null && !Number.isInteger(monthly)) ||
-        (paid !== null && !Number.isInteger(paid))
-      )
-        throw new Error('InMail budgets must be whole credit counts.');
-      await updateLinkedInSeatCapabilities(account.seatKey, {
-        inmail: capDraft.inmail,
-        premium: capDraft.premium,
-        salesNavigator: capDraft.salesNavigator,
-        recruiter: capDraft.recruiter,
-        inmailMonthlyBudget: monthly,
-        inmailPaidCreditCap: paid
-      });
+      // Validate BOTH parts of this screen before making either API mutation.
+      // A bad InMail credit count must not save the warm-up toggle and then tell
+      // the operator the whole form failed.
+      const seatPatch = draftToPatch(draft, ranges);
+      const capabilityPatch = capabilityDraftToPatch(capDraft);
+      const capabilitiesChanged = capabilityPatchChanged(account, capabilityPatch);
+
+      await updateLinkedInManagerSeat(account.seatKey, seatPatch);
+      if (capabilitiesChanged) {
+        try {
+          await updateLinkedInSeatCapabilities(account.seatKey, capabilityPatch);
+        } catch (error) {
+          const message = errorMessage(error, 'Unable to save LinkedIn capability settings');
+          setFailure(
+            `Account settings were saved, but LinkedIn capability settings were not. ${message}`
+          );
+          await onSaved();
+          return;
+        }
+      }
       setToast(
         `${draft.label.trim() || account.label} saved. New limits apply to what is scheduled from now on.`
       );
@@ -1164,6 +1250,7 @@ export function EditAccountForm({
                 safety={safety}
                 bandOverride
                 proxy={account.proxy}
+                activatedAt={account.activatedAt}
               />
             )}
           </div>

@@ -425,6 +425,42 @@ describe('LinkedIn manager HTTP surface', () => {
     ).toHaveLength(1);
   });
 
+  it('round-trips the account warm-up override through the manager seat PATCH API', async () => {
+    const updated = (
+      await as(tokenA)
+        .patch('/api/linkedin/manager/seats/owner')
+        .send({ warmupOverride: true })
+        .expect(200)
+    ).body.seat as { warmupOverride: boolean };
+    expect(updated.warmupOverride).toBe(true);
+
+    const capabilities = (
+      await as(tokenA)
+        .patch('/api/linkedin/manager/seats/owner/capabilities')
+        .send({
+          inmail: 'unknown',
+          premium: false,
+          salesNavigator: false,
+          recruiter: false,
+          inmailMonthlyBudget: null,
+          inmailPaidCreditCap: null
+        })
+        .expect(200)
+    ).body.seat as {
+      warmupOverride: boolean;
+      capabilities: { inmail: string };
+    };
+    expect(capabilities.warmupOverride).toBe(true);
+    expect(capabilities.capabilities.inmail).toBe('unknown');
+
+    const updatedSeats = (await as(tokenA).get('/api/linkedin/manager/seats').expect(200)).body
+      .seats as Array<{
+      seatKey: string;
+      warmupOverride: boolean;
+    }>;
+    expect(updatedSeats.find((seat) => seat.seatKey === 'owner')?.warmupOverride).toBe(true);
+  });
+
   it('requires an active campaign to be stopped before it can be deleted', async () => {
     const list = (
       await as(tokenA)

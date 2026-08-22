@@ -2580,8 +2580,14 @@ describe.skipIf(!databaseUrl)('multi-seat draining', () => {
       { workspaceId: WORKSPACE_ID, seatKey: 'sales', timezone: 'Europe/Zurich' }
     ]);
 
-    // And nothing that is not due yet is swept in with it.
-    expect(await seatsWithDueActions(db, new Date(NOW.getTime() - 60_000))).toEqual([]);
+    // And nothing from THIS workspace that is not due yet is swept in with it.
+    // `seatsWithDueActions` is intentionally deployment-global, so another
+    // concurrently running integration test may legitimately have a due seat.
+    expect(
+      (await seatsWithDueActions(db, new Date(NOW.getTime() - 60_000))).filter(
+        (seat) => seat.workspaceId === WORKSPACE_ID
+      )
+    ).toEqual([]);
   });
 
   it('surfaces a due action whose seat row is missing, rather than dropping it silently', async () => {
@@ -3096,7 +3102,78 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
     expect(claimed?.replyToInbound).toBe(false);
   });
 
-  it('sees an unaccepted invite to the same person, and does not see an accepted one', async () => {
+  it('claims stale managed work for retirement and keeps invite-state reads scoped correctly', async () => {
+    {
+      await db
+        .prepare(
+          `INSERT INTO linkedin_lead_contacts
+           (id,workspace_id,list_id,first_name,last_name,company,profile_url,dedupe_key,created_at,updated_at)
+         VALUES (?, ?, NULL, 'Stale', 'Lead', 'Acme', ?, 'stale-lead', ?, ?)`
+        )
+        .run(
+          'licon_stale',
+          WORKSPACE_ID,
+          'https://www.linkedin.com/in/stale-lead/',
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+      await db
+        .prepare(
+          `INSERT INTO linkedin_campaigns
+           (id,workspace_id,name,status,sequence_json,seat_key,started_at,created_at,updated_at)
+         VALUES (?, ?, 'Stale campaign', 'running', ?::jsonb, 'owner', ?, ?, ?)`
+        )
+        .run(
+          'licmp_stale',
+          WORKSPACE_ID,
+          JSON.stringify({
+            steps: [
+              { id: 'step-1', action: 'profile_view' },
+              { id: 'step-2', action: 'connection_request' }
+            ]
+          }),
+          NOW.toISOString(),
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+      await db
+        .prepare(
+          `INSERT INTO linkedin_campaign_members
+           (id,workspace_id,campaign_id,contact_id,status,step_index,current_step_id,completed_step_ids,created_at,updated_at)
+         VALUES (?, ?, ?, ?, 'waiting', 1, 'step-2', '["step-1"]'::jsonb, ?, ?)`
+        )
+        .run(
+          'limem_stale',
+          WORKSPACE_ID,
+          'licmp_stale',
+          'licon_stale',
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+      await db
+        .prepare(
+          `INSERT INTO linkedin_actions
+           (id,workspace_id,seat_key,kind,target_ref,campaign_id,campaign_member_id,workflow_step_id,status,planned_for,source,replay_scope,created_at)
+         VALUES (?, ?, 'owner', 'profile_view', ?, ?, ?, 'step-1', 'planned', ?, 'campaign', ?, ?)`
+        )
+        .run(
+          'lact_stale_managed',
+          WORKSPACE_ID,
+          'https://www.linkedin.com/in/stale-lead/',
+          'licmp_stale',
+          'limem_stale',
+          NOW.toISOString(),
+          'limem_stale:step-1',
+          NOW.toISOString()
+        );
+
+      const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
+      const claimed = await store.claimNextDueAction(await store.openBatch(NOW), NOW);
+
+      expect(claimed?.id).toBe('lact_stale_managed');
+      expect(await store.actionExecutionState(claimed as DueLinkedInAction)).toBe('retire');
+    }
+
     const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
     const dm = {
       id: 'lact_dm',

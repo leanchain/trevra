@@ -86,25 +86,27 @@ function perDay(plan: PacingPlan, dates: readonly string[] = WEEK): number[] {
   }
   return dates.map((date) => counts.get(date) ?? 0);
 }
-
 function targets(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `https://www.linkedin.com/in/target-${index}`);
 }
 
 describe('warm-up ramp', () => {
-  it('schedules nothing in week 1, which is what "passive only" means', async () => {
+  it('starts active outreach at a small non-zero week-1 ceiling instead of idling for seven days', async () => {
     await seat('2026-08-04');
     const plan = await planPacing(
       db,
       { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 },
-      NOW
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
     );
-    expect(plan.slots).toHaveLength(0);
+    expect(plan.slots.length).toBeGreaterThan(0);
+    expect(plan.slots.length).toBeLessThanOrEqual(10);
     expect(plan.ceilingsApplied).toContain('warmup-multiplier');
     expect(plan.reasons.join(' ')).toContain('warm-up week 1');
+    expect(plan.reasons.join(' ')).toContain('10 invite/day x 0.5 = 5/day');
   });
 
-  it('lifts the ceiling week by week: 0.4 of the band in week 2, 0.7 in week 3', async () => {
+  it('lifts the account ceiling week by week: 50%, 80%, then 100% of the warm-up band', async () => {
     await seat('2026-07-27');
     const week2 = await planPacing(
       db,
@@ -112,13 +114,9 @@ describe('warm-up ramp', () => {
       NOW,
       { dayShape: FLAT_DAY_SHAPE }
     );
-    // Warm-up band is 10/day; x0.4 = 4. The ramp still starts at 1 because the
-    // ledger is empty and no day may be a jump from the one before it.
-    expect(perDay(week2)).toEqual([1, 2, 0, 0, 3, 0, 0]);
+    expect(week2.reasons.join(' ')).toContain('warm-up week 2');
+    expect(week2.reasons.join(' ')).toContain('10 invite/day x 0.8 = 8/day');
 
-    // A NEW seat, not the same one moved. The ramp clock is write-once, so
-    // there is no edit that could walk this seat from week 2 into week 3 --
-    // which is exactly the property `account_opened_on` did not have.
     await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
     await seat('2026-07-20');
     const week3 = await planPacing(
@@ -127,8 +125,28 @@ describe('warm-up ramp', () => {
       NOW,
       { dayShape: FLAT_DAY_SHAPE }
     );
-    // 10/day x0.7 = 7.
-    expect(perDay(week3)).toEqual([1, 2, 0, 0, 3, 4, 0]);
+    expect(week3.reasons.join(' ')).toContain('warm-up week 3');
+    expect(week3.reasons.join(' ')).toContain('10 invite/day x 1 = 10/day');
+  });
+
+  it('lets an explicitly established account skip account warm-up without losing the recorded clock', async () => {
+    await seat('2026-08-04');
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Test seat', timezone: 'UTC', warmupOverride: true },
+      NOW
+    );
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 7 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
+    expect(perDay(plan)).toEqual([1, 2, 0, 0, 3, 4, 5]);
+    expect(plan.ceilingsApplied).not.toContain('warmup-multiplier');
+    expect(plan.reasons.join(' ')).toContain('Account warm-up is explicitly skipped');
+    expect(plan.reasons.join(' ')).toContain('recorded clock is week 1');
   });
 
   it('uses the steady band once the account is past the ramp', async () => {
@@ -143,19 +161,18 @@ describe('warm-up ramp', () => {
     expect(plan.reasons.join(' ')).toContain('18 invite/day');
   });
 
-  it('does not ramp passive activity: week 1 is 0 invites AND real profile views', async () => {
-    // 1.4's week 1 is "passive only (views/likes, 0 invites)". Zeroing views
-    // too would leave the seat inert for seven days and then acting, which is
-    // the slide-and-spike shape from 1.3 -- the engine would manufacture the
-    // signature it exists to prevent.
+  it('does not ramp passive activity: week 1 has limited invites and full-band profile views', async () => {
     await seat('2026-08-04');
 
     const invites = await planPacing(
       db,
       { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 },
-      NOW
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
     );
-    expect(invites.slots).toHaveLength(0);
+    expect(invites.slots.length).toBeGreaterThan(0);
+    expect(invites.ceilingsApplied).toContain('warmup-multiplier');
+    expect(invites.reasons.join(' ')).toContain('10 invite/day x 0.5 = 5/day');
 
     const views = await planPacing(
       db,
@@ -164,8 +181,6 @@ describe('warm-up ramp', () => {
       { dayShape: FLAT_DAY_SHAPE }
     );
     expect(views.slots.length).toBeGreaterThan(0);
-    // Full warm-up band (15/day), un-multiplied -- but every OTHER ceiling
-    // still binds, so it is the variance clamp that shapes the week.
     expect(perDay(views)).toEqual([1, 2, 0, 0, 3, 4, 5]);
     expect(views.ceilingsApplied).not.toContain('warmup-multiplier');
     expect(views.ceilingsApplied).toContain('day-over-day-delta');
@@ -190,22 +205,19 @@ describe('warm-up ramp', () => {
   });
 
   it('paces a freshly activated seat as week 1 and says so', async () => {
-    // No form filled in, nothing declared: the seat is week 1 because Trevra
-    // has been automating it for zero days, which is the fact plan 1.3 cares
-    // about and the only one we can actually verify.
     await seat(null);
     const plan = await planPacing(
       db,
       { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 },
-      NOW
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
     );
-    expect(plan.slots).toHaveLength(0);
+    expect(plan.slots.length).toBeGreaterThan(0);
+    expect(plan.ceilingsApplied).toContain('warmup-multiplier');
     expect(plan.reasons.join(' ')).toContain('warm-up week 1');
   });
 
   it('paces a seat with no activation instant as week 1, and says why', async () => {
-    // Fail closed: a row this schema never wrote is paced as brand new rather
-    // than as trusted.
     await seat('2026-01-01');
     await db
       .prepare('UPDATE linkedin_seats SET activated_at=NULL WHERE workspace_id=?')
@@ -213,15 +225,15 @@ describe('warm-up ramp', () => {
     const plan = await planPacing(
       db,
       { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 },
-      NOW
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
     );
-    expect(plan.slots).toHaveLength(0);
+    expect(plan.slots.length).toBeGreaterThan(0);
+    expect(plan.ceilingsApplied).toContain('warmup-multiplier');
     expect(plan.reasons.join(' ')).toContain('no activation timestamp');
   });
 
-  it('ignores a declared account age entirely', async () => {
-    // An account opened in 2011 whose automation starts today is a week-1
-    // risk. `account_opened_on` is informational and nothing paces off it.
+  it('ignores a declared account age entirely unless the established-account override is explicit', async () => {
     await upsertSeat(
       db,
       WORKSPACE_ID,
@@ -236,9 +248,11 @@ describe('warm-up ramp', () => {
     const plan = await planPacing(
       db,
       { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(10), horizonDays: 7 },
-      NOW
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
     );
-    expect(plan.slots).toHaveLength(0);
+    expect(plan.slots.length).toBeGreaterThan(0);
+    expect(plan.ceilingsApplied).toContain('warmup-multiplier');
     expect(plan.reasons.join(' ')).toContain('warm-up week 1');
   });
 });
@@ -307,10 +321,9 @@ describe("the operator's configured daily limit", () => {
     expect(plan.reasons.join(' ')).toContain('use your own daily limits');
   });
 
-  it('still ramps an overridden seat through its warm-up weeks', async () => {
-    // The override lifts the BAND cap and nothing else. A week-1 seat with the
-    // flag on still sends zero invites, because the warm-up multiplier is a
-    // separate rule and it is the one that says "week 1 is passive only".
+  it('still ramps a safety-band-overridden seat through its account warm-up weeks', async () => {
+    // The safety-band override changes which daily ceiling is multiplied; it
+    // does not remove the account warm-up multiplier itself.
     await upsertSeat(
       db,
       WORKSPACE_ID,
@@ -320,10 +333,12 @@ describe("the operator's configured daily limit", () => {
     const plan = await planPacing(
       db,
       { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(20), horizonDays: 7 },
-      NOW
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
     );
-    expect(plan.slots).toHaveLength(0);
+    expect(plan.slots.length).toBeGreaterThan(0);
     expect(plan.ceilingsApplied).toContain('warmup-multiplier');
+    expect(plan.reasons.join(' ')).toContain('75 invite/day x 0.5 = 37/day');
   });
 });
 

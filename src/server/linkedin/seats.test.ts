@@ -42,7 +42,9 @@ const PROXY_SECRET_ENV = {
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db
-    .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE_ID, 'LinkedIn Seats Test', NOW.toISOString());
   await db.prepare('DELETE FROM linkedin_seats WHERE workspace_id=?').run(WORKSPACE_ID);
 });
@@ -51,8 +53,18 @@ afterEach(async () => {
   await db?.close();
 });
 
-function create(patch: Partial<Parameters<typeof upsertSeat>[2]> = {}, at: Date = NOW): Promise<LinkedInSeat> {
-  return upsertSeat(db, WORKSPACE_ID, { label: 'Pankaj (founder)', timezone: 'Europe/Zurich', ...patch }, at, OWNER_SEAT_KEY, PROXY_SECRET_ENV);
+function create(
+  patch: Partial<Parameters<typeof upsertSeat>[2]> = {},
+  at: Date = NOW
+): Promise<LinkedInSeat> {
+  return upsertSeat(
+    db,
+    WORKSPACE_ID,
+    { label: 'Pankaj (founder)', timezone: 'Europe/Zurich', ...patch },
+    at,
+    OWNER_SEAT_KEY,
+    PROXY_SECRET_ENV
+  );
 }
 
 /* =========================================================================
@@ -65,15 +77,30 @@ function create(patch: Partial<Parameters<typeof upsertSeat>[2]> = {}, at: Date 
 describe('the account proxy', () => {
   it('stores it and reports it REDACTED -- the password never comes back', async () => {
     const seat = await create({ proxyUrl: 'http://relay:hunter2@proxy.example:3128' });
-    expect(seat.proxy).toEqual({ server: 'http://proxy.example:3128', username: 'relay', hasPassword: true });
+    expect(seat.proxy).toEqual({
+      server: 'http://proxy.example:3128',
+      username: 'relay',
+      hasPassword: true
+    });
     // The whole object is what three routes serialise onto the wire.
     expect(JSON.stringify(seat)).not.toContain('hunter2');
     // And the launcher, server-side, still gets the URL it has to hand Chromium.
-    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV)).toBe('http://relay:hunter2@proxy.example:3128');
-    const stored = await db.prepare(`
+    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV)).toBe(
+      'http://relay:hunter2@proxy.example:3128'
+    );
+    const stored = await db
+      .prepare(
+        `
       SELECT proxy_url,proxy_server,proxy_username,proxy_has_password
       FROM linkedin_seats WHERE workspace_id=? AND seat_key=?
-    `).get<{ proxy_url: string | null; proxy_server: string | null; proxy_username: string | null; proxy_has_password: boolean }>(WORKSPACE_ID, OWNER_SEAT_KEY);
+    `
+      )
+      .get<{
+        proxy_url: string | null;
+        proxy_server: string | null;
+        proxy_username: string | null;
+        proxy_has_password: boolean;
+      }>(WORKSPACE_ID, OWNER_SEAT_KEY);
     expect(stored).toEqual({
       proxy_url: null,
       proxy_server: 'http://proxy.example:3128',
@@ -81,7 +108,10 @@ describe('the account proxy', () => {
       proxy_has_password: true
     });
     expect(JSON.stringify(stored)).not.toContain('hunter2');
-    const sealed = await db.prepare('SELECT COUNT(*)::int AS total FROM linkedin_seat_proxy_secrets WHERE workspace_id=? AND seat_key=?')
+    const sealed = await db
+      .prepare(
+        'SELECT COUNT(*)::int AS total FROM linkedin_seat_proxy_secrets WHERE workspace_id=? AND seat_key=?'
+      )
       .get<{ total: number }>(WORKSPACE_ID, OWNER_SEAT_KEY);
     expect(sealed?.total).toBe(1);
   });
@@ -92,7 +122,9 @@ describe('the account proxy', () => {
     // not silently drop the connection it goes out through.
     const renamed = await create({ label: 'Pankaj (renamed)' });
     expect(renamed.proxy?.server).toBe('http://proxy.example:3128');
-    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV)).toBe('http://proxy.example:3128');
+    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV)).toBe(
+      'http://proxy.example:3128'
+    );
   });
 
   it('removes it on an explicit null and reports none', async () => {
@@ -109,21 +141,28 @@ describe('the account proxy', () => {
 
   it('converts a pre-076 plaintext proxy before hosted traffic can use it', async () => {
     await create();
-    await db.prepare('UPDATE linkedin_seats SET proxy_url=? WHERE workspace_id=? AND seat_key=?')
+    await db
+      .prepare('UPDATE linkedin_seats SET proxy_url=? WHERE workspace_id=? AND seat_key=?')
       .run('http://legacy:old-secret@proxy.example:3128', WORKSPACE_ID, OWNER_SEAT_KEY);
 
     expect(await migrateLegacySeatProxies(db, PROXY_SECRET_ENV)).toBe(1);
-    const legacy = await db.prepare('SELECT proxy_url FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
+    const legacy = await db
+      .prepare('SELECT proxy_url FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
       .get<{ proxy_url: string | null }>(WORKSPACE_ID, OWNER_SEAT_KEY);
     expect(legacy?.proxy_url).toBeNull();
-    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV))
-      .toBe('http://legacy:old-secret@proxy.example:3128');
+    expect(await seatProxyUrl(db, WORKSPACE_ID, OWNER_SEAT_KEY, PROXY_SECRET_ENV)).toBe(
+      'http://legacy:old-secret@proxy.example:3128'
+    );
   });
 });
 
 describe('upsertSeat', () => {
   it('creates the workspace seat and reports it under the owner key', async () => {
-    const seat = await create({ accountOpenedOn: '2026-01-01', connectionsCount: 640, profileUrl: 'https://www.linkedin.com/in/example' });
+    const seat = await create({
+      accountOpenedOn: '2026-01-01',
+      connectionsCount: 640,
+      profileUrl: 'https://www.linkedin.com/in/example'
+    });
     expect(seat.seatKey).toBe(OWNER_SEAT_KEY);
     expect(seat.label).toBe('Pankaj (founder)');
     expect(seat.accountOpenedOn).toBe('2026-01-01');
@@ -149,6 +188,25 @@ describe('upsertSeat', () => {
     expect(updated.label).toBe('Pankaj (founder)');
   });
 
+  it('defaults account warm-up override off, preserves the recorded clock, and round-trips the explicit choice', async () => {
+    const created = await create({}, ACTIVATED);
+    expect(created.warmupOverride).toBe(false);
+    expect(created.activatedAt).toBe(ACTIVATED.toISOString());
+
+    const skipped = await upsertSeat(db, WORKSPACE_ID, { warmupOverride: true }, NOW);
+    expect(skipped.warmupOverride).toBe(true);
+    expect(skipped.activatedAt).toBe(ACTIVATED.toISOString());
+    expect(effectivePosture(skipped, NOW)).toBe('steady');
+
+    const unchanged = await upsertSeat(db, WORKSPACE_ID, { timezone: 'America/New_York' }, NOW);
+    expect(unchanged.warmupOverride).toBe(true);
+    expect(unchanged.activatedAt).toBe(ACTIVATED.toISOString());
+
+    const restored = await upsertSeat(db, WORKSPACE_ID, { warmupOverride: false }, NOW);
+    expect(restored.warmupOverride).toBe(false);
+    expect(restored.activatedAt).toBe(ACTIVATED.toISOString());
+  });
+
   // The band override is an INFORMED opt-in, so its default has to be the
   // conservative one and no path may set it by inference. A seat that has
   // never been told about it must read false.
@@ -157,15 +215,24 @@ describe('upsertSeat', () => {
     expect(created.safetyBandOverride).toBe(false);
     expect((await getSeat(db, WORKSPACE_ID))?.safetyBandOverride).toBe(false);
 
-    const opted = await upsertSeat(db, WORKSPACE_ID, { safetyBandOverride: true, dailyInviteLimit: 30 }, NOW);
+    const opted = await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { safetyBandOverride: true, dailyInviteLimit: 30 },
+      NOW
+    );
     expect(opted.safetyBandOverride).toBe(true);
     expect(opted.dailyInviteLimit).toBe(30);
     expect((await getSeat(db, WORKSPACE_ID))?.safetyBandOverride).toBe(true);
 
     // Absent means unchanged here too: editing the timezone does not quietly
     // revoke an override, and it does not quietly grant one either.
-    expect((await upsertSeat(db, WORKSPACE_ID, { timezone: 'America/New_York' }, NOW)).safetyBandOverride).toBe(true);
-    expect((await upsertSeat(db, WORKSPACE_ID, { safetyBandOverride: false }, NOW)).safetyBandOverride).toBe(false);
+    expect(
+      (await upsertSeat(db, WORKSPACE_ID, { timezone: 'America/New_York' }, NOW)).safetyBandOverride
+    ).toBe(true);
+    expect(
+      (await upsertSeat(db, WORKSPACE_ID, { safetyBandOverride: false }, NOW)).safetyBandOverride
+    ).toBe(false);
   });
 
   it('clears a nullable field when null is passed explicitly', async () => {
@@ -175,7 +242,9 @@ describe('upsertSeat', () => {
   });
 
   it('refuses a first write without the two fields that have no default', async () => {
-    await expect(upsertSeat(db, WORKSPACE_ID, { accountOpenedOn: '2026-01-01' }, NOW)).rejects.toThrow(/label/);
+    await expect(
+      upsertSeat(db, WORKSPACE_ID, { accountOpenedOn: '2026-01-01' }, NOW)
+    ).rejects.toThrow(/label/);
     await expect(upsertSeat(db, WORKSPACE_ID, { label: 'Solo' }, NOW)).rejects.toThrow(/timezone/);
   });
 
@@ -200,7 +269,12 @@ describe('the ramp clock', () => {
     // operator can restart by saving a form again is not a clock. Every other
     // column below takes the new value; this one keeps the old one.
     await create({}, ACTIVATED);
-    const edited = await upsertSeat(db, WORKSPACE_ID, { label: 'Renamed', timezone: 'America/New_York', accountOpenedOn: '2026-08-06' }, NOW);
+    const edited = await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Renamed', timezone: 'America/New_York', accountOpenedOn: '2026-08-06' },
+      NOW
+    );
     expect(edited.label).toBe('Renamed');
     expect(edited.accountOpenedOn).toBe('2026-08-06');
     expect(edited.activatedAt).toBe('2026-01-01T09:00:00.000Z');
@@ -217,7 +291,12 @@ describe('the ramp clock', () => {
 
   it('records when the session was last read, without touching the clock', async () => {
     await create({}, ACTIVATED);
-    const detected = await upsertSeat(db, WORKSPACE_ID, { detectedAt: NOW.toISOString(), connectionsCount: 1234 }, NOW);
+    const detected = await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { detectedAt: NOW.toISOString(), connectionsCount: 1234 },
+      NOW
+    );
     expect(detected.detectedAt).toBe('2026-08-06T09:00:00.000Z');
     expect(detected.connectionsCount).toBe(1234);
     expect(detected.activatedAt).toBe('2026-01-01T09:00:00.000Z');
@@ -313,7 +392,9 @@ describe('effectivePosture', () => {
 
   it('falls back to week 1 for a row with no activation instant at all', async () => {
     await create({}, ACTIVATED);
-    await db.prepare('UPDATE linkedin_seats SET activated_at=NULL WHERE workspace_id=?').run(WORKSPACE_ID);
+    await db
+      .prepare('UPDATE linkedin_seats SET activated_at=NULL WHERE workspace_id=?')
+      .run(WORKSPACE_ID);
     const seat = await getSeat(db, WORKSPACE_ID);
     expect(seat?.activatedAt).toBeNull();
     expect(effectivePosture(seat as LinkedInSeat, NOW)).toBe('warmup');
@@ -332,7 +413,13 @@ describe('effectivePosture', () => {
 describe('several seats in one workspace', () => {
   it('keeps two seats as two rows, each with its own ramp clock', async () => {
     const owner = await create({}, ACTIVATED);
-    const sales = await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, NOW, 'sales');
+    const sales = await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Sales seat', timezone: 'America/New_York' },
+      NOW,
+      'sales'
+    );
 
     expect(owner.seatKey).toBe(OWNER_SEAT_KEY);
     expect(sales.seatKey).toBe('sales');
@@ -343,14 +430,23 @@ describe('several seats in one workspace', () => {
     expect(effectivePosture(owner, NOW)).toBe('steady');
     expect(effectivePosture(sales, NOW)).toBe('warmup');
 
-    expect((await listSeats(db, WORKSPACE_ID)).map((seat) => seat.seatKey).sort()).toEqual(['owner', 'sales']);
+    expect((await listSeats(db, WORKSPACE_ID)).map((seat) => seat.seatKey).sort()).toEqual([
+      'owner',
+      'sales'
+    ]);
     // The workspace is still ONE workspace, however many accounts it drives.
     expect(await linkedinWorkspaceIds(db)).toContain(WORKSPACE_ID);
   });
 
   it('lists every seat as the pair every execution path keys on', async () => {
     await create({}, ACTIVATED);
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, NOW, 'sales');
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Sales seat', timezone: 'America/New_York' },
+      NOW,
+      'sales'
+    );
 
     const refs = (await linkedinSeatRefs(db)).filter((ref) => ref.workspaceId === WORKSPACE_ID);
     expect(refs).toEqual([
@@ -361,10 +457,22 @@ describe('several seats in one workspace', () => {
 
   it('PAUSES ONE ACCOUNT WITHOUT PAUSING THE OTHER', async () => {
     await create({}, ACTIVATED);
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, ACTIVATED, 'sales');
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Sales seat', timezone: 'America/New_York' },
+      ACTIVATED,
+      'sales'
+    );
 
     // LinkedIn restricts an ACCOUNT, not a workspace.
-    const paused = await pauseSeat(db, WORKSPACE_ID, 'LinkedIn restricted this account', NOW, 'sales');
+    const paused = await pauseSeat(
+      db,
+      WORKSPACE_ID,
+      'LinkedIn restricted this account',
+      NOW,
+      'sales'
+    );
     expect(paused?.seatKey).toBe('sales');
     expect(paused?.pausedReason).toBe('LinkedIn restricted this account');
 
@@ -380,7 +488,13 @@ describe('several seats in one workspace', () => {
 
   it('cools one account without cooling the other', async () => {
     await create({}, ACTIVATED);
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, ACTIVATED, 'sales');
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Sales seat', timezone: 'America/New_York' },
+      ACTIVATED,
+      'sales'
+    );
 
     await upsertSeat(db, WORKSPACE_ID, { posture: 'cooldown' }, NOW, 'sales');
 
@@ -390,7 +504,13 @@ describe('several seats in one workspace', () => {
 
   it('deletes one seat and leaves the other, ramp clock and all', async () => {
     await create({}, ACTIVATED);
-    await upsertSeat(db, WORKSPACE_ID, { label: 'Sales seat', timezone: 'America/New_York' }, NOW, 'sales');
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Sales seat', timezone: 'America/New_York' },
+      NOW,
+      'sales'
+    );
 
     expect(await deleteSeat(db, WORKSPACE_ID, 'sales')).toBe(true);
     expect(await getSeat(db, WORKSPACE_ID, 'sales')).toBeUndefined();
@@ -401,10 +521,12 @@ describe('several seats in one workspace', () => {
   });
 
   it('refuses a seat key that could not survive a path or a query', async () => {
-    await expect(upsertSeat(db, WORKSPACE_ID, { label: 'Bad', timezone: 'UTC' }, NOW, '../../etc/passwd'))
-      .rejects.toThrow(/seat_key/);
-    await expect(upsertSeat(db, WORKSPACE_ID, { label: 'Bad', timezone: 'UTC' }, NOW, ''))
-      .rejects.toThrow(/seat_key/);
+    await expect(
+      upsertSeat(db, WORKSPACE_ID, { label: 'Bad', timezone: 'UTC' }, NOW, '../../etc/passwd')
+    ).rejects.toThrow(/seat_key/);
+    await expect(
+      upsertSeat(db, WORKSPACE_ID, { label: 'Bad', timezone: 'UTC' }, NOW, '')
+    ).rejects.toThrow(/seat_key/);
   });
 
   it('resolves nothing for a seat key this workspace has never had', async () => {

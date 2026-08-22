@@ -127,13 +127,15 @@ export interface LinkedInSeat {
    * steady/warm-up BAND cap only.
    *
    * WHAT IT DOES NOT LIFT, and this is the whole reason it is safe to offer:
-   * both ramps still apply on top of it -- the per-seat warm-up week
-   * (`warmupMultiplierFor`) and the per-campaign 20/40/60/80/100% day ramp
-   * (`campaignActionLimit`) -- as do the rolling windows, the day-over-day
-   * variance clamp, the working window, and posture. An override is a
-   * different ceiling, never an absence of one.
+   * the per-campaign 20/40/60/80/100% day ramp (`campaignActionLimit`) still
+   * applies, as does the per-seat warm-up week (`warmupMultiplierFor`) unless
+   * the operator separately uses `warmupOverride`. Rolling windows, the
+   * day-over-day variance clamp, the working window, and posture remain too.
+   * This override is a different ceiling, never an absence of one.
    */
   safetyBandOverride: boolean;
+  /** Explicit operator opt-out from Trevra's account-level automation warm-up. */
+  warmupOverride: boolean;
   capabilities: {
     inmail: 'unknown' | 'available' | 'unavailable';
     premium: boolean;
@@ -228,6 +230,8 @@ export interface SeatPatch {
   dailyFollowLimit?: number;
   /** See {@link LinkedInSeat.safetyBandOverride}. Absent means unchanged; a first write defaults to false. */
   safetyBandOverride?: boolean;
+  /** Explicitly skip the account-level automation warm-up. Absent means unchanged. */
+  warmupOverride?: boolean;
   /**
    * This account's outbound proxy, as a full `scheme://user:pass@host:port`.
    *
@@ -265,6 +269,7 @@ interface SeatRow {
   daily_profile_view_limit: number;
   daily_follow_limit: number;
   safety_band_override: boolean;
+  warmup_override: boolean;
   capabilities_json: unknown;
   inmail_monthly_budget: number | null;
   inmail_paid_credit_cap: number | null;
@@ -309,6 +314,7 @@ const SEAT_COLUMNS = `
   daily_profile_view_limit,
   daily_follow_limit,
   safety_band_override,
+  warmup_override,
   capabilities_json,
   inmail_monthly_budget,
   inmail_paid_credit_cap,
@@ -381,6 +387,7 @@ function toSeat(row: SeatRow): LinkedInSeat {
     // Fails CLOSED on a row this schema never wrote: an absent flag is not an
     // override, it is a seat nobody has opted in for.
     safetyBandOverride: row.safety_band_override === true,
+    warmupOverride: row.warmup_override === true,
     capabilities: parsedCapabilities(row.capabilities_json),
     inmailMonthlyBudget:
       row.inmail_monthly_budget === null ? null : Number(row.inmail_monthly_budget),
@@ -820,6 +827,7 @@ export async function upsertSeat(
   // Absent means UNCHANGED, like every other field here; a seat that has never
   // been opted in is false. There is no path that turns this on by inference.
   const safetyBandOverride = patch.safetyBandOverride ?? existing?.safetyBandOverride ?? false;
+  const warmupOverride = patch.warmupOverride ?? existing?.warmupOverride ?? false;
   const timestamp = now.toISOString();
 
   await db
@@ -829,8 +837,8 @@ export async function upsertSeat(
       workspace_id, seat_key, owner_user_id, label, profile_url, account_opened_on, connections_count,
       timezone, activated_at, detected_at, session_valid_at, posture, paused_reason,
       working_days, work_start_minute, work_end_minute, daily_invite_limit,
-      daily_message_limit, daily_profile_view_limit, daily_follow_limit, safety_band_override, created_at, updated_at
-    ) VALUES (?,?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?)
+      daily_message_limit, daily_profile_view_limit, daily_follow_limit, safety_band_override, warmup_override, created_at, updated_at
+    ) VALUES (?,?,?,?, ?,?::date,?::int,?,?::timestamptz,?::timestamptz,?::timestamptz,?,?,?::jsonb,?,?,?,?,?,?,?,?,?,?)
     ON CONFLICT (workspace_id, seat_key) DO UPDATE SET
       owner_user_id = COALESCE(excluded.owner_user_id, linkedin_seats.owner_user_id),
       label = excluded.label,
@@ -853,6 +861,7 @@ export async function upsertSeat(
       daily_profile_view_limit = excluded.daily_profile_view_limit,
       daily_follow_limit = excluded.daily_follow_limit,
       safety_band_override = excluded.safety_band_override,
+      warmup_override = excluded.warmup_override,
       updated_at = excluded.updated_at
     RETURNING workspace_id
   `
@@ -881,6 +890,7 @@ export async function upsertSeat(
       dailyProfileViewLimit,
       dailyFollowLimit,
       safetyBandOverride,
+      warmupOverride,
       timestamp,
       timestamp
     );
@@ -1079,6 +1089,7 @@ export function warmupWeekOf(activatedAt: string | null, now: Date): number {
  */
 export function effectivePosture(seat: LinkedInSeat, now: Date): SeatPosture {
   if (seat.posture === 'paused' || seat.posture === 'cooldown') return seat.posture;
+  if (seat.warmupOverride) return 'steady';
   return warmupWeekOf(seat.activatedAt, now) > WARMUP_WEEKS ? 'steady' : 'warmup';
 }
 

@@ -7850,6 +7850,8 @@ const linkedinSeatSchema = z
      * LinkedIn account and not a workspace policy.
      */
     safetyBandOverride: z.boolean().optional(),
+    /** Explicitly skip Trevra's account-level automation warm-up for an established account. */
+    warmupOverride: z.boolean().optional(),
     /**
      * This account's own outbound proxy, `scheme://user:pass@host:port`.
      *
@@ -8808,7 +8810,8 @@ async function effectiveLinkedInLimits(
   const seat = await getSeat(db, workspaceId, seatKey);
   const posture = seat ? effectivePosture(seat, now) : null;
   const warmupWeek = warmupWeekOf(seat?.activatedAt ?? null, now);
-  const multiplier = warmupMultiplier(warmupWeek);
+  const warmupOverride = seat?.warmupOverride ?? false;
+  const multiplier = warmupOverride ? 1 : warmupMultiplier(warmupWeek);
   // 'cooldown' and 'paused' both draw from the conservative band: backing off
   // means the warm-up numbers, not the steady ones.
   const band = posture === 'steady' ? 'steady' : 'warmup';
@@ -8862,7 +8865,7 @@ async function effectiveLinkedInLimits(
     // week 1 is passive-only, so views ARE the warm-up). The flat
     // `warmupMultiplier` here reported zero profile views in week 1 for a seat
     // the gate would have let view all fifteen.
-    const kindMultiplier = warmupMultiplierFor(kind, warmupWeek);
+    const kindMultiplier = warmupOverride ? 1 : warmupMultiplierFor(kind, warmupWeek);
     const afterWarmup = Math.floor(dailyCeiling * kindMultiplier);
     // Halves, never zeroes -- a seat cut to zero can never produce the outcomes
     // that would clear the throttle, so "halve it" would become "end it".
@@ -8880,7 +8883,7 @@ async function effectiveLinkedInLimits(
       ceilingSource === 'operator'
         ? `Your own ceiling for this account is ${operatorLimit} ${kind}(s)/day, stricter than Trevra's ${bandLimits.perDay}/day ${band} band, so yours is the one that binds.${poolNote}`
         : ceilingSource === 'operator-override'
-          ? `This account is set to use your own daily limits instead of Trevra's safety bands, so ${operatorLimit} ${kind}(s)/day binds rather than the researched ${bandLimits.perDay}/day.${poolNote} Every ramp and every rolling window still applies on top.`
+          ? `This account is set to use your own daily limits instead of Trevra's safety bands, so ${operatorLimit} ${kind}(s)/day binds rather than the researched ${bandLimits.perDay}/day.${poolNote} The campaign ramp and every other applicable ceiling still apply; account warm-up applies unless it is separately skipped for an established account.`
           : operatorLimit === null
             ? `The ${band} band ceiling for ${kind}: ${bandLimits.perDay}/day.`
             : `You have set ${operatorLimit} ${kind}(s)/day for this account, but Trevra's researched ${band} band is ${bandLimits.perDay}/day and the stricter of the two binds.${poolNote} Turning on "use my own daily limits" for this account makes your number the binding one.`;
@@ -8975,7 +8978,8 @@ async function effectiveLinkedInLimits(
       // Whether this seat's operator has opted their own configured ceilings in
       // ahead of the researched band. Reported, never inferred: a seat nobody
       // opted in is false, including a workspace with no seat at all.
-      safetyBandOverride: seat?.safetyBandOverride ?? false
+      safetyBandOverride: seat?.safetyBandOverride ?? false,
+      warmupOverride
     },
     limits,
     /** Every band figure this seat is paced against, and the only copy of them. */

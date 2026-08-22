@@ -2,7 +2,12 @@ import { z } from 'zod';
 import { canonicalPayloadHash } from '../control-plane/payload.js';
 import type { Db } from '../db.js';
 import type { Skill, SkillContext } from '../skills/types.js';
-import { acceptanceRate, countPendingInvites, dailyCountsForLastNDays, type SeatRef } from './actions.js';
+import {
+  acceptanceRate,
+  countPendingInvites,
+  dailyCountsForLastNDays,
+  type SeatRef
+} from './actions.js';
 import {
   ACCEPTANCE_THROTTLE_FACTOR,
   ACCEPTANCE_WINDOW_DAYS,
@@ -126,15 +131,30 @@ function formatterFor(timeZone: string): Intl.DateTimeFormat {
 /** Wall-clock reading of `instant` in `timeZone`. */
 export function localDateOf(instant: Date, timeZone: string): LocalMoment {
   const parts = formatterFor(timeZone).formatToParts(instant);
-  const read = (type: string): number => Number(parts.find((part) => part.type === type)?.value ?? '0');
+  const read = (type: string): number =>
+    Number(parts.find((part) => part.type === type)?.value ?? '0');
   // Some ICU builds render midnight as hour 24 under hour12:false.
-  return { year: read('year'), month: read('month'), day: read('day'), hour: read('hour') % 24, minute: read('minute'), second: read('second') };
+  return {
+    year: read('year'),
+    month: read('month'),
+    day: read('day'),
+    hour: read('hour') % 24,
+    minute: read('minute'),
+    second: read('second')
+  };
 }
 
 /** Offset of `timeZone` from UTC at `instant`, in milliseconds. */
 function offsetMs(instant: Date, timeZone: string): number {
   const local = localDateOf(instant, timeZone);
-  const asUtc = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second);
+  const asUtc = Date.UTC(
+    local.year,
+    local.month - 1,
+    local.day,
+    local.hour,
+    local.minute,
+    local.second
+  );
   return asUtc - Math.floor(instant.getTime() / 1000) * 1000;
 }
 
@@ -197,7 +217,11 @@ export interface WorkWindowSeat {
 
 export function workWindowOf(seat: WorkWindowSeat | null | undefined): WorkWindow {
   if (!seat) return DEFAULT_WORK_WINDOW;
-  return { days: [...seat.workingDays], startMinute: seat.workStartMinute, endMinute: seat.workEndMinute };
+  return {
+    days: [...seat.workingDays],
+    startMinute: seat.workStartMinute,
+    endMinute: seat.workEndMinute
+  };
 }
 
 /** 'HH:MM' for a minute-of-day, for the sentences both the plan and the gate write. */
@@ -270,7 +294,10 @@ export function dayShapeFor(seed: string, day: LocalDate, window: WorkWindow): D
   const random = seededRandom(canonicalPayloadHash({ seed, day: isoDate(day) }));
   const resting = random() < REST_DAY_ODDS;
   const draw = DAILY_DRAW.min + random() * (DAILY_DRAW.max - DAILY_DRAW.min);
-  const room = Math.max(0, Math.floor((window.endMinute - window.startMinute - MIN_DAY_SPAN_MINUTES) / 2));
+  const room = Math.max(
+    0,
+    Math.floor((window.endMinute - window.startMinute - MIN_DAY_SPAN_MINUTES) / 2)
+  );
   const jitter = Math.min(DAY_EDGE_JITTER_MINUTES, room);
   return {
     startMinute: window.startMinute + Math.round(random() * jitter),
@@ -282,7 +309,11 @@ export function dayShapeFor(seed: string, day: LocalDate, window: WorkWindow): D
 
 export function addLocalDays(date: LocalDate, days: number): LocalDate {
   const shifted = new Date(Date.UTC(date.year, date.month - 1, date.day) + days * 86_400_000);
-  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() };
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate()
+  };
 }
 
 function isoDate(date: LocalDate): string {
@@ -395,7 +426,8 @@ export function visitsForDay(
   if (span <= VISIT_MINUTES.max) return [];
 
   const random = seededRandom(canonicalPayloadHash({ visits: seed, day: isoDate(day) }));
-  const count = VISITS_PER_DAY.min + Math.floor(random() * (VISITS_PER_DAY.max - VISITS_PER_DAY.min + 1));
+  const count =
+    VISITS_PER_DAY.min + Math.floor(random() * (VISITS_PER_DAY.max - VISITS_PER_DAY.min + 1));
   const slot = span / count;
 
   // PHASE ONE: WHEN, which never depends on how much there is to send.
@@ -437,7 +469,10 @@ export function visitsForDay(
     return {
       index: draft.index,
       startMinute: draft.startMinute,
-      endMinute: Math.min(window.endMinute, Math.round(draft.startMinute + draft.minutes + sending)),
+      endMinute: Math.min(
+        window.endMinute,
+        Math.round(draft.startMinute + draft.minutes + sending)
+      ),
       actions: mine
     };
   });
@@ -487,7 +522,8 @@ function spreadWithinVisits(
     const jitterRoom = Math.max(0, room - ACTION_GAP_SECONDS.max);
     for (let index = 0; index < visit.actions && seconds.length < count; index += 1) {
       const target = start + index * room + random() * jitterRoom;
-      const gap = ACTION_GAP_SECONDS.min + random() * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min);
+      const gap =
+        ACTION_GAP_SECONDS.min + random() * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min);
       const at = seconds.length === 0 ? target : Math.max(target, cursor + gap);
       cursor = Math.min(at, end - 1);
       seconds.push(Math.round(cursor));
@@ -496,7 +532,12 @@ function spreadWithinVisits(
   return seconds;
 }
 
-function spreadWithinWorkingHours(count: number, random: () => number, earliestSecond: number, window: WorkWindow): number[] {
+function spreadWithinWorkingHours(
+  count: number,
+  random: () => number,
+  earliestSecond: number,
+  window: WorkWindow
+): number[] {
   if (count <= 0) return [];
   const windowStart = Math.max(window.startMinute * 60, earliestSecond);
   const windowEnd = window.endMinute * 60;
@@ -530,7 +571,8 @@ function spreadWithinWorkingHours(count: number, random: () => number, earliestS
   let cursor = Number.NEGATIVE_INFINITY;
   for (let index = 0; index < scheduled; index += 1) {
     const target = windowStart + index * spacing + random() * jitterRoom;
-    const gap = ACTION_GAP_SECONDS.min + random() * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min);
+    const gap =
+      ACTION_GAP_SECONDS.min + random() * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min);
     const at = index === 0 ? target : Math.max(target, cursor + gap);
     cursor = Math.min(at, windowEnd - 1);
     seconds.push(Math.round(cursor));
@@ -539,7 +581,9 @@ function spreadWithinWorkingHours(count: number, random: () => number, earliestS
 }
 
 function sumOfLast(values: readonly number[], count: number): number {
-  return values.slice(Math.max(0, values.length - count)).reduce((total, value) => total + value, 0);
+  return values
+    .slice(Math.max(0, values.length - count))
+    .reduce((total, value) => total + value, 0);
 }
 
 /**
@@ -615,14 +659,18 @@ export async function planPacing(
   // --- Step 1: posture, and the warm-up week derived from account age. ---
   const seat = await getSeat(db, input.workspaceId, seatKey);
   if (!seat) {
-    reasons.push('No LinkedIn seat is configured for this workspace, so there is nothing to pace. Add one with a label, a timezone, and the date the account was opened.');
+    reasons.push(
+      'No LinkedIn seat is configured for this workspace, so there is nothing to pace. Add one with a label, a timezone, and the date the account was opened.'
+    );
     return { seatKey, slots: [], reasons, ceilingsApplied };
   }
 
   const posture = effectivePosture(seat, now);
   if (posture === 'paused') {
     ceilingsApplied.push('seat-paused');
-    reasons.push(`Seat '${seat.label}' is paused${seat.pausedReason ? `: ${seat.pausedReason}` : ''}. Nothing is scheduled while it is paused.`);
+    reasons.push(
+      `Seat '${seat.label}' is paused${seat.pausedReason ? `: ${seat.pausedReason}` : ''}. Nothing is scheduled while it is paused.`
+    );
     return { seatKey, slots: [], reasons, ceilingsApplied };
   }
 
@@ -648,7 +696,8 @@ export async function planPacing(
     targets.push(trimmed);
   }
   const dropped = input.targets.length - targets.length;
-  if (dropped > 0) reasons.push(`${dropped} empty or repeated target(s) were dropped; one target gets one slot.`);
+  if (dropped > 0)
+    reasons.push(`${dropped} empty or repeated target(s) were dropped; one target gets one slot.`);
 
   const warmupWeek = warmupWeekOf(seat.activatedAt, now);
   const band = bandFor(input.kind, posture === 'steady' ? 'steady' : 'warmup');
@@ -664,18 +713,20 @@ export async function planPacing(
    * never happens. The planner and the gate reconcile the two numbers the same
    * way now, through the same function.
    *
-   * Passive kinds skip the multiplier -- 1.4's week 1 is "passive only", so
-   * views ARE the warm-up rather than something it suppresses. Zeroing them
-   * would leave a new seat inert for seven days and then acting, which is the
-   * "slide and spike" shape this engine exists to avoid producing.
+   * Passive kinds skip the account multiplier entirely. Active outreach now
+   * begins at a small non-zero week-1 volume, while passive activity stays at
+   * the full conservative warm-up band. Both remain subject to every other
+   * pacing and safety check.
    */
   const passive = isPassiveKind(input.kind);
-  const multiplier = warmupMultiplierFor(input.kind, warmupWeek);
+  const multiplier = seat.warmupOverride ? 1 : warmupMultiplierFor(input.kind, warmupWeek);
   const operatorLimit = seatOperatorLimit(seat, input.kind);
   const dailyCeiling = effectiveDailyCeiling(band.perDay, operatorLimit, seat.safetyBandOverride);
   const baseDaily = Math.floor(dailyCeiling * multiplier);
   reasons.push(
-    `Seat '${seat.label}' is ${posture}, warm-up week ${warmupWeek}: ${dailyCeiling} ${input.kind}/day x ${multiplier} = ${baseDaily}/day before smoothing.`
+    seat.warmupOverride
+      ? `Seat '${seat.label}' is ${posture}. Account warm-up is explicitly skipped; the recorded clock is week ${warmupWeek}, so ${dailyCeiling} ${input.kind}/day x 1 = ${baseDaily}/day before smoothing.`
+      : `Seat '${seat.label}' is ${posture}, warm-up week ${warmupWeek}: ${dailyCeiling} ${input.kind}/day x ${multiplier} = ${baseDaily}/day before smoothing.`
   );
   // THE BINDING NUMBER IS NAMED, whichever it is. These sentences are what a
   // founder reads to find out why a plan is the size it is, and "18/day"
@@ -694,24 +745,30 @@ export async function planPacing(
   } else if (operatorLimit !== null && seat.safetyBandOverride && operatorLimit > band.perDay) {
     ceilingsApplied.push('operator-daily-limit');
     reasons.push(
-      `This account is set to use your own daily limits instead of Trevra's safety bands, so ${operatorLimit} ${input.kind}(s)/day binds rather than the researched ${band.perDay}/day. Every other ceiling -- the warm-up ramp, the rolling 7-day and 30-day windows, and the day-over-day variance clamp -- still applies.`
+      `This account is set to use your own daily limits instead of Trevra's safety bands, so ${operatorLimit} ${input.kind}(s)/day binds rather than the researched ${band.perDay}/day. Every other applicable ceiling -- account warm-up unless explicitly skipped, the rolling 7-day and 30-day windows, and the day-over-day variance clamp -- still applies.`
     );
   }
   reasons.push(
     `Slots are placed between ${formatMinuteOfDay(window.startMinute)} and ${formatMinuteOfDay(window.endMinute)} in ${seat.timezone}, on weekday(s) ${window.days.join(', ')} -- this account's configured working window, which is the same window the safety gate refuses a slot outside of.`
   );
   if (passive && warmupWeek <= WARMUP_WEEKS) {
-    reasons.push(`${input.kind} is passive activity, so it runs at the full ${posture} band during warm-up instead of being ramped. Every other ceiling still applies.`);
+    reasons.push(
+      `${input.kind} is passive activity, so it runs at the full ${posture} band during warm-up instead of being ramped. Every other ceiling still applies.`
+    );
   }
   if (multiplier < 1) ceilingsApplied.push('warmup-multiplier');
   if (posture === 'cooldown') {
     ceilingsApplied.push('cooldown-band');
-    reasons.push('Seat is in cooldown, so the conservative warm-up band applies instead of the steady one.');
+    reasons.push(
+      'Seat is in cooldown, so the conservative warm-up band applies instead of the steady one.'
+    );
   }
   if (seat.activatedAt === null) {
     // Fail closed. A seat with no activation instant is one this schema never
     // wrote, so it is paced as brand new rather than as trusted.
-    reasons.push('This seat has no activation timestamp, so it is paced as a week-1 seat. The ramp clock starts on the seat\'s first write and no edit resets it.');
+    reasons.push(
+      "This seat has no activation timestamp, so it is paced as a week-1 seat. The ramp clock starts on the seat's first write and no edit resets it."
+    );
   }
 
   // --- Step 4 (measured once, applied per day below). ---
@@ -767,7 +824,9 @@ export async function planPacing(
 
   // --- Step 3 seed: the most recent BUSINESS day's actual count. ---
   let previousActual = previousBusinessDayCount(history, todayLocal, window);
-  reasons.push(`Previous business day carried ${previousActual} ${input.kind}(s); the next day may not exceed it by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%.`);
+  reasons.push(
+    `Previous business day carried ${previousActual} ${input.kind}(s); the next day may not exceed it by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%.`
+  );
 
   const seed = canonicalPayloadHash({
     workspaceId: input.workspaceId,
@@ -805,18 +864,26 @@ export async function planPacing(
     // starts, when it ends, and whether it happens at all. A day where invites
     // rest and profile views do not is not a day off.
     const shape = shapeDay(`${input.workspaceId}:${seatKey}`, day, window);
-    const dayWindow: WorkWindow = { days: window.days, startMinute: shape.startMinute, endMinute: shape.endMinute };
+    const dayWindow: WorkWindow = {
+      days: window.days,
+      startMinute: shape.startMinute,
+      endMinute: shape.endMinute
+    };
     const dayCeiling = shape.resting ? 0 : Math.floor(baseDaily * shape.draw);
     if (shape.resting) restDayTaken = true;
     else if (dayCeiling < baseDaily) dailyDrawApplied = true;
 
     // --- Step 3: variance smoothing against the previous day's ACTUAL. ---
-    const deltaCeiling = Math.max(previousActual + MIN_RAMP_STEP, Math.floor(previousActual * (1 + MAX_DAY_OVER_DAY_DELTA)));
+    const deltaCeiling = Math.max(
+      previousActual + MIN_RAMP_STEP,
+      Math.floor(previousActual * (1 + MAX_DAY_OVER_DAY_DELTA))
+    );
     let allowed = Math.min(dayCeiling, deltaCeiling);
     if (deltaCeiling < baseDaily) deltaClamped = true;
 
     // --- Step 4: acceptance-rate throttle. Halves, never zeroes. ---
-    if (throttled) allowed = Math.max(allowed > 0 ? 1 : 0, Math.floor(allowed * ACCEPTANCE_THROTTLE_FACTOR));
+    if (throttled)
+      allowed = Math.max(allowed > 0 ? 1 : 0, Math.floor(allowed * ACCEPTANCE_THROTTLE_FACTOR));
 
     // --- Step 5: the seat's configured days, then the Tue/Wed scan rule. ---
     //
@@ -847,7 +914,10 @@ export async function planPacing(
     // 3 InMails a day for a fortnight quietly clears a 50-a-month quota.
     if (band.perWeek !== undefined) {
       const spentThisWeek = sumOfLast(timeline, 6);
-      const capped = Math.min(allowed, Math.max(0, band.perWeek - spentThisWeek - outstandingInvites));
+      const capped = Math.min(
+        allowed,
+        Math.max(0, band.perWeek - spentThisWeek - outstandingInvites)
+      );
       if (capped < allowed) {
         weeklyClamped = true;
         // Reported separately, because "you have sent too many this week" and
@@ -900,7 +970,9 @@ export async function planPacing(
   // --- Step 7: report every ceiling that bound, not just the first. ---
   if (deltaClamped) {
     ceilingsApplied.push('day-over-day-delta');
-    reasons.push(`Volume is ramped rather than started at ${baseDaily}/day: no day may exceed the one before it by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%, which is what keeps this seat off the "slide and spike" signature.`);
+    reasons.push(
+      `Volume is ramped rather than started at ${baseDaily}/day: no day may exceed the one before it by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%, which is what keeps this seat off the "slide and spike" signature.`
+    );
   }
   if (restDayTaken) {
     reasons.push(
@@ -928,11 +1000,15 @@ export async function planPacing(
   }
   if (scanDayClamped) {
     ceilingsApplied.push('enforcement-scan-day');
-    reasons.push('Tuesdays and Wednesdays never carry a day\'s maximum -- reported enforcement scans cluster there.');
+    reasons.push(
+      "Tuesdays and Wednesdays never carry a day's maximum -- reported enforcement scans cluster there."
+    );
   }
   if (weeklyClamped) {
     ceilingsApplied.push('weekly-band');
-    reasons.push(`The rolling 7-day ceiling of ${band.perWeek} ${input.kind}(s) bound on at least one day.`);
+    reasons.push(
+      `The rolling 7-day ceiling of ${band.perWeek} ${input.kind}(s) bound on at least one day.`
+    );
   }
   if (backlogClamped) {
     ceilingsApplied.push('pending-invite-backlog');
@@ -955,7 +1031,9 @@ export async function planPacing(
     );
   }
   if (assigned < targets.length) {
-    reasons.push(`${targets.length - assigned} of ${targets.length} target(s) do not fit inside ${horizon} day(s) at this pace and are not scheduled. Extend the horizon or split the campaign.`);
+    reasons.push(
+      `${targets.length - assigned} of ${targets.length} target(s) do not fit inside ${horizon} day(s) at this pace and are not scheduled. Extend the horizon or split the campaign.`
+    );
   }
 
   return { seatKey, slots, reasons, ceilingsApplied };
@@ -990,7 +1068,11 @@ export async function planPacing(
  *     honest `seat-configured: false` verdict (or the planner's no-seat path)
  *     rather than an error about a choice there was nothing to choose from.
  */
-export async function resolveSkillSeatKey(db: Db, workspaceId: string, seatKey: string | undefined): Promise<string> {
+export async function resolveSkillSeatKey(
+  db: Db,
+  workspaceId: string,
+  seatKey: string | undefined
+): Promise<string> {
   const named = seatKey?.trim();
   if (named) return named;
   const seats = await listSeats(db, workspaceId);
@@ -1032,7 +1114,7 @@ export const linkedinPacingSkill: Skill<PacingSkillInput, PacingPlan> = {
     name: 'LinkedIn pacing plan',
     version: '1.0.0',
     description:
-      'Schedule LinkedIn actions for one seat across a horizon: warm-up ramp from account age, day-over-day variance smoothing against the real ledger, acceptance-rate throttle, weekend and enforcement-scan rules, and a deterministic spread inside the seat\'s own configured working days and hours.',
+      "Schedule LinkedIn actions for one seat across a horizon: warm-up ramp from account age, day-over-day variance smoothing against the real ledger, acceptance-rate throttle, weekend and enforcement-scan rules, and a deterministic spread inside the seat's own configured working days and hours.",
     sideEffect: 'none',
     requiresApproval: false,
     inputSchema,

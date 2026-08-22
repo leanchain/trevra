@@ -14,7 +14,8 @@ import {
   INMAIL_MONTHLY_QUOTA,
   bandFor,
   effectiveDailyCeiling,
-  seatOperatorLimit
+  seatOperatorLimit,
+  warmupMultiplierFor
 } from './limits.js';
 import {
   admitPendingCampaignMembers,
@@ -24,7 +25,7 @@ import {
   enrolNewContacts
 } from './managed-campaigns.js';
 import { addLocalDays, localDateOf, weekdayOf, zonedToUtc } from './pacing.js';
-import { effectivePosture, getSeat, type LinkedInSeat } from './seats.js';
+import { effectivePosture, getSeat, warmupWeekOf, type LinkedInSeat } from './seats.js';
 import { enqueueWithdrawals, selectWithdrawalCandidates } from './withdraw.js';
 import {
   chooseMessageVariant,
@@ -193,31 +194,28 @@ interface InviteRow {
   status: string;
   sent_at: string | null;
 }
-
 /**
- * The daily ceiling the campaign ramp is a percentage OF, for one kind.
+ * This must include the seat warm-up multiplier because the send-time gate does.
+ * Without it, the planner can allocate more active outreach than the same seat
+ * may execute during its account ramp, creating rows the worker then refuses at
+ * send time. The planner and gate must therefore price the same account ceiling.
  *
- * THE SAME ARITHMETIC THE GATE DOES, and it has to be, because the gate is
- * what refuses the row this file plans. `guard.ts` ramps its `campaign-warmup`
- * check off `campaignActionLimit(effectiveDailyLimit, ...)` where
- * `effectiveDailyLimit` is the band reconciled with the operator's setting;
- * this file budgeted off the RAW operator number instead.
- *
- * The two disagreed in the direction that stalls: an operator who set 30
- * invites got a day-five budget of 30 from the planner and a refusal at 18
- * from the gate, so twelve members a day were planned, refused at send time,
- * and left sitting with nothing anywhere saying why. Reading one function for
- * both is the only durable fix -- two copies of "the effective ceiling" drift
- * again the moment either side gains a rule, which is exactly what
- * `safetyBandOverride` just was.
- *
- * The posture band, not a constant: a seat in cooldown draws from the
- * conservative band here for the same reason it does everywhere else.
+ * The worker additionally applies its deterministic day-shape draw at execution
+ * time. That draw is intentionally not pre-applied here because rows may be
+ * scheduled onto a later local day; the seat warm-up week, however, is an
+ * invariant ceiling for the planning instant and must never be omitted.
  */
 function seatDailyCeilingFor(seat: LinkedInSeat, kind: BudgetedKind, now: Date): number {
   const posture = effectivePosture(seat, now);
   const band = bandFor(kind, posture === 'steady' ? 'steady' : 'warmup');
-  return effectiveDailyCeiling(band.perDay, seatOperatorLimit(seat, kind), seat.safetyBandOverride);
+  const dailyCeiling = effectiveDailyCeiling(
+    band.perDay,
+    seatOperatorLimit(seat, kind),
+    seat.safetyBandOverride
+  );
+  const warmupWeek = warmupWeekOf(seat.activatedAt, now);
+  const multiplier = seat.warmupOverride ? 1 : warmupMultiplierFor(kind, warmupWeek);
+  return Math.floor(dailyCeiling * multiplier);
 }
 
 /** The exact ledger kind a step writes. */

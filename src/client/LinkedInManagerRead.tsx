@@ -70,6 +70,7 @@ import type {
   ManualTaskView
 } from '../server/linkedin/managed-campaigns';
 import { errorMessage, useOutreachRefresh } from './LinkedInSafety';
+import { accountWarmupLabel } from './LinkedInWarmup';
 import {
   ceilingSourceNote,
   enforcedCeilings,
@@ -607,11 +608,26 @@ function campaignBlockers({
       seen.add(kind);
       const allocated = operations.queues.allocatedCampaignDay[kind];
       const limit = ceilings[kind].today;
-      if (allocated >= limit)
-        out.push({
-          title: `${CAPACITY_LABEL[kind]} capacity fully allocated`,
-          detail: `${backlog.due} lead(s) are sequence-eligible at this step, but this campaign's current ramp limit is ${limit} and ${allocated} are already allocated. Remaining planner capacity is 0.`
-        });
+      if (allocated >= limit) {
+        const dayLimit = report?.limits.find(
+          (candidate) => candidate.kind === kind && candidate.window === 'day'
+        );
+        const blockedByAccountWarmup =
+          limit === 0 &&
+          report?.seat.warmupMultiplier === 0 &&
+          dayLimit?.boundBy === 'warmup-multiplier';
+        out.push(
+          blockedByAccountWarmup
+            ? {
+                title: `${CAPACITY_LABEL[kind]} blocked by account warm-up`,
+                detail: `Campaign warm-up and account warm-up are separate. ${report?.seat.label ?? 'This LinkedIn account'} is in account warm-up week ${report?.seat.warmupWeek ?? 1} of ${report?.seat.warmupWeeks ?? 1}, which currently permits 0 ${CAPACITY_LABEL[kind].toLowerCase()}/day. This campaign cannot receive a slot until the account ramp permits this action. Any already queued action is still safety-checked before execution and will not send against a zero account ceiling.`
+              }
+            : {
+                title: `${CAPACITY_LABEL[kind]} capacity fully allocated`,
+                detail: `${backlog.due} lead(s) are sequence-eligible at this step, but this campaign's current ramp limit is ${limit} and ${allocated} are already allocated. Remaining planner capacity is 0.`
+              }
+        );
+      }
     }
   }
 
@@ -2925,6 +2941,7 @@ export function OutreachManagerRead({
                       ) : (
                         <>Warm-up starts on launch</>
                       )}
+                      {accountWarmupLabel(report) ? <> · {accountWarmupLabel(report)}</> : null}
                     </p>
                   )}
 
