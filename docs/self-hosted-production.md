@@ -6,7 +6,7 @@ This deployment is for one operator on one machine. It uses the production build
 
 The app is published on `127.0.0.1` only. The browser uses `http://localhost:<port>`, which is the only production case where Trevra permits non-TLS cookies and an HTTP public URL. If any app/auth/public URL is a LAN or public address, production validation refuses to boot without HTTPS and secure cookies.
 
-The containers run read-only, with a tmpfs for `/tmp`, all Linux capabilities dropped, and `no-new-privileges`. PostgreSQL is not published to the host. Browser automation is off inside the production containers by default; turn it on only when you deliberately configure your own local worker/session.
+The containers run read-only, with a tmpfs for `/tmp`, all Linux capabilities dropped, and `no-new-privileges`. PostgreSQL is not published to the host. Chrome is never launched inside the production containers: LinkedIn browser execution goes through the separately installed Companion (or an explicitly configured remote browser provider), and no account work can run until a Companion device is explicitly paired.
 
 ## Deploy
 
@@ -14,9 +14,11 @@ The containers run read-only, with a tmpfs for `/tmp`, all Linux capabilities dr
 ./scripts/selfhost-deploy.sh
 ```
 
-On the first run `scripts/selfhost-init.sh` creates `.env.selfhost` with random database, auth, token-pepper, ingestion, and AES-256-GCM secret material. The file is gitignored and mode `0600`. Later deploys keep it unchanged so encrypted credentials remain decryptable.
+On the first run `scripts/selfhost-init.sh` creates `.env.selfhost` with random database, auth, token-pepper, ingestion, and AES-256-GCM secret material. The file is gitignored and mode `0600`. Later deploys keep it unchanged so encrypted credentials remain decryptable. Fresh self-hosted installs also enable the local Companion path and set its private Compose relay URL.
 
-The deployment order is PostgreSQL -> migration job -> API + worker. Both long-lived services have health checks and `restart: unless-stopped`.
+`./scripts/selfhost-deploy.sh` installs/registers the per-user Companion on the host automatically when `TREVRA_LINKEDIN_LOCAL` is not `false`. This does **not** pair a LinkedIn account or bypass authorization: an unpaired service exits cleanly and waits for the operator to use **Outreach → LinkedIn accounts → Connect this computer**. That later pairing command reuses the already-installed version and starts it. Set `TREVRA_LINKEDIN_LOCAL=false` in `.env.selfhost` to skip host Companion setup entirely.
+
+The deployment order is host Companion setup -> PostgreSQL -> migration job -> API + worker. Both long-lived containers have health checks and `restart: unless-stopped`.
 
 Check it with:
 

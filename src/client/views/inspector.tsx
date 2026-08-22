@@ -705,64 +705,164 @@ function SignedNote({ value }: { value: string }) {
   );
 }
 
-export function ApprovalDecisionProof({ step }: { step: PlaybookStepRun }) {
+type OutreachApproval = {
+  body: string;
+  platform: string;
+  threadUrl: string;
+  title: string;
+  author: string;
+  relevanceScore: number | null;
+  angle: string;
+  safetyAllowed: boolean | null;
+  safetyReason: string;
+  safetyChecks: unknown[];
+};
+
+function readOutreachApproval(value: unknown): OutreachApproval | null {
+  if (!isPlainObject(value)) return null;
+  const metadata = isPlainObject(value.metadata) ? value.metadata : {};
+  const text = (entry: unknown) => (typeof entry === 'string' ? entry.trim() : '');
+  const body = text(value.body);
+  const threadUrl = text(value.threadUrl);
+  const title = text(metadata.threadTitle);
+  if (!body || (!threadUrl && !title)) return null;
+  return {
+    body,
+    platform: text(value.platform),
+    threadUrl,
+    title,
+    author: text(metadata.threadAuthor),
+    relevanceScore:
+      typeof metadata.relevanceScore === 'number' && Number.isFinite(metadata.relevanceScore)
+        ? metadata.relevanceScore
+        : null,
+    angle: text(metadata.angle),
+    safetyAllowed: typeof metadata.safetyAllowed === 'boolean' ? metadata.safetyAllowed : null,
+    safetyReason: text(metadata.safetyReason),
+    safetyChecks: Array.isArray(metadata.safetyChecks) ? metadata.safetyChecks : []
+  };
+}
+
+function OutreachApprovalProof({
+  approval,
+  replyValue,
+  onReplyChange,
+  replyDisabled = false
+}: {
+  approval: OutreachApproval;
+  replyValue?: string;
+  onReplyChange?: (value: string) => void;
+  replyDisabled?: boolean;
+}) {
+  const checksPassed = approval.safetyChecks.filter(
+    (check) => isPlainObject(check) && check.passed === true
+  ).length;
+  const checksTotal = approval.safetyChecks.length;
+  const platformLabel =
+    approval.platform === 'stackoverflow'
+      ? 'Stack Overflow'
+      : approval.platform === 'hackernews'
+        ? 'Hacker News'
+        : approval.platform === 'linkedin'
+          ? 'LinkedIn'
+          : humanizeId(approval.platform);
+  const angleLabel =
+    approval.angle === 'technical_deepdive' ? 'Technical deep dive' : humanizeId(approval.angle);
+  const body = replyValue ?? approval.body;
+
+  return (
+    <div className="approval-sheet">
+      <div className="approval-sheet-head">
+        <div>
+          <h4>{approval.title || 'Prepared community reply'}</h4>
+          <p className="approval-sheet-meta">
+            {[
+              platformLabel,
+              approval.author,
+              angleLabel,
+              approval.relevanceScore !== null ? `${approval.relevanceScore}/10 relevance` : ''
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </p>
+        </div>
+        {approval.threadUrl && (
+          <a href={approval.threadUrl} target="_blank" rel="noreferrer">
+            Open thread <ExternalLink size={13} />
+          </a>
+        )}
+      </div>
+
+      {onReplyChange ? (
+        <textarea
+          className="ui-control ui-textarea approval-reply-editor"
+          aria-label="Reply"
+          rows={6}
+          value={body}
+          disabled={replyDisabled}
+          onChange={(event) => onReplyChange(event.target.value)}
+        />
+      ) : (
+        <pre className="approval-sheet-message">{body}</pre>
+      )}
+
+      <div className="approval-sheet-status">
+        <span
+          className={approval.safetyAllowed === false ? 'is-failed' : 'is-passed'}
+          title="Hover or focus the Guard step for safety details"
+        >
+          <ShieldCheck size={15} />
+          {checksTotal ? `${checksPassed}/${checksTotal} safety checks passed` : 'Safety checked'}
+        </span>
+      </div>
+
+      {approval.safetyAllowed === false && approval.safetyReason && (
+        <div className="approval-proof-gap is-blocking" role="alert">
+          {approval.safetyReason}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function ApprovalDecisionProof({
+  step,
+  replyValue,
+  onReplyChange,
+  replyDisabled
+}: {
+  step: PlaybookStepRun;
+  replyValue?: string;
+  onReplyChange?: (value: string) => void;
+  replyDisabled?: boolean;
+}) {
   const policy = readPolicyDecision(step.policyDecision);
-  const evidence = Array.isArray(step.evidence) ? step.evidence : [];
+  const outreach = readOutreachApproval(step.input);
+
+  if (outreach) {
+    return (
+      <div className="approval-decision-proof">
+        <OutreachApprovalProof
+          approval={outreach}
+          replyValue={replyValue}
+          onReplyChange={onReplyChange}
+          replyDisabled={replyDisabled}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="approval-decision-proof">
       <section className="approval-proof-section">
-        <h4>Exact prepared action</h4>
-        <p>Review the fields below as the action Trevra will execute.</p>
+        <h4>Prepared action</h4>
         <FieldList value={step.input} />
       </section>
-
-      <section className="approval-proof-section">
-        <h4>Source evidence</h4>
-        {evidence.length ? (
-          <EvidenceList entries={evidence} />
-        ) : (
-          <div className="approval-proof-gap">
-            No source evidence was attached to this approval record.
-          </div>
-        )}
-      </section>
-
-      <section className="approval-proof-section">
-        <h4>Policy decision</h4>
-        {policy ? (
+      {policy && (
+        <section className="approval-proof-section">
           <PolicyNote decision={policy} />
-        ) : (
-          <div className="approval-proof-gap">
-            No policy decision was recorded. Approval can still be rejected, but execution should
-            not proceed without a verifiable payload fingerprint.
-          </div>
-        )}
-      </section>
-
-      <section className="approval-proof-section">
-        <h4>Exact payload fingerprint</h4>
-        {step.approvalPayloadHash ? (
-          <SignedNote value={step.approvalPayloadHash} />
-        ) : (
-          <div className="approval-proof-gap is-blocking" role="alert">
-            Payload fingerprint missing. Trevra cannot prove what would run, so approval is
-            unavailable.
-          </div>
-        )}
-      </section>
-
-      <details className="approval-proof-raw">
-        <summary>Inspect raw approval record</summary>
-        <FieldList
-          value={{
-            input: step.input,
-            evidence: step.evidence,
-            policyDecision: step.policyDecision,
-            approvalPayloadHash: step.approvalPayloadHash
-          }}
-        />
-      </details>
+        </section>
+      )}
     </div>
   );
 }

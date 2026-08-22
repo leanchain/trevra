@@ -26,6 +26,7 @@ import {
 import './account-import-workbench.css';
 import { errorMessage } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
+import { Select } from './ui/primitives';
 import {
   collectPreparedPeople,
   prepareAccountFiles,
@@ -587,7 +588,7 @@ function AddAccountsForm({
       <div className="li-form-grid acc-import-grid">
         <label>
           Where this list came from
-          <select
+          <Select
             value={source}
             disabled={importing}
             onChange={(event) => setSource(event.target.value as AccountSource)}
@@ -597,7 +598,7 @@ function AddAccountsForm({
                 {option.label}
               </option>
             ))}
-          </select>
+          </Select>
           <small className="li-hint">Saved with the account.</small>
         </label>
       </div>
@@ -992,7 +993,7 @@ function SourceAccountsForm({
       <div className="li-form-grid acc-source-grid">
         <label>
           Provider
-          <select
+          <Select
             value={providerKey}
             disabled={sourcing}
             onChange={(event) => setProviderKey(event.target.value)}
@@ -1003,7 +1004,7 @@ function SourceAccountsForm({
                 {provider.retention === 'none' ? ' · memory only' : ''}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label>
           Keywords

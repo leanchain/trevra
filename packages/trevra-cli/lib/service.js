@@ -1,5 +1,17 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs';
 import { homedir, platform as currentPlatform, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -8,20 +20,32 @@ export const WINDOWS_TASK_NAME = 'Trevra LinkedIn Companion';
 
 function privateDir(path) {
   mkdirSync(path, { recursive: true, mode: 0o700 });
-  try { chmodSync(path, 0o700); } catch { /* Windows ACLs do not use POSIX modes. */ }
+  try {
+    chmodSync(path, 0o700);
+  } catch {
+    /* Windows ACLs do not use POSIX modes. */
+  }
 }
 
 function writePrivate(path, body, mode = 0o600) {
   privateDir(dirname(path));
   writeFileSync(path, body, { mode });
-  try { chmodSync(path, mode); } catch { /* Windows */ }
+  try {
+    chmodSync(path, mode);
+  } catch {
+    /* Windows */
+  }
 }
 
 function commandPath(name, platform = currentPlatform()) {
   const finder = platform === 'win32' ? 'where' : 'which';
   try {
-    return execFileSync(finder, [name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-      .split(/\r?\n/).map((item) => item.trim()).find(Boolean) ?? null;
+    return (
+      execFileSync(finder, [name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .find(Boolean) ?? null
+    );
   } catch {
     return null;
   }
@@ -41,9 +65,12 @@ function npmCommand(platform = currentPlatform()) {
   }
 
   const npm = commandPath('npm', platform);
-  if (!npm) throw new Error('npm was not found. Install Node.js 20 or newer, then run this command again.');
+  if (!npm)
+    throw new Error('npm was not found. Install Node.js 20 or newer, then run this command again.');
   if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(npm)) {
-    throw new Error('npm was found only as a Windows command shim, but npm-cli.js could not be located. Reinstall Node.js 20 or newer, then run this command again.');
+    throw new Error(
+      'npm was found only as a Windows command shim, but npm-cli.js could not be located. Reinstall Node.js 20 or newer, then run this command again.'
+    );
   }
   return { file: npm, prefixArgs: [] };
 }
@@ -58,7 +85,10 @@ function run(file, args, options = {}) {
 
 function tryRun(file, args, options = {}) {
   try {
-    return { ok: true, output: String(run(file, args, { ...options, capture: true }) ?? '').trim() };
+    return {
+      ok: true,
+      output: String(run(file, args, { ...options, capture: true }) ?? '').trim()
+    };
   } catch (error) {
     return {
       ok: false,
@@ -141,9 +171,15 @@ export function renderWindowsRegistration({ nodePath, cliPath, username }) {
 
 function ensureSystemd() {
   const systemctl = commandPath('systemctl', 'linux');
-  if (!systemctl) throw new Error('This Linux installation has no systemctl. Trevra background mode currently requires a systemd user session.');
+  if (!systemctl)
+    throw new Error(
+      'This Linux installation has no systemctl. Trevra background mode currently requires a systemd user session.'
+    );
   const check = tryRun(systemctl, ['--user', 'show-environment']);
-  if (!check.ok) throw new Error('A systemd user session is not available. Sign into the graphical desktop, then run the install command again.');
+  if (!check.ok)
+    throw new Error(
+      'A systemd user session is not available. Sign into the graphical desktop, then run the install command again.'
+    );
   return systemctl;
 }
 
@@ -164,7 +200,9 @@ function launchdDomain() {
 }
 
 function powershell() {
-  return commandPath('powershell.exe', 'win32') ?? commandPath('powershell', 'win32') ?? 'powershell.exe';
+  return (
+    commandPath('powershell.exe', 'win32') ?? commandPath('powershell', 'win32') ?? 'powershell.exe'
+  );
 }
 
 function windowsTaskState() {
@@ -173,9 +211,23 @@ function windowsTaskState() {
   return result.ok ? result.output.trim() : '';
 }
 
+export function installedPackageVersion({ home = homedir(), platform = currentPlatform() } = {}) {
+  const paths = servicePaths(home, platform);
+  const packageJson = join(paths.serviceRoot, 'node_modules', 'trevra', 'package.json');
+  try {
+    const parsed = JSON.parse(readFileSync(packageJson, 'utf8'));
+    return typeof parsed.version === 'string' && parsed.version.trim()
+      ? parsed.version.trim()
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function installedServiceStatus({ home = homedir(), platform = currentPlatform() } = {}) {
   const paths = servicePaths(home, platform);
   const installed = existsSync(paths.definition) && existsSync(paths.cliPath);
+  const version = installedPackageVersion({ home, platform });
   let running = false;
   let detail = '';
 
@@ -195,10 +247,15 @@ export function installedServiceStatus({ home = homedir(), platform = currentPla
     detail = state || 'not registered';
   }
 
-  return { installed, running, detail, manager: paths.manager, ...paths };
+  return { installed, running, detail, version, manager: paths.manager, ...paths };
 }
 
-export function installStablePackage({ version, installSpec, home = homedir(), platform = currentPlatform() }) {
+export function installStablePackage({
+  version,
+  installSpec,
+  home = homedir(),
+  platform = currentPlatform()
+}) {
   const paths = servicePaths(home, platform);
   const trevraHome = join(home, '.trevra');
   privateDir(trevraHome);
@@ -215,24 +272,47 @@ export function installStablePackage({ version, installSpec, home = homedir(), p
   // real copy with normal dependency resolution.
   if (installSpec && existsSync(installSpec) && lstatSync(installSpec).isDirectory()) {
     packStage = mkdtempSync(join(trevraHome, 'install-'));
-    const packed = String(run(npm.file, [...npm.prefixArgs, 'pack', '--silent', '--pack-destination', packStage, installSpec], { capture: true }) ?? '')
-      .split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
-    if (!packed?.endsWith('.tgz')) throw new Error('Trevra could not prepare its background-service package.');
+    const packed = String(
+      run(
+        npm.file,
+        [...npm.prefixArgs, 'pack', '--silent', '--pack-destination', packStage, installSpec],
+        { capture: true }
+      ) ?? ''
+    )
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1);
+    if (!packed?.endsWith('.tgz'))
+      throw new Error('Trevra could not prepare its background-service package.');
     spec = join(packStage, packed);
   }
 
   try {
     // Install and verify completely off to the side. A failed network fetch or
     // broken package must never delete the currently working companion.
-    run(npm.file, [...npm.prefixArgs, 'install', '--prefix', installStage, '--omit=dev', '--no-audit', '--no-fund', spec]);
-    if (!existsSync(stagedCli)) throw new Error(`Trevra installed, but its service executable is missing from the staged package.`);
+    run(npm.file, [
+      ...npm.prefixArgs,
+      'install',
+      '--prefix',
+      installStage,
+      '--omit=dev',
+      '--no-audit',
+      '--no-fund',
+      spec
+    ]);
+    if (!existsSync(stagedCli))
+      throw new Error(
+        `Trevra installed, but its service executable is missing from the staged package.`
+      );
 
     rmSync(previousRoot, { recursive: true, force: true });
     if (existsSync(paths.serviceRoot)) renameSync(paths.serviceRoot, previousRoot);
     try {
       renameSync(installStage, paths.serviceRoot);
     } catch (error) {
-      if (existsSync(previousRoot) && !existsSync(paths.serviceRoot)) renameSync(previousRoot, paths.serviceRoot);
+      if (existsSync(previousRoot) && !existsSync(paths.serviceRoot))
+        renameSync(previousRoot, paths.serviceRoot);
       throw error;
     }
     rmSync(previousRoot, { recursive: true, force: true });
@@ -255,16 +335,25 @@ export function installUserCommand({ home = homedir(), platform = currentPlatfor
       if (!lstatSync(paths.userCommand).isSymbolicLink()) return null;
       const target = readlinkSync(paths.userCommand);
       if (target === paths.cliPath) return paths.userCommand;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
     rmSync(paths.userCommand, { force: true });
   }
   symlinkSync(paths.cliPath, paths.userCommand);
   return paths.userCommand;
 }
 
-export function registerBackgroundService({ home = homedir(), platform = currentPlatform(), nodePath = process.execPath } = {}) {
+export function registerBackgroundService({
+  home = homedir(),
+  platform = currentPlatform(),
+  nodePath = process.execPath
+} = {}) {
   const paths = servicePaths(home, platform);
-  if (!existsSync(paths.cliPath)) throw new Error('The Trevra background package is not installed yet. Run `trevra linkedin install`.');
+  if (!existsSync(paths.cliPath))
+    throw new Error(
+      'The Trevra background package is not installed yet. Run `trevra linkedin install`.'
+    );
   privateDir(paths.logs);
 
   if (platform === 'linux') {
@@ -277,12 +366,16 @@ export function registerBackgroundService({ home = homedir(), platform = current
   }
 
   if (platform === 'darwin') {
-    writePrivate(paths.definition, renderLaunchAgent({
-      nodePath,
-      cliPath: paths.cliPath,
-      stdoutPath: join(paths.logs, 'linkedin-companion-service.log'),
-      stderrPath: join(paths.logs, 'linkedin-companion-service-error.log')
-    }), 0o600);
+    writePrivate(
+      paths.definition,
+      renderLaunchAgent({
+        nodePath,
+        cliPath: paths.cliPath,
+        stdoutPath: join(paths.logs, 'linkedin-companion-service.log'),
+        stderrPath: join(paths.logs, 'linkedin-companion-service-error.log')
+      }),
+      0o600
+    );
     return paths;
   }
 
@@ -290,7 +383,14 @@ export function registerBackgroundService({ home = homedir(), platform = current
     const username = process.env.USERNAME || userInfo().username;
     const script = renderWindowsRegistration({ nodePath, cliPath: paths.cliPath, username });
     writePrivate(paths.definition, `${script}\r\n`, 0o600);
-    run(powershell(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script]);
+    run(powershell(), [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      script
+    ]);
     return paths;
   }
 
@@ -299,7 +399,10 @@ export function registerBackgroundService({ home = homedir(), platform = current
 
 export function startBackgroundService({ home = homedir(), platform = currentPlatform() } = {}) {
   const paths = servicePaths(home, platform);
-  if (!existsSync(paths.definition) || !existsSync(paths.cliPath)) throw new Error('Trevra LinkedIn is not installed as a background service. Run `trevra linkedin install` first.');
+  if (!existsSync(paths.definition) || !existsSync(paths.cliPath))
+    throw new Error(
+      'Trevra LinkedIn is not installed as a background service. Run `trevra linkedin install` first.'
+    );
 
   if (platform === 'linux') {
     const systemctl = ensureSystemd();
@@ -316,7 +419,12 @@ export function startBackgroundService({ home = homedir(), platform = currentPla
     return;
   }
   if (platform === 'win32') {
-    run(powershell(), ['-NoProfile', '-NonInteractive', '-Command', `Start-ScheduledTask -TaskName ${psQuote(WINDOWS_TASK_NAME)}`]);
+    run(powershell(), [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `Start-ScheduledTask -TaskName ${psQuote(WINDOWS_TASK_NAME)}`
+    ]);
     return;
   }
   throw new Error(`Background service control is not supported on ${platform}.`);
@@ -336,7 +444,12 @@ export function stopBackgroundService({ home = homedir(), platform = currentPlat
     return;
   }
   if (platform === 'win32') {
-    tryRun(powershell(), ['-NoProfile', '-NonInteractive', '-Command', `Stop-ScheduledTask -TaskName ${psQuote(WINDOWS_TASK_NAME)} -ErrorAction SilentlyContinue`]);
+    tryRun(powershell(), [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `Stop-ScheduledTask -TaskName ${psQuote(WINDOWS_TASK_NAME)} -ErrorAction SilentlyContinue`
+    ]);
     return;
   }
 }
@@ -353,7 +466,10 @@ export function restartBackgroundService(options = {}) {
   startBackgroundService(options);
 }
 
-export function uninstallBackgroundService({ home = homedir(), platform = currentPlatform() } = {}) {
+export function uninstallBackgroundService({
+  home = homedir(),
+  platform = currentPlatform()
+} = {}) {
   const paths = servicePaths(home, platform);
   stopBackgroundService({ home, platform });
 
@@ -369,15 +485,25 @@ export function uninstallBackgroundService({ home = homedir(), platform = curren
     tryRun('/bin/launchctl', ['bootout', launchdDomain(), paths.definition]);
     rmSync(paths.definition, { force: true });
   } else if (platform === 'win32') {
-    tryRun(powershell(), ['-NoProfile', '-NonInteractive', '-Command', `Unregister-ScheduledTask -TaskName ${psQuote(WINDOWS_TASK_NAME)} -Confirm:$false -ErrorAction SilentlyContinue`]);
+    tryRun(powershell(), [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `Unregister-ScheduledTask -TaskName ${psQuote(WINDOWS_TASK_NAME)} -Confirm:$false -ErrorAction SilentlyContinue`
+    ]);
   }
 
   if (paths.userCommand && existsSync(paths.userCommand)) {
     try {
-      if (lstatSync(paths.userCommand).isSymbolicLink() && readlinkSync(paths.userCommand) === paths.cliPath) {
+      if (
+        lstatSync(paths.userCommand).isSymbolicLink() &&
+        readlinkSync(paths.userCommand) === paths.cliPath
+      ) {
         rmSync(paths.userCommand, { force: true });
       }
-    } catch { /* leave an unrelated user command alone */ }
+    } catch {
+      /* leave an unrelated user command alone */
+    }
   }
   rmSync(paths.serviceRoot, { recursive: true, force: true });
   return paths;

@@ -6,6 +6,11 @@ ENV_FILE="${ROOT_DIR}/.env.selfhost"
 PORT="${TREVRA_SELFHOST_PORT:-43900}"
 
 if [[ -e "${ENV_FILE}" ]]; then
+  # Add safe new defaults on upgrade without rotating any existing secret or
+  # changing an operator's explicit LinkedIn on/off choice.
+  if ! grep -q '^TREVRA_COMPANION_RELAY_URL=' "${ENV_FILE}"; then
+    printf '\nTREVRA_COMPANION_RELAY_URL=ws://app:8080\n' >>"${ENV_FILE}"
+  fi
   printf 'Keeping existing %s\n' "${ENV_FILE}"
   chmod 600 "${ENV_FILE}"
   exit 0
@@ -42,7 +47,8 @@ PUBLIC_REGISTRY_CORS_ORIGIN=http://localhost:${PORT}
 TREVRA_ORCHESTRATOR=postgres
 ALLOW_DEMO_AUTH=false
 ALLOW_SIMULATED_EXECUTION=false
-TREVRA_LINKEDIN_LOCAL=false
+TREVRA_LINKEDIN_LOCAL=true
+TREVRA_COMPANION_RELAY_URL=ws://app:8080
 TREVRA_REDDIT_LOCAL=false
 TREVRA_LINKEDIN_LEAD_SOURCING=false
 NANGO_API_KEY=

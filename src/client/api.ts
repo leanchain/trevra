@@ -48,6 +48,7 @@ import type {
   LoopCostSent,
   LoopCostSpent
 } from '../server/loop-cost';
+import type { PublicSkillManifest } from '../server/skill-api';
 import type { TodayPayload } from '../server/today';
 import type { PreparedOutreachResult } from '../server/outreach/prepare';
 import type { GtmIntent, GtmPlan, PreparedGtmPlanResult } from '../server/gtm/intent';
@@ -369,6 +370,18 @@ export async function getPlaybookRuns(
 export async function getPlaybookRun(id: string): Promise<PlaybookRun> {
   const result = await request<{ run: PlaybookRun }>(
     `/api/playbook-runs/${encodeURIComponent(id)}`
+  );
+  return result.run;
+}
+
+export async function updatePlaybookApprovalBody(
+  runId: string,
+  stepId: string,
+  body: string
+): Promise<PlaybookRun> {
+  const result = await request<{ run: PlaybookRun }>(
+    `/api/playbook-runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}/approval-body`,
+    { method: 'PATCH', body: JSON.stringify({ body }) }
   );
   return result.run;
 }
@@ -698,6 +711,13 @@ interface PublicConfig {
   apiBaseUrl?: string;
 }
 
+export type WorkspaceSkillManifest = PublicSkillManifest;
+
+export async function getWorkspaceSkills(): Promise<WorkspaceSkillManifest[]> {
+  const result = await request<{ skills: WorkspaceSkillManifest[] }>('/api/skills');
+  return result.skills;
+}
+
 export async function getAgents(): Promise<AgentPrincipal[]> {
   const result = await request<{ agents: AgentPrincipal[] }>('/api/agents');
   return result.agents;
@@ -706,6 +726,8 @@ export async function getAgents(): Promise<AgentPrincipal[]> {
 export async function createAgent(input: {
   name: string;
   purpose: string;
+  instructions?: string;
+  skillIds?: string[];
 }): Promise<AgentPrincipal> {
   const result = await request<{ agent: AgentPrincipal }>('/api/agents', {
     method: 'POST',
@@ -716,7 +738,13 @@ export async function createAgent(input: {
 
 export async function updateAgent(
   id: string,
-  input: Partial<{ name: string; purpose: string; status: AgentPrincipal['status'] }>
+  input: Partial<{
+    name: string;
+    purpose: string;
+    instructions: string;
+    skillIds: string[];
+    status: AgentPrincipal['status'];
+  }>
 ): Promise<AgentPrincipal> {
   const result = await request<{ agent: AgentPrincipal }>(`/api/agents/${encodeURIComponent(id)}`, {
     method: 'PATCH',

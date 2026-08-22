@@ -12,6 +12,8 @@ import { OWNER_ACCOUNT_KEY } from './LinkedInActiveAccount';
 import { errorMessage, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 import { Hint } from './ui/hint';
+import { EmptyState, InlineActions, Panel } from './ui/layout';
+import { Button } from './ui/primitives';
 
 export function Wall({
   title,
@@ -41,6 +43,13 @@ export function Wall({
  */
 export function LinkedInCompanionAttention({ setToast }: { setToast: (message: string) => void }) {
   const [status, setStatus] = useState<LinkedInCompanionStatus | null>(null);
+  const [pairing, setPairing] = useState<{
+    code: string;
+    expiresAt: string;
+    command: string;
+  } | null>(null);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [pairingError, setPairingError] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -68,12 +77,32 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
     (status!.devices.length === 0 || !status!.devices.some((device) => device.online));
   if (!status?.attention.length && !noDeviceOnline) return null;
 
-  const copy = async (command: string) => {
+  const copy = async (command: string, kind: 'pair' | 'reconnect' = 'reconnect') => {
     try {
       await navigator.clipboard.writeText(command);
-      setToast('Reconnect command copied. Run it on the paired computer.');
+      setToast(
+        kind === 'pair'
+          ? 'Pairing command copied. Run it once on the computer that should use LinkedIn.'
+          : 'Reconnect command copied. Run it on the paired computer.'
+      );
     } catch {
-      setToast('Copy was blocked. Select the reconnect command and copy it manually.');
+      setToast(
+        kind === 'pair'
+          ? 'Copy was blocked. Select the pairing command and copy it manually.'
+          : 'Copy was blocked. Select the reconnect command and copy it manually.'
+      );
+    }
+  };
+
+  const createPairing = async () => {
+    setPairingBusy(true);
+    setPairingError('');
+    try {
+      setPairing(await createLinkedInCompanionPairing());
+    } catch (cause) {
+      setPairingError(errorMessage(cause, 'Unable to create a pairing command.'));
+    } finally {
+      setPairingBusy(false);
     }
   };
 
@@ -89,54 +118,74 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
         Kept visually heavier (danger vs. warning) so the two are never
         confused at a glance. */}
       {noDeviceOnline && (
-        <section
-          className="page-panel li-companion-attention li-companion-offline"
+        <Panel
+          className="li-companion-attention li-companion-offline"
           role="alert"
           aria-live="polite"
+          icon={<Laptop size={18} />}
+          title="No computer connected for LinkedIn"
+          description={
+            status!.devices.length === 0
+              ? 'Background LinkedIn work is paused until a computer is paired.'
+              : 'Background LinkedIn work is paused because the paired computer is offline.'
+          }
         >
-          <div className="section-heading">
-            <div>
-              <h3 aria-level={2}>
-                <Laptop size={17} /> No computer connected for LinkedIn
-              </h3>
-              {status!.devices.length === 0 ? (
-                <p>
-                  Background LinkedIn work is paused. Connect a computer from{' '}
-                  <a href="/setup/workspace">Setup → Workspace</a> to start it.
-                </p>
-              ) : (
-                <p>Background LinkedIn work is paused because the paired computer is offline.</p>
-              )}
-            </div>
-          </div>
-          <div className="li-companion-attention-list">
-            <div className="li-companion-attention-row">
-              <div>
-                {status!.devices.length === 0 ? (
-                  <>
-                    <strong>No computer has ever been paired</strong>
-                    <p>
-                      Connect a computer from <a href="/setup/workspace">Setup → Workspace</a> to
-                      run LinkedIn work in the background.
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <strong>{offlineDevice?.label ?? 'Paired computer'} is offline</strong>
-                    <p>
-                      {offlineDevice?.lastSeenAt ? (
-                        <>Not seen since {relativeTime(offlineDevice.lastSeenAt)}.</>
+          {status!.devices.length === 0 ? (
+            <>
+              {pairingError && <div className="error-banner">{pairingError}</div>}
+              <EmptyState
+                title="No computer has ever been paired"
+                description={
+                  status!.canManage
+                    ? 'Pair the computer whose Chrome profile and network should handle LinkedIn.'
+                    : 'Only the workspace owner can create the first pairing.'
+                }
+                action={
+                  status!.canManage && !pairing ? (
+                    <Button
+                      variant="primary"
+                      disabled={pairingBusy}
+                      onClick={() => void createPairing()}
+                    >
+                      {pairingBusy ? (
+                        <LoaderCircle className="spin" size={14} />
                       ) : (
-                        'Never connected.'
+                        <Laptop size={14} />
                       )}{' '}
-                      LinkedIn work is paused until it is back online.
+                      Connect this computer
+                    </Button>
+                  ) : undefined
+                }
+              />
+              {pairing && (
+                <div className="li-companion-command">
+                  <div>
+                    <strong>Run this once on your LinkedIn computer</strong>
+                    <p>
+                      Expires {relativeTime(pairing.expiresAt)}. It installs/starts the Trevra
+                      companion and pairs this workspace to that computer.
                     </p>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </section>
+                  </div>
+                  <code>{pairing.command}</code>
+                  <InlineActions>
+                    <Button onClick={() => void copy(pairing.command, 'pair')}>
+                      <Copy size={14} /> Copy command
+                    </Button>
+                  </InlineActions>
+                </div>
+              )}
+            </>
+          ) : (
+            <EmptyState
+              title={`${offlineDevice?.label ?? 'Paired computer'} is offline`}
+              description={
+                offlineDevice?.lastSeenAt
+                  ? `Not seen since ${relativeTime(offlineDevice.lastSeenAt)}. LinkedIn work resumes when it is back online.`
+                  : 'Never connected. LinkedIn work resumes when it comes online.'
+              }
+            />
+          )}
+        </Panel>
       )}
 
       {status?.attention.length ? (
@@ -267,32 +316,33 @@ export function CompanionPanel({ setToast }: { setToast: (message: string) => vo
   };
 
   const online = status?.devices.find((device) => device.online) ?? null;
+  const statusPill = (
+    <span className={`li-acct-state ${online ? 'li-acct-state-ok' : 'li-acct-state-off'}`}>
+      <i
+        className={`li-acct-dot ${online ? 'li-acct-dot-ok' : 'li-acct-dot-off'}`}
+        aria-hidden="true"
+      />
+      {online ? `${online.label} online` : 'No paired computer online'}
+    </span>
+  );
+
   return (
-    <section className="page-panel li-companion-panel">
-      <div className="section-heading">
-        <div>
-          <h3 aria-level={2}>
-            Run LinkedIn from your computer
-            <Hint label="Why run LinkedIn from your computer">
-              Recommended for hosted Trevra. LinkedIn opens in Chrome on your computer, on your own
-              IP — Trevra keeps the queue and safety rules; your browser profile stays local.
-            </Hint>
-          </h3>
-        </div>
-        <Laptop size={20} className="li-heading-icon" />
-      </div>
-
+    <Panel
+      className="li-companion-panel"
+      icon={<Laptop size={18} />}
+      title={
+        <>
+          Run LinkedIn from your computer{' '}
+          <Hint label="Why run LinkedIn from your computer">
+            Recommended for hosted Trevra. LinkedIn opens in Chrome on your computer, on your own IP
+            — Trevra keeps the queue and safety rules; your browser profile stays local.
+          </Hint>
+        </>
+      }
+      description="Use one trusted computer for the browser profile and network LinkedIn sees."
+      actions={statusPill}
+    >
       {error && <div className="error-banner">{error}</div>}
-
-      <div className="li-companion-status">
-        <span className={`li-acct-state ${online ? 'li-acct-state-ok' : 'li-acct-state-off'}`}>
-          <i
-            className={`li-acct-dot ${online ? 'li-acct-dot-ok' : 'li-acct-dot-off'}`}
-            aria-hidden="true"
-          />
-          {online ? `${online.label} online` : 'No paired computer online'}
-        </span>
-      </div>
 
       {status && status.devices.length > 0 ? (
         <div className="li-companion-devices">
@@ -309,9 +359,9 @@ export function CompanionPanel({ setToast }: { setToast: (message: string) => vo
                 </small>
               </div>
               {status.canDisconnect && (
-                <button
-                  className="ghost-button danger"
-                  type="button"
+                <Button
+                  variant="ghost"
+                  className="danger"
                   disabled={busy === device.id}
                   onClick={() => void revoke(device.id, device.label)}
                 >
@@ -321,15 +371,28 @@ export function CompanionPanel({ setToast }: { setToast: (message: string) => vo
                     <Unplug size={13} />
                   )}{' '}
                   Disconnect
-                </button>
+                </Button>
               )}
             </div>
           ))}
         </div>
       ) : (
-        <p className="empty-copy">
-          Pair the computer whose browser and network you normally use for LinkedIn.
-        </p>
+        <EmptyState
+          title="No paired computer online"
+          description="Pair the computer whose browser and network you normally use for LinkedIn."
+          action={
+            status?.canManage && !pairing ? (
+              <Button variant="primary" disabled={busy === 'pair'} onClick={() => void pair()}>
+                {busy === 'pair' ? (
+                  <LoaderCircle className="spin" size={14} />
+                ) : (
+                  <Laptop size={14} />
+                )}{' '}
+                Connect this computer
+              </Button>
+            ) : undefined
+          }
+        />
       )}
 
       {!status?.canManage && (
@@ -350,9 +413,11 @@ export function CompanionPanel({ setToast }: { setToast: (message: string) => vo
             </p>
           </div>
           <code>{pairing.command}</code>
-          <button className="secondary-button" type="button" onClick={() => void copy()}>
-            <Copy size={14} /> Copy command
-          </button>
+          <InlineActions>
+            <Button onClick={() => void copy()}>
+              <Copy size={14} /> Copy command
+            </Button>
+          </InlineActions>
           {status.devices.length > 0 && (
             <p className="panel-note">
               Finishing this pairing replaces the currently paired computer. Trevra allows only one
@@ -360,16 +425,13 @@ export function CompanionPanel({ setToast }: { setToast: (message: string) => vo
             </p>
           )}
         </div>
-      ) : status?.canManage ? (
-        <button
-          className="primary-button"
-          type="button"
-          disabled={busy === 'pair'}
-          onClick={() => void pair()}
-        >
-          {busy === 'pair' ? <LoaderCircle className="spin" size={14} /> : <Laptop size={14} />}{' '}
-          {status.devices.length > 0 ? 'Replace computer' : 'Connect this computer'}
-        </button>
+      ) : status?.canManage && status.devices.length > 0 ? (
+        <InlineActions>
+          <Button onClick={() => void pair()} disabled={busy === 'pair'}>
+            {busy === 'pair' ? <LoaderCircle className="spin" size={14} /> : <Laptop size={14} />}{' '}
+            Replace computer
+          </Button>
+        </InlineActions>
       ) : null}
 
       <p className="panel-note">
@@ -381,7 +443,7 @@ export function CompanionPanel({ setToast }: { setToast: (message: string) => vo
           then returns to the normal schedule — missed ticks are never replayed.
         </Hint>
       </p>
-    </section>
+    </Panel>
   );
 }
 

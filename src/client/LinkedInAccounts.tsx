@@ -64,6 +64,7 @@ import { MAINTENANCE_TASK_LABELS, formatVisitWindow, queueWaitCopy } from './Lin
 import { ConfidenceTag, LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 import { Hint } from './ui/hint';
+import { Select } from './ui/primitives';
 import { useIsWorkspaceOwner } from './auth-client';
 import { useWorkspaceMembers } from './TeamScreen';
 
@@ -1424,7 +1425,7 @@ function AccountPanel({
               </small>
             </div>
             {canAssignOwner ? (
-              <select
+              <Select
                 value={account.ownerUserId ?? ''}
                 aria-label={`Account access for ${account.label}`}
                 onChange={(event) => void onAssignOwner(account, event.target.value)}
@@ -1434,7 +1435,7 @@ function AccountPanel({
                     {member.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             ) : (
               <strong>{account.ownerName ?? 'Workspace owner'}</strong>
             )}

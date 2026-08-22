@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { WebSocketServer } from 'ws';
@@ -59,6 +67,88 @@ test('service paths stay under the user home and never use the project checkout'
 
     const windows = servicePaths(home, 'win32');
     assert.equal(windows.manager, 'Task Scheduler');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('setup installs once without pairing and is idempotent', () => {
+  const home = mkdtempSync(join(tmpdir(), 'trevra-setup-test-'));
+  const fixture = mkdtempSync(join(tmpdir(), 'trevra-setup-package-'));
+  const fakeBin = mkdtempSync(join(tmpdir(), 'trevra-setup-bin-'));
+  try {
+    const currentVersion = String(
+      JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'))
+        .version
+    );
+    mkdirSync(join(fixture, 'bin'), { recursive: true });
+    writeFileSync(
+      join(fixture, 'package.json'),
+      JSON.stringify({
+        name: 'trevra',
+        version: currentVersion,
+        type: 'module',
+        bin: { trevra: 'bin/trevra.js' },
+        files: ['bin']
+      })
+    );
+    writeFileSync(join(fixture, 'bin', 'trevra.js'), '#!/usr/bin/env node\nprocess.exit(0);\n');
+    const systemctl = join(fakeBin, 'systemctl');
+    writeFileSync(systemctl, '#!/bin/sh\nexit 0\n');
+    chmodSync(systemctl, 0o755);
+
+    const cli = fileURLToPath(new URL('../bin/trevra.js', import.meta.url));
+    const env = {
+      ...process.env,
+      HOME: home,
+      PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+      TREVRA_COMPANION_INSTALL_SPEC: fixture
+    };
+    const first = spawnSync(process.execPath, [cli, 'linkedin', 'setup'], {
+      env,
+      encoding: 'utf8'
+    });
+    assert.equal(first.status, 0, `${first.stdout}\n${first.stderr}`);
+    assert.match(first.stdout, /Companion installed\. Pair this computer/i);
+    assert.equal(
+      JSON.parse(
+        readFileSync(
+          join(home, '.trevra', 'service', 'node_modules', 'trevra', 'package.json'),
+          'utf8'
+        )
+      ).version,
+      currentVersion
+    );
+    assert.ok(
+      readFileSync(join(home, '.config', 'systemd', 'user', 'trevra-linkedin.service'), 'utf8')
+    );
+
+    // Prove a same-version rerun does not touch the install source again.
+    rmSync(fixture, { recursive: true, force: true });
+    const second = spawnSync(process.execPath, [cli, 'linkedin', 'setup'], {
+      env,
+      encoding: 'utf8'
+    });
+    assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
+    assert.match(second.stdout, /already installed and ready to pair/i);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(fixture, { recursive: true, force: true });
+    rmSync(fakeBin, { recursive: true, force: true });
+  }
+});
+
+test('background service exits cleanly while waiting for first pairing', () => {
+  const home = mkdtempSync(join(tmpdir(), 'trevra-unpaired-run-test-'));
+  try {
+    const cli = fileURLToPath(new URL('../bin/trevra.js', import.meta.url));
+    const result = spawnSync(process.execPath, [cli, 'linkedin', 'run'], {
+      env: { ...process.env, HOME: home },
+      encoding: 'utf8'
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    const log = readFileSync(join(home, '.trevra', 'logs', 'linkedin-companion.log'), 'utf8');
+    assert.match(log, /service_waiting_for_pairing/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

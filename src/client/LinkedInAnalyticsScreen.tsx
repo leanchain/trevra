@@ -214,28 +214,25 @@ export function LinkedInFunnel({
               detail="dropped before sending"
             />
           </div>
-          {/* The honesty rule the Seat screen states at the top of itself, said
-              once here too, because this panel is read on a screen that has no
-          <p className="panel-note">
-            <b>Planned</b> is a fact from Trevra’s ledger. <b>Sent</b>, <b>accepted</b> and{' '}
-            <b>replied</b> are reported outcomes; the local worker records them after it acts. An outcome nobody reported
-            stays missing rather than being guessed.
-          </p>
-          {/* WHICH ACCEPTANCE RATE THIS IS, because there is a second one a
-              click away and they do not agree by design. Here and on
-              Campaigns: accepted out of invites sent. On Account safety:
-              accepted out of invites ANSWERED, because that is the signal the
-              throttle reasons on and an unanswered invite is not a refusal. */}
-          <p className="panel-note">
-            <b>Invite acceptance</b> is accepted out of invites sent — the same figure the Campaigns
-            screen shows. The acceptance meter on{' '}
-            <a className="li-link" href="/outreach/safety">
-              account safety
-            </a>{' '}
-            is a different number on purpose: it counts only invites that were answered, because
-            that is what Trevra throttles on. A rate is shown as “{NOT_ENOUGH_DATA}” until there are{' '}
-            {RATE_MIN_SAMPLE} in the denominator.
-          </p>
+          <details className="li-method-note">
+            <summary>How these numbers are counted</summary>
+            <div>
+              <p>
+                <b>Planned</b> is a fact from Trevra’s ledger. <b>Sent</b>, <b>accepted</b> and{' '}
+                <b>replied</b> are reported outcomes; an outcome nobody reported stays missing
+                rather than being guessed.
+              </p>
+              <p>
+                <b>Invite acceptance</b> is accepted out of invites sent — the same figure Campaigns
+                shows. The acceptance meter on{' '}
+                <a className="li-link" href="/outreach/safety">
+                  account safety
+                </a>{' '}
+                counts only answered invites because that is what Trevra throttles on. Rates stay “
+                {NOT_ENOUGH_DATA}” until the denominator reaches {RATE_MIN_SAMPLE}.
+              </p>
+            </div>
+          </details>
         </>
       )}
     </section>

@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import type { Db } from '../db.js';
 import { id } from '../db.js';
 import { appendDomainEvent } from '../control-plane/events.js';
-import { evaluatePolicy, policyAttributesFrom, type PolicyDecision } from '../control-plane/policy.js';
+import {
+  evaluatePolicy,
+  policyAttributesFrom,
+  type PolicyDecision
+} from '../control-plane/policy.js';
 import { canonicalPayloadHash } from '../control-plane/payload.js';
 import { executePreparedPlaybookAction } from '../control-plane/execution.js';
 import { executeWorkspaceSkill, getWorkspaceSkillManifest } from '../skill-api.js';
@@ -24,7 +28,10 @@ const TERMINAL_RUN_STATUSES = new Set<PlaybookRunStatus>(['completed', 'failed',
 const LEASE_MS = 60_000;
 
 export class PlaybookError extends Error {
-  constructor(message: string, public readonly status = 400) {
+  constructor(
+    message: string,
+    public readonly status = 400
+  ) {
     super(message);
   }
 }
@@ -50,25 +57,54 @@ export async function startPlaybookRun(
   const now = new Date().toISOString();
 
   await db.transaction(async (tx) => {
-    await tx.prepare(`
+    await tx
+      .prepare(
+        `
       INSERT INTO playbook_runs (
         id,workspace_id,playbook_key,playbook_version,status,actor_type,actor_id,
         input_json,correlation_id,created_at,started_at,updated_at
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-    `).run(
-      runId,input.workspaceId,playbook.id,playbook.version,'queued',input.actorType,input.actorId,
-      JSON.stringify(parsedInput),correlationId,now,now,now
-    );
+    `
+      )
+      .run(
+        runId,
+        input.workspaceId,
+        playbook.id,
+        playbook.version,
+        'queued',
+        input.actorType,
+        input.actorId,
+        JSON.stringify(parsedInput),
+        correlationId,
+        now,
+        now,
+        now
+      );
     for (const step of playbook.steps) {
       // Same `input.workspaceId` the `playbook_runs` insert above already
       // stored: a step run belongs to exactly the tenant that owns its run, and
       // 058 gave the child table a column to say so instead of making every
       // reader join back to `playbook_runs` to find out.
-      await tx.prepare(`
+      await tx
+        .prepare(
+          `
         INSERT INTO playbook_step_runs (
           id,workspace_id,playbook_run_id,step_id,step_type,skill_id,status,attempt,available_at,updated_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?)
-      `).run(id('pbs'),input.workspaceId,runId,step.id,step.type,step.type === 'skill' ? step.skillId : null,'pending',1,now,now);
+      `
+        )
+        .run(
+          id('pbs'),
+          input.workspaceId,
+          runId,
+          step.id,
+          step.type,
+          step.type === 'skill' ? step.skillId : null,
+          'pending',
+          1,
+          now,
+          now
+        );
     }
     await appendDomainEvent(tx, {
       workspaceId: input.workspaceId,
@@ -89,7 +125,11 @@ export async function startPlaybookRun(
   return advancePlaybookRun(db, input.workspaceId, runId);
 }
 
-export async function advancePlaybookRun(db: Db, workspaceId: string, runId: string): Promise<PlaybookRun> {
+export async function advancePlaybookRun(
+  db: Db,
+  workspaceId: string,
+  runId: string
+): Promise<PlaybookRun> {
   await recoverStaleSteps(db, workspaceId, runId);
 
   for (let guard = 0; guard < 100; guard += 1) {
@@ -98,7 +138,12 @@ export async function advancePlaybookRun(db: Db, workspaceId: string, runId: str
     if (TERMINAL_RUN_STATUSES.has(run.status)) return run;
 
     const playbook = getPlaybook(run.playbookId, run.playbookVersion);
-    if (!playbook) return failRun(db, run, `Playbook definition ${run.playbookId}@${run.playbookVersion} is unavailable`);
+    if (!playbook)
+      return failRun(
+        db,
+        run,
+        `Playbook definition ${run.playbookId}@${run.playbookVersion} is unavailable`
+      );
     const latest = new Map(run.steps.map((step) => [step.stepId, step]));
 
     const waiting = run.steps.find((step) => step.status === 'waiting_approval');
@@ -113,7 +158,9 @@ export async function advancePlaybookRun(db: Db, workspaceId: string, runId: str
     const nextDefinition = playbook.steps.find((step) => {
       const state = latest.get(step.id);
       if (!state || state.status !== 'pending') return false;
-      return (step.needs ?? []).every((dependency) => latest.get(dependency)?.status === 'completed');
+      return (step.needs ?? []).every(
+        (dependency) => latest.get(dependency)?.status === 'completed'
+      );
     });
 
     if (!nextDefinition) {
@@ -125,7 +172,11 @@ export async function advancePlaybookRun(db: Db, workspaceId: string, runId: str
         await setRunStatus(db, run, 'queued', run.currentStepId, null);
         return (await getPlaybookRun(db, workspaceId, runId))!;
       }
-      return failRun(db, run, 'Playbook is blocked because one or more dependencies cannot complete');
+      return failRun(
+        db,
+        run,
+        'Playbook is blocked because one or more dependencies cannot complete'
+      );
     }
 
     const stepRun = latest.get(nextDefinition.id)!;
@@ -140,7 +191,11 @@ export async function advancePlaybookRun(db: Db, workspaceId: string, runId: str
       actorType: run.actorType,
       actorId: run.actorId,
       correlationId: run.correlationId,
-      payload: { stepId: nextDefinition.id, stepType: nextDefinition.type, attempt: stepRun.attempt }
+      payload: {
+        stepId: nextDefinition.id,
+        stepType: nextDefinition.type,
+        attempt: stepRun.attempt
+      }
     });
 
     const refreshed = await getPlaybookRun(db, workspaceId, runId);
@@ -179,40 +234,87 @@ export async function decidePlaybookApproval(
 ): Promise<PlaybookRun> {
   const run = await getPlaybookRun(db, input.workspaceId, input.runId);
   if (!run) throw new PlaybookError('Playbook run not found', 404);
-  const step = run.steps.find((item) => item.stepId === input.stepId && item.status === 'waiting_approval');
-  if (!step || !step.approvalPayloadHash) throw new PlaybookError('Approval step is not waiting for a decision', 409);
+  const step = run.steps.find(
+    (item) => item.stepId === input.stepId && item.status === 'waiting_approval'
+  );
+  if (!step || !step.approvalPayloadHash)
+    throw new PlaybookError('Approval step is not waiting for a decision', 409);
   const now = new Date().toISOString();
 
   await db.transaction(async (tx) => {
-    const locked = await tx.prepare(`
+    const locked = await tx
+      .prepare(
+        `
       SELECT id,status,approval_payload_hash FROM playbook_step_runs
       WHERE id=? FOR UPDATE
-    `).get<{ id: string; status: string; approval_payload_hash: string | null }>(step.id);
-    if (!locked || locked.status !== 'waiting_approval' || locked.approval_payload_hash !== step.approvalPayloadHash) {
+    `
+      )
+      .get<{ id: string; status: string; approval_payload_hash: string | null }>(step.id);
+    if (
+      !locked ||
+      locked.status !== 'waiting_approval' ||
+      locked.approval_payload_hash !== step.approvalPayloadHash
+    ) {
       throw new PlaybookError('Approval state changed; reload before deciding', 409);
     }
-    await tx.prepare(`
+    await tx
+      .prepare(
+        `
       INSERT INTO playbook_approvals (
         id,workspace_id,playbook_run_id,step_run_id,user_id,decision,payload_hash,comment,created_at
       ) VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(
-      id('pba'),input.workspaceId,input.runId,step.id,input.userId,input.decision,
-      step.approvalPayloadHash,input.comment?.trim() || null,now
-    );
+    `
+      )
+      .run(
+        id('pba'),
+        input.workspaceId,
+        input.runId,
+        step.id,
+        input.userId,
+        input.decision,
+        step.approvalPayloadHash,
+        input.comment?.trim() || null,
+        now
+      );
 
     if (input.decision === 'approve') {
-      await tx.prepare(`
+      await tx
+        .prepare(
+          `
         UPDATE playbook_step_runs SET status='completed',output_json=?,finished_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL
         WHERE id=?
-      `).run(JSON.stringify({ approved: true, approvedBy: input.userId, approvedAt: now, comment: input.comment ?? null }),now,now,step.id);
-      await tx.prepare(`UPDATE playbook_runs SET status='running',current_step_id=NULL,updated_at=? WHERE id=?`).run(now,input.runId);
+      `
+        )
+        .run(
+          JSON.stringify({
+            approved: true,
+            approvedBy: input.userId,
+            approvedAt: now,
+            comment: input.comment ?? null
+          }),
+          now,
+          now,
+          step.id
+        );
+      await tx
+        .prepare(
+          `UPDATE playbook_runs SET status='running',current_step_id=NULL,updated_at=? WHERE id=?`
+        )
+        .run(now, input.runId);
     } else {
-      await tx.prepare(`
+      await tx
+        .prepare(
+          `
         UPDATE playbook_step_runs SET status='failed',error=?,finished_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL
         WHERE id=?
-      `).run('Founder rejected the approval request',now,now,step.id);
-      await tx.prepare(`UPDATE playbook_runs SET status='failed',error=?,finished_at=?,updated_at=? WHERE id=?`)
-        .run('Founder rejected the approval request',now,now,input.runId);
+      `
+        )
+        .run('Founder rejected the approval request', now, now, step.id);
+      await tx
+        .prepare(
+          `UPDATE playbook_runs SET status='failed',error=?,finished_at=?,updated_at=? WHERE id=?`
+        )
+        .run('Founder rejected the approval request', now, now, input.runId);
     }
 
     await appendDomainEvent(tx, {
@@ -223,16 +325,100 @@ export async function decidePlaybookApproval(
       actorType: 'user',
       actorId: input.userId,
       correlationId: run.correlationId,
-      payload: { stepId: input.stepId, payloadHash: step.approvalPayloadHash, comment: input.comment ?? null }
+      payload: {
+        stepId: input.stepId,
+        payloadHash: step.approvalPayloadHash,
+        comment: input.comment ?? null
+      }
     });
   });
 
-  if (input.decision === 'reject') return (await getPlaybookRun(db, input.workspaceId, input.runId))!;
+  if (input.decision === 'reject')
+    return (await getPlaybookRun(db, input.workspaceId, input.runId))!;
   if (orchestrationMode() === 'temporal') {
     await notifyTemporalPlaybook({ workspaceId: input.workspaceId, runId: input.runId });
     return (await getPlaybookRun(db, input.workspaceId, input.runId))!;
   }
   return advancePlaybookRun(db, input.workspaceId, input.runId);
+}
+
+export async function updatePlaybookApprovalBody(
+  db: Db,
+  input: {
+    workspaceId: string;
+    runId: string;
+    stepId: string;
+    userId: string;
+    body: string;
+  }
+): Promise<PlaybookRun> {
+  if (!input.body.trim()) throw new PlaybookError('Reply cannot be empty', 400);
+  if (input.body.length > 20_000) throw new PlaybookError('Reply is too long', 400);
+
+  const run = await getPlaybookRun(db, input.workspaceId, input.runId);
+  if (!run) throw new PlaybookError('Playbook run not found', 404);
+  const step = run.steps.find(
+    (item) => item.stepId === input.stepId && item.status === 'waiting_approval'
+  );
+  if (!step || !step.approvalPayloadHash) {
+    throw new PlaybookError('Approval step is not waiting for an edit', 409);
+  }
+  if (!step.input || typeof step.input !== 'object' || Array.isArray(step.input)) {
+    throw new PlaybookError('This approval payload cannot be edited', 409);
+  }
+  const currentPayload = step.input as Record<string, unknown>;
+  if (typeof currentPayload.body !== 'string') {
+    throw new PlaybookError('This approval does not contain an editable reply', 409);
+  }
+
+  const nextPayload = { ...currentPayload, body: input.body };
+  const nextHash = canonicalPayloadHash(nextPayload);
+  const now = new Date().toISOString();
+
+  await db.transaction(async (tx) => {
+    const locked = await tx
+      .prepare(
+        `
+      SELECT id,status,approval_payload_hash FROM playbook_step_runs
+      WHERE id=? FOR UPDATE
+    `
+      )
+      .get<{ id: string; status: string; approval_payload_hash: string | null }>(step.id);
+    if (
+      !locked ||
+      locked.status !== 'waiting_approval' ||
+      locked.approval_payload_hash !== step.approvalPayloadHash
+    ) {
+      throw new PlaybookError('Approval state changed; reload before editing', 409);
+    }
+
+    await tx
+      .prepare(
+        `
+      UPDATE playbook_step_runs
+      SET input_json=?,approval_payload_hash=?,updated_at=?
+      WHERE id=?
+    `
+      )
+      .run(JSON.stringify(nextPayload), nextHash, now, step.id);
+    await tx.prepare(`UPDATE playbook_runs SET updated_at=? WHERE id=?`).run(now, run.id);
+    await appendDomainEvent(tx, {
+      workspaceId: input.workspaceId,
+      streamType: 'playbook_run',
+      streamId: input.runId,
+      eventType: 'approval.payload_updated',
+      actorType: 'user',
+      actorId: input.userId,
+      correlationId: run.correlationId,
+      payload: {
+        stepId: input.stepId,
+        previousPayloadHash: step.approvalPayloadHash,
+        payloadHash: nextHash
+      }
+    });
+  });
+
+  return (await getPlaybookRun(db, input.workspaceId, input.runId))!;
 }
 
 export async function listPlaybookRuns(
@@ -242,18 +428,30 @@ export async function listPlaybookRuns(
 ): Promise<PlaybookRun[]> {
   const clauses = ['workspace_id=?'];
   const params: unknown[] = [workspaceId];
-  if (filters.status) { clauses.push('status=?'); params.push(filters.status); }
+  if (filters.status) {
+    clauses.push('status=?');
+    params.push(filters.status);
+  }
   params.push(Math.max(1, Math.min(filters.limit ?? 50, 200)));
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT id FROM playbook_runs WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT ?
-  `).all<{ id: string }>(...params);
+  `
+    )
+    .all<{ id: string }>(...params);
   const runs = await Promise.all(rows.map((row) => getPlaybookRun(db, workspaceId, row.id)));
   return runs.filter((run): run is PlaybookRun => Boolean(run));
 }
 
-export async function getPlaybookRun(db: Db, workspaceId: string, runId: string): Promise<PlaybookRun | null> {
-  const row = await db.prepare('SELECT * FROM playbook_runs WHERE id=? AND workspace_id=?')
-    .get<Record<string, unknown>>(runId,workspaceId);
+export async function getPlaybookRun(
+  db: Db,
+  workspaceId: string,
+  runId: string
+): Promise<PlaybookRun | null> {
+  const row = await db
+    .prepare('SELECT * FROM playbook_runs WHERE id=? AND workspace_id=?')
+    .get<Record<string, unknown>>(runId, workspaceId);
   if (!row) return null;
   // `row` proves the RUN belongs to `workspaceId`. The step read below used to
   // trust `playbook_run_id` alone to inherit that proof -- which holds only as
@@ -263,13 +461,19 @@ export async function getPlaybookRun(db: Db, workspaceId: string, runId: string)
   // advance it, lease it, and execute whatever skill it names. The `IS NULL`
   // arm keeps step runs written before this change visible, and is removed
   // together with the nullable column.
-  const stepRows = await db.prepare(`
+  const stepRows = await db
+    .prepare(
+      `
     SELECT DISTINCT ON (step_id) * FROM playbook_step_runs
     WHERE playbook_run_id=? AND (workspace_id IS NULL OR workspace_id=?) ORDER BY step_id,attempt DESC
-  `).all<Record<string, unknown>>(runId,workspaceId);
-  const playbook = getPlaybook(String(row.playbook_key),String(row.playbook_version));
-  const order = new Map((playbook?.steps ?? []).map((step,index) => [step.id,index]));
-  const steps = stepRows.map(serializeStep).sort((a,b) => (order.get(a.stepId) ?? 999) - (order.get(b.stepId) ?? 999));
+  `
+    )
+    .all<Record<string, unknown>>(runId, workspaceId);
+  const playbook = getPlaybook(String(row.playbook_key), String(row.playbook_version));
+  const order = new Map((playbook?.steps ?? []).map((step, index) => [step.id, index]));
+  const steps = stepRows
+    .map(serializeStep)
+    .sort((a, b) => (order.get(a.stepId) ?? 999) - (order.get(b.stepId) ?? 999));
   return {
     id: String(row.id),
     workspaceId: String(row.workspace_id),
@@ -293,14 +497,22 @@ export async function getPlaybookRun(db: Db, workspaceId: string, runId: string)
 
 export async function runReadyPlaybooks(db: Db): Promise<number> {
   if (orchestrationMode() === 'temporal') return 0;
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     SELECT id,workspace_id FROM playbook_runs
     WHERE status IN ('queued','running') ORDER BY updated_at ASC LIMIT 100
-  `).all<{ id: string; workspace_id: string }>();
+  `
+    )
+    .all<{ id: string; workspace_id: string }>();
   let processed = 0;
   for (const row of rows) {
-    try { await advancePlaybookRun(db,row.workspace_id,row.id); processed += 1; }
-    catch (error) { console.error('Playbook resume failed',row.id,error); }
+    try {
+      await advancePlaybookRun(db, row.workspace_id, row.id);
+      processed += 1;
+    } catch (error) {
+      console.error('Playbook resume failed', row.id, error);
+    }
   }
   return processed;
 }
@@ -328,7 +540,10 @@ async function runActionStep(
     attributes: policyAttributesFrom(payload)
   });
   const now = new Date().toISOString();
-  await db.prepare(`UPDATE playbook_step_runs SET input_json=?,policy_decision_json=?,updated_at=? WHERE id=?`)
+  await db
+    .prepare(
+      `UPDATE playbook_step_runs SET input_json=?,policy_decision_json=?,updated_at=? WHERE id=?`
+    )
     .run(JSON.stringify(payload), JSON.stringify(decision), now, String(stepRun.id));
 
   if (decision.effect === 'deny') {
@@ -338,7 +553,11 @@ async function runActionStep(
 
   const approvalStep = run.steps.find((candidate) => candidate.stepId === step.approvalStepId);
   const payloadHash = canonicalPayloadHash(payload);
-  if (!approvalStep || approvalStep.status !== 'completed' || approvalStep.approvalPayloadHash !== payloadHash) {
+  if (
+    !approvalStep ||
+    approvalStep.status !== 'completed' ||
+    approvalStep.approvalPayloadHash !== payloadHash
+  ) {
     await failStep(
       db,
       run,
@@ -348,13 +567,23 @@ async function runActionStep(
     );
     return 'completed';
   }
-  const approval = await db.prepare(`
+  const approval = await db
+    .prepare(
+      `
     SELECT id FROM playbook_approvals
     WHERE playbook_run_id=? AND step_run_id=? AND decision='approve' AND payload_hash=?
     ORDER BY created_at DESC LIMIT 1
-  `).get<{ id: string }>(run.id, approvalStep.id, payloadHash);
+  `
+    )
+    .get<{ id: string }>(run.id, approvalStep.id, payloadHash);
   if (!approval) {
-    await failStep(db, run, stepRun, 'No valid founder approval exists for the action payload', decision);
+    await failStep(
+      db,
+      run,
+      stepRun,
+      'No valid founder approval exists for the action payload',
+      decision
+    );
     return 'completed';
   }
 
@@ -379,10 +608,14 @@ async function runActionStep(
     });
     const finishedAt = new Date().toISOString();
     await db.transaction(async (tx) => {
-      await tx.prepare(`
+      await tx
+        .prepare(
+          `
         UPDATE playbook_step_runs SET status='completed',output_json=?,finished_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL
         WHERE id=?
-      `).run(JSON.stringify(delivery), finishedAt, finishedAt, String(stepRun.id));
+      `
+        )
+        .run(JSON.stringify(delivery), finishedAt, finishedAt, String(stepRun.id));
       await appendDomainEvent(tx, {
         workspaceId: run.workspaceId,
         streamType: 'playbook_run',
@@ -404,17 +637,38 @@ async function runActionStep(
       const availableAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
       const failedAt = new Date().toISOString();
       await db.transaction(async (tx) => {
-        await tx.prepare(`
+        await tx
+          .prepare(
+            `
           UPDATE playbook_step_runs SET status='failed',error=?,finished_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE id=?
-        `).run(error, failedAt, failedAt, String(stepRun.id));
+        `
+          )
+          .run(error, failedAt, failedAt, String(stepRun.id));
         // The retry row inherits the workspace of the run being retried, which
         // `advancePlaybookRun` already loaded under `workspace_id=?`.
-        await tx.prepare(`
+        await tx
+          .prepare(
+            `
           INSERT INTO playbook_step_runs (
             id,workspace_id,playbook_run_id,step_id,step_type,status,attempt,available_at,updated_at
           ) VALUES (?,?,?,?,?,?,?,?,?)
-        `).run(id('pbs'), run.workspaceId, run.id, step.id, 'action', 'pending', attempt + 1, availableAt, failedAt);
-        await tx.prepare(`UPDATE playbook_runs SET status='queued',current_step_id=?,error=NULL,updated_at=? WHERE id=?`)
+        `
+          )
+          .run(
+            id('pbs'),
+            run.workspaceId,
+            run.id,
+            step.id,
+            'action',
+            'pending',
+            attempt + 1,
+            availableAt,
+            failedAt
+          );
+        await tx
+          .prepare(
+            `UPDATE playbook_runs SET status='queued',current_step_id=?,error=NULL,updated_at=? WHERE id=?`
+          )
           .run(step.id, failedAt, run.id);
         await appendDomainEvent(tx, {
           workspaceId: run.workspaceId,
@@ -423,7 +677,13 @@ async function runActionStep(
           eventType: 'action.retry_scheduled',
           actorType: 'system',
           correlationId: run.correlationId,
-          payload: { stepId: step.id, actionType: step.actionType, attempt: attempt + 1, availableAt, error }
+          payload: {
+            stepId: step.id,
+            actionType: step.actionType,
+            attempt: attempt + 1,
+            availableAt,
+            error
+          }
         });
       });
       return 'scheduled';
@@ -442,12 +702,12 @@ async function runSkillStep(
 ): Promise<'completed' | 'waiting' | 'scheduled'> {
   const skill = await getWorkspaceSkillManifest(db, run.workspaceId, step.skillId);
   if (!skill || !skill.enabled) {
-    await failStep(db,run,stepRun,`Unknown or disabled skill: ${step.skillId}`,null);
+    await failStep(db, run, stepRun, `Unknown or disabled skill: ${step.skillId}`, null);
     return 'completed';
   }
-  const resolvedInput = resolveTemplate(step.input,context);
+  const resolvedInput = resolveTemplate(step.input, context);
   if (skill.sideEffect === 'external-write') {
-    const decision = await evaluatePolicy(db,{
+    const decision = await evaluatePolicy(db, {
       workspaceId: run.workspaceId,
       action: `skill:${step.skillId}`,
       actorType: run.actorType,
@@ -467,7 +727,7 @@ async function runSkillStep(
     );
     return 'completed';
   }
-  const decision = await evaluatePolicy(db,{
+  const decision = await evaluatePolicy(db, {
     workspaceId: run.workspaceId,
     action: `skill:${step.skillId}`,
     actorType: run.actorType,
@@ -479,15 +739,24 @@ async function runSkillStep(
     attributes: policyAttributesFrom(resolvedInput)
   });
 
-  await db.prepare(`UPDATE playbook_step_runs SET input_json=?,policy_decision_json=?,skill_version=?,updated_at=? WHERE id=?`)
-    .run(JSON.stringify(resolvedInput),JSON.stringify(decision),skill.version,new Date().toISOString(),String(stepRun.id));
+  await db
+    .prepare(
+      `UPDATE playbook_step_runs SET input_json=?,policy_decision_json=?,skill_version=?,updated_at=? WHERE id=?`
+    )
+    .run(
+      JSON.stringify(resolvedInput),
+      JSON.stringify(decision),
+      skill.version,
+      new Date().toISOString(),
+      String(stepRun.id)
+    );
 
   if (decision.effect === 'deny') {
-    await failStep(db,run,stepRun,decision.reason,decision);
+    await failStep(db, run, stepRun, decision.reason, decision);
     return 'completed';
   }
   if (decision.effect === 'require_approval') {
-    await placeStepBehindApproval(db,run,stepRun,step.id,resolvedInput,decision);
+    await placeStepBehindApproval(db, run, stepRun, step.id, resolvedInput, decision);
     return 'waiting';
   }
 
@@ -501,7 +770,7 @@ async function runSkillStep(
   // `runReadyPlaybooks` sweep forever.
   let result: Awaited<ReturnType<typeof executeWorkspaceSkill>>;
   try {
-    result = await executeWorkspaceSkill(db,{
+    result = await executeWorkspaceSkill(db, {
       workspaceId: run.workspaceId,
       skillId: step.skillId,
       payload: resolvedInput,
@@ -512,51 +781,123 @@ async function runSkillStep(
     const message = cause instanceof Error ? cause.message : String(cause);
     // Not retried: the same template resolves to the same missing field on
     // every attempt, so retrying would only repeat the failure.
-    await failStep(db,run,stepRun,`Skill ${step.skillId} rejected its resolved input (check for a $ref into an empty prior-step result): ${message}`,decision);
+    await failStep(
+      db,
+      run,
+      stepRun,
+      `Skill ${step.skillId} rejected its resolved input (check for a $ref into an empty prior-step result): ${message}`,
+      decision
+    );
     return 'completed';
   }
   const now = new Date().toISOString();
   if (result.run.status === 'ok') {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       UPDATE playbook_step_runs SET status='completed',skill_run_id=?,output_json=?,evidence_json=?,
         finished_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE id=?
-    `).run(result.run.id,JSON.stringify(result.run.output),JSON.stringify(result.run.evidence),now,now,String(stepRun.id));
-    await appendDomainEvent(db,{
-      workspaceId: run.workspaceId,streamType:'playbook_run',streamId:run.id,eventType:'playbook.step.completed',
-      actorType:run.actorType,actorId:run.actorId,correlationId:run.correlationId,causationId:result.run.id,
-      payload:{ stepId:step.id,skillId:step.skillId,skillRunId:result.run.id,evidence:result.run.evidence }
+    `
+      )
+      .run(
+        result.run.id,
+        JSON.stringify(result.run.output),
+        JSON.stringify(result.run.evidence),
+        now,
+        now,
+        String(stepRun.id)
+      );
+    await appendDomainEvent(db, {
+      workspaceId: run.workspaceId,
+      streamType: 'playbook_run',
+      streamId: run.id,
+      eventType: 'playbook.step.completed',
+      actorType: run.actorType,
+      actorId: run.actorId,
+      correlationId: run.correlationId,
+      causationId: result.run.id,
+      payload: {
+        stepId: step.id,
+        skillId: step.skillId,
+        skillRunId: result.run.id,
+        evidence: result.run.evidence
+      }
     });
     return 'completed';
   }
 
   const attempt = Number(stepRun.attempt);
-  const maxAttempts = Math.max(1,step.retry?.maxAttempts ?? 1);
+  const maxAttempts = Math.max(1, step.retry?.maxAttempts ?? 1);
   if (attempt < maxAttempts) {
-    const delaySeconds = Math.max(0,step.retry?.delaySeconds ?? 0);
-    const availableAt = new Date(Date.now()+delaySeconds*1000).toISOString();
+    const delaySeconds = Math.max(0, step.retry?.delaySeconds ?? 0);
+    const availableAt = new Date(Date.now() + delaySeconds * 1000).toISOString();
     await db.transaction(async (tx) => {
-      await tx.prepare(`
+      await tx
+        .prepare(
+          `
         UPDATE playbook_step_runs SET status='failed',skill_run_id=?,output_json=?,error=?,finished_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE id=?
-      `).run(result.run.id,JSON.stringify(result.run.output),result.run.error,now,now,String(stepRun.id));
+      `
+        )
+        .run(
+          result.run.id,
+          JSON.stringify(result.run.output),
+          result.run.error,
+          now,
+          now,
+          String(stepRun.id)
+        );
       // Same as the action retry above: the tenant comes from the run, not from
       // the skill result and not from a default.
-      await tx.prepare(`
+      await tx
+        .prepare(
+          `
         INSERT INTO playbook_step_runs (
           id,workspace_id,playbook_run_id,step_id,step_type,skill_id,skill_version,status,attempt,available_at,updated_at
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-      `).run(id('pbs'),run.workspaceId,run.id,step.id,'skill',step.skillId,skill.version,'pending',attempt+1,availableAt,now);
-      await tx.prepare(`UPDATE playbook_runs SET status='queued',current_step_id=?,error=NULL,updated_at=? WHERE id=?`)
-        .run(step.id,now,run.id);
-      await appendDomainEvent(tx,{
-        workspaceId:run.workspaceId,streamType:'playbook_run',streamId:run.id,eventType:'playbook.step.retry_scheduled',
-        actorType:run.actorType,actorId:run.actorId,correlationId:run.correlationId,causationId:result.run.id,
-        payload:{stepId:step.id,attempt:attempt+1,availableAt,error:result.run.error}
+      `
+        )
+        .run(
+          id('pbs'),
+          run.workspaceId,
+          run.id,
+          step.id,
+          'skill',
+          step.skillId,
+          skill.version,
+          'pending',
+          attempt + 1,
+          availableAt,
+          now
+        );
+      await tx
+        .prepare(
+          `UPDATE playbook_runs SET status='queued',current_step_id=?,error=NULL,updated_at=? WHERE id=?`
+        )
+        .run(step.id, now, run.id);
+      await appendDomainEvent(tx, {
+        workspaceId: run.workspaceId,
+        streamType: 'playbook_run',
+        streamId: run.id,
+        eventType: 'playbook.step.retry_scheduled',
+        actorType: run.actorType,
+        actorId: run.actorId,
+        correlationId: run.correlationId,
+        causationId: result.run.id,
+        payload: { stepId: step.id, attempt: attempt + 1, availableAt, error: result.run.error }
       });
     });
     if (delaySeconds === 0) return 'completed';
     return 'scheduled';
   }
-  await failStep(db,run,stepRun,result.run.error ?? `Skill ${step.skillId} failed`,decision,result.run.id,result.run.output);
+  await failStep(
+    db,
+    run,
+    stepRun,
+    result.run.error ?? `Skill ${step.skillId} failed`,
+    decision,
+    result.run.id,
+    result.run.output
+  );
   return 'completed';
 }
 
@@ -567,12 +908,15 @@ async function waitForApproval(
   step: ApprovalPlaybookStep,
   context: PlaybookTemplateContext
 ): Promise<void> {
-  const payload = resolveTemplate(step.payload,context);
+  const payload = resolveTemplate(step.payload, context);
   const decision: PolicyDecision = {
-    effect:'require_approval',policyId:null,policyName:'Playbook approval step',
-    reason:step.title,evaluatedAt:new Date().toISOString()
+    effect: 'require_approval',
+    policyId: null,
+    policyName: 'Playbook approval step',
+    reason: step.title,
+    evaluatedAt: new Date().toISOString()
   };
-  await placeStepBehindApproval(db,run,stepRun,step.id,payload,decision);
+  await placeStepBehindApproval(db, run, stepRun, step.id, payload, decision);
 }
 
 async function placeStepBehindApproval(
@@ -586,16 +930,28 @@ async function placeStepBehindApproval(
   const now = new Date().toISOString();
   const payloadHash = canonicalPayloadHash(payload);
   await db.transaction(async (tx) => {
-    await tx.prepare(`
+    await tx
+      .prepare(
+        `
       UPDATE playbook_step_runs SET status='waiting_approval',input_json=?,policy_decision_json=?,approval_payload_hash=?,
         updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE id=?
-    `).run(JSON.stringify(payload),JSON.stringify(decision),payloadHash,now,String(stepRun.id));
-    await tx.prepare(`UPDATE playbook_runs SET status='waiting_approval',current_step_id=?,updated_at=? WHERE id=?`)
-      .run(stepId,now,run.id);
-    await appendDomainEvent(tx,{
-      workspaceId:run.workspaceId,streamType:'playbook_run',streamId:run.id,eventType:'approval.requested',
-      actorType:run.actorType,actorId:run.actorId,correlationId:run.correlationId,
-      payload:{stepId,payloadHash,payload,policy:decision}
+    `
+      )
+      .run(JSON.stringify(payload), JSON.stringify(decision), payloadHash, now, String(stepRun.id));
+    await tx
+      .prepare(
+        `UPDATE playbook_runs SET status='waiting_approval',current_step_id=?,updated_at=? WHERE id=?`
+      )
+      .run(stepId, now, run.id);
+    await appendDomainEvent(tx, {
+      workspaceId: run.workspaceId,
+      streamType: 'playbook_run',
+      streamId: run.id,
+      eventType: 'approval.requested',
+      actorType: run.actorType,
+      actorId: run.actorId,
+      correlationId: run.correlationId,
+      payload: { stepId, payloadHash, payload, policy: decision }
     });
   });
 }
@@ -603,13 +959,22 @@ async function placeStepBehindApproval(
 async function claimStep(db: Db, stepRunId: string): Promise<Record<string, unknown> | null> {
   const now = new Date();
   const leaseOwner = `worker_${randomUUID()}`;
-  const claimed = await db.prepare(`
+  const claimed = await db
+    .prepare(
+      `
     UPDATE playbook_step_runs SET status='running',lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=?
     WHERE id=? AND status='pending' AND available_at<=?
     RETURNING *
-  `).get<Record<string, unknown>>(
-    leaseOwner,new Date(now.getTime()+LEASE_MS).toISOString(),now.toISOString(),now.toISOString(),stepRunId,now.toISOString()
-  );
+  `
+    )
+    .get<Record<string, unknown>>(
+      leaseOwner,
+      new Date(now.getTime() + LEASE_MS).toISOString(),
+      now.toISOString(),
+      now.toISOString(),
+      stepRunId,
+      now.toISOString()
+    );
   return claimed ?? null;
 }
 
@@ -619,10 +984,14 @@ async function claimStep(db: Db, stepRunId: string): Promise<Record<string, unkn
 // advance a run with the same id. The caller already holds the value.
 async function recoverStaleSteps(db: Db, workspaceId: string, runId: string): Promise<void> {
   const now = new Date().toISOString();
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE playbook_step_runs SET status='pending',lease_owner=NULL,lease_expires_at=NULL,updated_at=?
     WHERE playbook_run_id=? AND (workspace_id IS NULL OR workspace_id=?) AND status='running' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
-  `).run(now,runId,workspaceId,now);
+  `
+    )
+    .run(now, runId, workspaceId, now);
 }
 
 async function failStep(
@@ -636,16 +1005,37 @@ async function failStep(
 ): Promise<void> {
   const now = new Date().toISOString();
   await db.transaction(async (tx) => {
-    await tx.prepare(`
+    await tx
+      .prepare(
+        `
       UPDATE playbook_step_runs SET status='failed',skill_run_id=?,output_json=?,error=?,policy_decision_json=COALESCE(?,policy_decision_json),
         finished_at=?,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE id=?
-    `).run(skillRunId ?? null,output === undefined ? null : JSON.stringify(output),error,decision ? JSON.stringify(decision) : null,now,now,String(stepRun.id));
-    await tx.prepare(`UPDATE playbook_runs SET status='failed',error=?,current_step_id=?,finished_at=?,updated_at=? WHERE id=?`)
-      .run(error,String(stepRun.step_id),now,now,run.id);
-    await appendDomainEvent(tx,{
-      workspaceId:run.workspaceId,streamType:'playbook_run',streamId:run.id,eventType:'playbook.step.failed',
-      actorType:run.actorType,actorId:run.actorId,correlationId:run.correlationId,causationId:skillRunId ?? null,
-      payload:{stepId:String(stepRun.step_id),error,policy:decision}
+    `
+      )
+      .run(
+        skillRunId ?? null,
+        output === undefined ? null : JSON.stringify(output),
+        error,
+        decision ? JSON.stringify(decision) : null,
+        now,
+        now,
+        String(stepRun.id)
+      );
+    await tx
+      .prepare(
+        `UPDATE playbook_runs SET status='failed',error=?,current_step_id=?,finished_at=?,updated_at=? WHERE id=?`
+      )
+      .run(error, String(stepRun.step_id), now, now, run.id);
+    await appendDomainEvent(tx, {
+      workspaceId: run.workspaceId,
+      streamType: 'playbook_run',
+      streamId: run.id,
+      eventType: 'playbook.step.failed',
+      actorType: run.actorType,
+      actorId: run.actorId,
+      correlationId: run.correlationId,
+      causationId: skillRunId ?? null,
+      payload: { stepId: String(stepRun.step_id), error, policy: decision }
     });
   });
 }
@@ -654,15 +1044,24 @@ async function failRun(db: Db, run: PlaybookRun, error: string): Promise<Playboo
   if (run.status !== 'failed') {
     const now = new Date().toISOString();
     await db.transaction(async (tx) => {
-      await tx.prepare(`UPDATE playbook_runs SET status='failed',error=?,finished_at=?,updated_at=? WHERE id=?`)
-        .run(error,now,now,run.id);
-      await appendDomainEvent(tx,{
-        workspaceId:run.workspaceId,streamType:'playbook_run',streamId:run.id,eventType:'playbook.run.failed',
-        actorType:run.actorType,actorId:run.actorId,correlationId:run.correlationId,payload:{error}
+      await tx
+        .prepare(
+          `UPDATE playbook_runs SET status='failed',error=?,finished_at=?,updated_at=? WHERE id=?`
+        )
+        .run(error, now, now, run.id);
+      await appendDomainEvent(tx, {
+        workspaceId: run.workspaceId,
+        streamType: 'playbook_run',
+        streamId: run.id,
+        eventType: 'playbook.run.failed',
+        actorType: run.actorType,
+        actorId: run.actorId,
+        correlationId: run.correlationId,
+        payload: { error }
       });
     });
   }
-  return (await getPlaybookRun(db,run.workspaceId,run.id))!;
+  return (await getPlaybookRun(db, run.workspaceId, run.id))!;
 }
 
 async function completeRun(
@@ -671,19 +1070,28 @@ async function completeRun(
   playbook: PlaybookDefinition,
   context: PlaybookTemplateContext
 ): Promise<PlaybookRun> {
-  const output = playbook.output ? resolveTemplate(playbook.output,context) : Object.fromEntries(
-    Object.entries(context.steps).map(([key,value]) => [key,value.output])
-  );
+  const output = playbook.output
+    ? resolveTemplate(playbook.output, context)
+    : Object.fromEntries(Object.entries(context.steps).map(([key, value]) => [key, value.output]));
   const now = new Date().toISOString();
   await db.transaction(async (tx) => {
-    await tx.prepare(`UPDATE playbook_runs SET status='completed',output_json=?,error=NULL,current_step_id=NULL,finished_at=?,updated_at=? WHERE id=?`)
-      .run(JSON.stringify(output),now,now,run.id);
-    await appendDomainEvent(tx,{
-      workspaceId:run.workspaceId,streamType:'playbook_run',streamId:run.id,eventType:'playbook.run.completed',
-      actorType:run.actorType,actorId:run.actorId,correlationId:run.correlationId,payload:{output}
+    await tx
+      .prepare(
+        `UPDATE playbook_runs SET status='completed',output_json=?,error=NULL,current_step_id=NULL,finished_at=?,updated_at=? WHERE id=?`
+      )
+      .run(JSON.stringify(output), now, now, run.id);
+    await appendDomainEvent(tx, {
+      workspaceId: run.workspaceId,
+      streamType: 'playbook_run',
+      streamId: run.id,
+      eventType: 'playbook.run.completed',
+      actorType: run.actorType,
+      actorId: run.actorId,
+      correlationId: run.correlationId,
+      payload: { output }
     });
   });
-  return (await getPlaybookRun(db,run.workspaceId,run.id))!;
+  return (await getPlaybookRun(db, run.workspaceId, run.id))!;
 }
 
 async function setRunStatus(
@@ -694,44 +1102,74 @@ async function setRunStatus(
   error: string | null
 ): Promise<void> {
   if (run.status === status && run.currentStepId === currentStepId && run.error === error) return;
-  await db.prepare(`UPDATE playbook_runs SET status=?,current_step_id=?,error=?,updated_at=? WHERE id=?`)
-    .run(status,currentStepId,error,new Date().toISOString(),run.id);
+  await db
+    .prepare(`UPDATE playbook_runs SET status=?,current_step_id=?,error=?,updated_at=? WHERE id=?`)
+    .run(status, currentStepId, error, new Date().toISOString(), run.id);
 }
 
 function templateContext(run: PlaybookRun): PlaybookTemplateContext {
   return {
-    input:run.input,
-    steps:Object.fromEntries(run.steps.map((step) => [step.stepId,{
-      input:step.input,output:step.output,evidence:step.evidence,status:step.status
-    }]))
+    input: run.input,
+    steps: Object.fromEntries(
+      run.steps.map((step) => [
+        step.stepId,
+        {
+          input: step.input,
+          output: step.output,
+          evidence: step.evidence,
+          status: step.status
+        }
+      ])
+    )
   };
 }
 
 function serializeStep(row: Record<string, unknown>): PlaybookStepRun {
   return {
-    id:String(row.id),stepId:String(row.step_id),stepType:String(row.step_type) as PlaybookStepRun['stepType'],
-    skillId:row.skill_id ? String(row.skill_id) : null,skillVersion:row.skill_version ? String(row.skill_version) : null,
-    skillRunId:row.skill_run_id ? String(row.skill_run_id) : null,status:String(row.status) as PlaybookStepRun['status'],
-    attempt:Number(row.attempt),input:parseJson(row.input_json),output:parseJson(row.output_json),
-    evidence:Array.isArray(parseJson(row.evidence_json)) ? parseJson(row.evidence_json) as unknown[] : [],
-    error:row.error ? String(row.error) : null,policyDecision:parseJson(row.policy_decision_json),
-    approvalPayloadHash:row.approval_payload_hash ? String(row.approval_payload_hash) : null,
-    startedAt:row.started_at ? String(row.started_at) : null,finishedAt:row.finished_at ? String(row.finished_at) : null,
-    updatedAt:String(row.updated_at)
+    id: String(row.id),
+    stepId: String(row.step_id),
+    stepType: String(row.step_type) as PlaybookStepRun['stepType'],
+    skillId: row.skill_id ? String(row.skill_id) : null,
+    skillVersion: row.skill_version ? String(row.skill_version) : null,
+    skillRunId: row.skill_run_id ? String(row.skill_run_id) : null,
+    status: String(row.status) as PlaybookStepRun['status'],
+    attempt: Number(row.attempt),
+    input: parseJson(row.input_json),
+    output: parseJson(row.output_json),
+    evidence: Array.isArray(parseJson(row.evidence_json))
+      ? (parseJson(row.evidence_json) as unknown[])
+      : [],
+    error: row.error ? String(row.error) : null,
+    policyDecision: parseJson(row.policy_decision_json),
+    approvalPayloadHash: row.approval_payload_hash ? String(row.approval_payload_hash) : null,
+    startedAt: row.started_at ? String(row.started_at) : null,
+    finishedAt: row.finished_at ? String(row.finished_at) : null,
+    updatedAt: String(row.updated_at)
   };
 }
 
-async function assertPlaybookEnabled(db: Db, workspaceId: string, playbook: PlaybookDefinition): Promise<void> {
-  const available = await listWorkspacePlaybooks(db,workspaceId);
-  const entry = available.find((item) => item.id === playbook.id && item.version === playbook.version);
-  if (!entry || !entry.enabled) throw new PlaybookError(`Playbook is disabled: ${playbook.id}@${playbook.version}`,403);
+async function assertPlaybookEnabled(
+  db: Db,
+  workspaceId: string,
+  playbook: PlaybookDefinition
+): Promise<void> {
+  const available = await listWorkspacePlaybooks(db, workspaceId);
+  const entry = available.find(
+    (item) => item.id === playbook.id && item.version === playbook.version
+  );
+  if (!entry || !entry.enabled)
+    throw new PlaybookError(`Playbook is disabled: ${playbook.id}@${playbook.version}`, 403);
   if (entry.pinnedVersion && entry.pinnedVersion !== playbook.version) {
-    throw new PlaybookError(`Workspace pins ${playbook.id} to ${entry.pinnedVersion}`,409);
+    throw new PlaybookError(`Workspace pins ${playbook.id} to ${entry.pinnedVersion}`, 409);
   }
 }
 
 function parseJson(value: unknown): unknown {
   if (value === null || value === undefined) return null;
   if (typeof value !== 'string') return value;
-  try { return JSON.parse(value); } catch { return value; }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 }

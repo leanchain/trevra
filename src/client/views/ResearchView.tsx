@@ -377,7 +377,7 @@ export function ResearchView({
 
   return (
     <div className="page-stack">
-      <section className="page-panel">
+      <section className="research-toolbar">
         <div className="section-heading">
           <div>
             <h2>Research</h2>
@@ -403,129 +403,131 @@ export function ResearchView({
         </div>
       </section>
 
-      <section className="page-panel">
-        <div className="section-heading">
-          <div>
-            <h3 aria-level={2}>Discovered threads</h3>
-            <p>Community threads scouted and scored for reply-worthiness.</p>
-          </div>
-        </div>
-        <div className="client-table">
-          {threadsLoaded &&
-            !threadsError &&
-            threads.map((entry) => (
-              <article
-                className={`client-card-large ${entry.guard.allowed ? '' : 'is-blocked'}`}
-                key={entry.row.id}
-              >
-                <span className="client-avatar large">{entry.relevance.score.toFixed(1)}</span>
-                <div>
-                  <h3>
-                    <a href={entry.row.url} target="_blank" rel="noreferrer">
-                      {entry.row.title}
-                    </a>
-                  </h3>
-                  <p>{factsLine(entry, now)}</p>
-                  <p className="client-why">
-                    {whyChips(entry).map((chip) => (
-                      <span
-                        className={`client-status ${chip.tone === 'negative' ? 'is-negative' : ''}`}
-                        key={chip.label}
-                      >
-                        {chip.label} <b>{chipPoints(chip)}</b>
-                      </span>
-                    ))}
-                  </p>
-                  <p>
-                    angle: {entry.angle}
-                    {entry.topics.length > 0 ? ` · topics: ${entry.topics.join(', ')}` : ''}
-                  </p>
-                  {!entry.guard.allowed && (
-                    <p className="client-blocked">Blocked: {entry.guard.reason}</p>
-                  )}
-                  <button
-                    type="button"
-                    className="li-range"
-                    disabled={!entry.guard.allowed}
-                    onClick={() => setDrafting(entry)}
-                  >
-                    Draft reply
-                  </button>
-                </div>
-              </article>
-            ))}
-          {!threadsLoaded && (
-            <div className="empty-state">
-              <LoaderCircle className="spin" size={26} />
-              <h4 aria-level={3}>Loading…</h4>
-              <p>One moment.</p>
-            </div>
-          )}
-          {threadsLoaded && threadsError && (
-            <div className="empty-state">
-              <CircleAlert size={26} />
-              <h4 aria-level={3}>Couldn't load discovered threads</h4>
-              <p>Something went wrong fetching this. Try reloading the page.</p>
-            </div>
-          )}
-          {threadsLoaded && !threadsError && threads.length === 0 && (
-            <div className="empty-state">
-              <MessageSquare size={26} />
-              <h4 aria-level={3}>No threads discovered yet</h4>
-              <p>Scouting runs on its own schedule; check back once it has run.</p>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {showBriefs && (
-        <section className="page-panel">
+      <div className="research-feed-grid">
+        <section className="page-panel research-thread-panel">
           <div className="section-heading">
             <div>
-              <h3 aria-level={2}>Company research</h3>
-              <p>Findings drawn from company audits and enrichment, used to draft outreach.</p>
+              <h3 aria-level={2}>Discovered threads</h3>
+              <p>Community threads scouted and scored for reply-worthiness.</p>
             </div>
           </div>
           <div className="client-table">
-            {briefsLoaded &&
-              !briefsError &&
-              renderableBriefs.map(({ run, brief }) => (
-                <article className="client-card-large" key={run.id}>
-                  <span className="client-avatar large">
-                    {(brief.domain ?? '?').slice(0, 1).toUpperCase()}
-                  </span>
+            {threadsLoaded &&
+              !threadsError &&
+              threads.map((entry) => (
+                <article
+                  className={`client-card-large ${entry.guard.allowed ? '' : 'is-blocked'}`}
+                  key={entry.row.id}
+                >
+                  <span className="client-avatar large">{entry.relevance.score.toFixed(1)}</span>
                   <div>
-                    <h3>{brief.domain ?? 'Unknown domain'}</h3>
-                    <p>{brief.findingDetail}</p>
-                    <span className="client-status">{brief.topFinding}</span>
-                    {run.evidence.length > 0 && <EvidenceList entries={run.evidence} />}
+                    <h3>
+                      <a href={entry.row.url} target="_blank" rel="noreferrer">
+                        {entry.row.title}
+                      </a>
+                    </h3>
+                    <p>{factsLine(entry, now)}</p>
+                    <p className="client-why">
+                      {whyChips(entry).map((chip) => (
+                        <span
+                          className={`client-status ${chip.tone === 'negative' ? 'is-negative' : ''}`}
+                          key={chip.label}
+                        >
+                          {chip.label} <b>{chipPoints(chip)}</b>
+                        </span>
+                      ))}
+                    </p>
+                    <p>
+                      angle: {entry.angle}
+                      {entry.topics.length > 0 ? ` · topics: ${entry.topics.join(', ')}` : ''}
+                    </p>
+                    {!entry.guard.allowed && (
+                      <p className="client-blocked">Blocked: {entry.guard.reason}</p>
+                    )}
+                    <button
+                      type="button"
+                      className="li-range"
+                      disabled={!entry.guard.allowed}
+                      onClick={() => setDrafting(entry)}
+                    >
+                      Draft reply
+                    </button>
                   </div>
                 </article>
               ))}
-            {!briefsLoaded && (
+            {!threadsLoaded && (
               <div className="empty-state">
                 <LoaderCircle className="spin" size={26} />
                 <h4 aria-level={3}>Loading…</h4>
                 <p>One moment.</p>
               </div>
             )}
-            {briefsLoaded && briefsError && (
+            {threadsLoaded && threadsError && (
               <div className="empty-state">
                 <CircleAlert size={26} />
-                <h4 aria-level={3}>Couldn't load research briefs</h4>
+                <h4 aria-level={3}>Couldn't load discovered threads</h4>
                 <p>Something went wrong fetching this. Try reloading the page.</p>
               </div>
             )}
-            {briefsLoaded && !briefsError && renderableBriefs.length === 0 && (
+            {threadsLoaded && !threadsError && threads.length === 0 && (
               <div className="empty-state">
-                <Newspaper size={26} />
-                <h4 aria-level={3}>No research briefs yet</h4>
-                <p>These are generated when a company is researched for outreach.</p>
+                <MessageSquare size={26} />
+                <h4 aria-level={3}>No threads discovered yet</h4>
+                <p>Scouting runs on its own schedule; check back once it has run.</p>
               </div>
             )}
           </div>
         </section>
-      )}
+
+        {showBriefs && (
+          <section className="page-panel research-brief-panel">
+            <div className="section-heading">
+              <div>
+                <h3 aria-level={2}>Company research</h3>
+                <p>Findings drawn from company audits and enrichment, used to draft outreach.</p>
+              </div>
+            </div>
+            <div className="client-table">
+              {briefsLoaded &&
+                !briefsError &&
+                renderableBriefs.map(({ run, brief }) => (
+                  <article className="client-card-large" key={run.id}>
+                    <span className="client-avatar large">
+                      {(brief.domain ?? '?').slice(0, 1).toUpperCase()}
+                    </span>
+                    <div>
+                      <h3>{brief.domain ?? 'Unknown domain'}</h3>
+                      <p>{brief.findingDetail}</p>
+                      <span className="client-status">{brief.topFinding}</span>
+                      {run.evidence.length > 0 && <EvidenceList entries={run.evidence} />}
+                    </div>
+                  </article>
+                ))}
+              {!briefsLoaded && (
+                <div className="empty-state">
+                  <LoaderCircle className="spin" size={26} />
+                  <h4 aria-level={3}>Loading…</h4>
+                  <p>One moment.</p>
+                </div>
+              )}
+              {briefsLoaded && briefsError && (
+                <div className="empty-state">
+                  <CircleAlert size={26} />
+                  <h4 aria-level={3}>Couldn't load research briefs</h4>
+                  <p>Something went wrong fetching this. Try reloading the page.</p>
+                </div>
+              )}
+              {briefsLoaded && !briefsError && renderableBriefs.length === 0 && (
+                <div className="empty-state">
+                  <Newspaper size={26} />
+                  <h4 aria-level={3}>No research briefs yet</h4>
+                  <p>These are generated when a company is researched for outreach.</p>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+      </div>
 
       {showRedditCorpus && (
         // Closed on first render: most operators are not managing Reddit sources

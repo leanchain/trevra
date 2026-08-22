@@ -9,11 +9,10 @@ import {
   FileDown,
   LoaderCircle,
   RefreshCw,
-  ShieldCheck,
   Workflow,
   X
 } from 'lucide-react';
-import type { AgentRunSummary, PlaybookRun } from '../../shared/types';
+import type { AgentRunSummary, PlaybookRun, PlaybookStepRun } from '../../shared/types';
 import {
   LEDGER_EXPORT_SECTIONS,
   createLedgerExport,
@@ -22,10 +21,14 @@ import {
   getLedgerExports,
   getPlaybookRuns,
   ledgerExportDownloadPath,
+  updatePlaybookApprovalBody,
   type LedgerExportRecord,
   type LedgerExportSection
 } from '../api';
 import { useDialog } from '../ui/dialog';
+import { FilterGroup, FilterToolbar } from '../ui/filters';
+import { EmptyState, Panel } from '../ui/layout';
+import { Button, Select } from '../ui/primitives';
 import {
   ApprovalDecisionProof,
   RunInspector,
@@ -51,24 +54,321 @@ type ActorFilter = 'all' | 'jobs' | 'agent';
 type StatusFilter = 'all' | 'running' | 'waiting_approval' | 'completed' | 'failed';
 
 const STATUS_FILTERS: Array<{ id: StatusFilter; label: string }> = [
-  { id: 'all', label: 'Any status' },
-  { id: 'running', label: 'Running' },
+  { id: 'all', label: 'All runs' },
+  { id: 'running', label: 'Running now' },
   { id: 'waiting_approval', label: 'Waiting on you' },
   { id: 'completed', label: 'Completed' },
   { id: 'failed', label: 'Failed' }
 ];
 
 const ACTOR_FILTERS: Array<{ id: ActorFilter; label: string }> = [
-  { id: 'all', label: 'Anyone' },
-  { id: 'jobs', label: 'Jobs' },
-  { id: 'agent', label: 'Trevra’s agent' }
+  { id: 'all', label: 'All work' },
+  { id: 'jobs', label: 'Jobs & workflows' },
+  { id: 'agent', label: 'Trevra agent' }
 ];
 
 const DAY_FILTERS = [7, 30, 90, 365] as const;
 
+const dayFilterLabel = (days: number) => (days === 365 ? 'Last year' : `Last ${days} days`);
+
 /** A failed status by any of the three vocabularies the three ledgers use. */
 const isFailed = (status: string) =>
   status === 'failed' || status === 'error' || status === 'cancelled';
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function textOf(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function listOf(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function StepHoverCard({ step, steps }: { step: PlaybookStepRun; steps: PlaybookStepRun[] }) {
+  const anchor = useRef<HTMLDivElement>(null);
+  const card = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number | null>(null);
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  const cancelClose = () => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+  const open = () => {
+    cancelClose();
+    const next = anchor.current?.getBoundingClientRect();
+    if (next) setRect(next);
+  };
+  const close = () => {
+    cancelClose();
+    setRect(null);
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(() => setRect(null), 180);
+  };
+
+  useEffect(() => {
+    if (!rect) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (anchor.current?.contains(target) || card.current?.contains(target)) return;
+      close();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') close();
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [rect]);
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    },
+    []
+  );
+
+  const output = recordOf(step.output);
+  const input = recordOf(step.input);
+
+  let content: React.ReactNode;
+  if (step.stepId === 'guard') {
+    const checks = listOf(output?.checks);
+    const passed = checks.filter((entry) => recordOf(entry)?.passed === true).length;
+    content = (
+      <>
+        <div className="step-hover-summary">
+          <strong>
+            {output?.allowed === false ? 'Blocked by safety guard' : 'Safety guard passed'}
+          </strong>
+          <span>
+            {checks.length ? `${passed}/${checks.length} checks passed` : 'Safety checks completed'}
+          </span>
+        </div>
+        {checks.length > 0 && (
+          <div className="step-hover-checks">
+            {checks.map((entry, index) => {
+              const check = recordOf(entry);
+              if (!check) return null;
+              const ok = check.passed === true;
+              return (
+                <div key={index} className={ok ? 'is-passed' : 'is-failed'}>
+                  <span>{ok ? '✓' : '×'}</span>
+                  <div>
+                    <strong>{humanizeId(textOf(check.check) || `Check ${index + 1}`)}</strong>
+                    <small>{textOf(check.detail)}</small>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {textOf(output?.reason) && <p className="step-hover-note">{textOf(output?.reason)}</p>}
+        {textOf(output?.automationReason) && (
+          <p className="step-hover-note">
+            <strong>
+              {textOf(output?.automationMode) === 'prepare-only' ? 'Delivery:' : 'Platform:'}
+            </strong>{' '}
+            {textOf(output?.automationReason)}
+          </p>
+        )}
+      </>
+    );
+  } else if (step.stepId === 'draft') {
+    const critique = recordOf(output?.critique);
+    const findings = listOf(critique?.findings);
+    const firstFinding = recordOf(findings[0]);
+    const body = textOf(output?.body);
+    const angle = textOf(output?.angle);
+    const angleLabel =
+      angle === 'technical_deepdive'
+        ? 'Technical deep dive'
+        : angle === 'cost_comparison'
+          ? 'Cost comparison'
+          : angle === 'alternative_suggestion'
+            ? 'Alternative suggestion'
+            : angle === 'minimal_mention'
+              ? 'Minimal mention'
+              : angle
+                ? humanizeId(angle)
+                : 'Reply draft';
+    content = (
+      <>
+        <div className="step-hover-summary">
+          <strong>Drafted the reply</strong>
+          <span>
+            {angleLabel}
+            {critique?.passed === true
+              ? ' · critique passed'
+              : critique?.passed === false
+                ? ' · needs review'
+                : ''}
+          </span>
+        </div>
+        {body && (
+          <p className="step-hover-preview">
+            {body.length > 280 ? `${body.slice(0, 280)}…` : body}
+          </p>
+        )}
+        {firstFinding && (
+          <p className="step-hover-note">
+            <strong>
+              {findings.length === 1 ? 'Copy note:' : `${findings.length} copy notes:`}
+            </strong>{' '}
+            {textOf(firstFinding.detail) || textOf(firstFinding.check)}
+          </p>
+        )}
+      </>
+    );
+  } else if (step.stepType === 'approval') {
+    content = (
+      <div className="step-hover-summary">
+        <strong>
+          {step.status === 'waiting_approval'
+            ? 'Waiting for your decision'
+            : runStatusLabel(step.status)}
+        </strong>
+        <span>You can edit the prepared reply below before approving it.</span>
+      </div>
+    );
+  } else if (step.stepId === 'post-reply') {
+    const deliveryUrl =
+      textOf(output?.url) || textOf(output?.externalUrl) || textOf(output?.permalink);
+    const guardOutput = recordOf(steps.find((candidate) => candidate.stepId === 'guard')?.output);
+    const mode = textOf(guardOutput?.automationMode);
+    const modeReason = textOf(guardOutput?.automationReason);
+    const manual = mode === 'prepare-only' || mode === 'disabled' || mode === 'unknown';
+    content = (
+      <>
+        <div className="step-hover-summary">
+          <strong>
+            {step.status === 'pending'
+              ? manual
+                ? 'Will prepare after approval'
+                : 'Will post after approval'
+              : step.status === 'completed'
+                ? manual
+                  ? 'Reply prepared'
+                  : 'Reply posted'
+                : runStatusLabel(step.status)}
+          </strong>
+          <span>
+            {manual
+              ? 'This platform requires a human to submit the approved reply.'
+              : 'This step publishes the exact reply you approved.'}
+          </span>
+        </div>
+        {modeReason && <p className="step-hover-note">{modeReason}</p>}
+        {deliveryUrl && <p className="step-hover-note">{deliveryUrl}</p>}
+        {step.error && <p className="step-hover-note is-error">{firstLine(step.error)}</p>}
+      </>
+    );
+  } else if (step.stepId === 'scout') {
+    const threads = listOf(output?.threads);
+    content = (
+      <div className="step-hover-summary">
+        <strong>Scouted community threads</strong>
+        <span>
+          {threads.length ? `${threads.length} threads found` : runStatusLabel(step.status)}
+        </span>
+      </div>
+    );
+  } else if (step.stepId === 'score') {
+    const repliable = listOf(output?.repliable);
+    const top = recordOf(repliable[0]);
+    content = (
+      <div className="step-hover-summary">
+        <strong>Scored and ranked threads</strong>
+        <span>
+          {repliable.length ? `${repliable.length} qualified` : runStatusLabel(step.status)}
+          {typeof top?.score === 'number' ? ` · top score ${top.score}/10` : ''}
+        </span>
+      </div>
+    );
+  } else {
+    content = (
+      <div className="step-hover-summary">
+        <strong>{step.skillId ? humanizeId(step.skillId) : humanizeId(step.stepId)}</strong>
+        <span>{runStatusLabel(step.status)}</span>
+        {step.error && <small>{firstLine(step.error)}</small>}
+        {!step.error && input && Object.keys(input).length > 0 && (
+          <small>Step input recorded.</small>
+        )}
+      </div>
+    );
+  }
+
+  const left = rect ? Math.min(Math.max(12, rect.left), Math.max(12, window.innerWidth - 432)) : 12;
+  const maxCardHeight =
+    typeof window === 'undefined' ? 430 : Math.min(430, window.innerHeight - 24);
+  const top = rect
+    ? rect.bottom + 8 + maxCardHeight <= window.innerHeight
+      ? rect.bottom + 8
+      : Math.max(12, rect.top - maxCardHeight - 8)
+    : 12;
+  const popover = rect
+    ? createPortal(
+        <div
+          ref={card}
+          className="step-hover-card"
+          role="dialog"
+          aria-label={`${humanizeId(step.stepId)} details`}
+          style={{ left, top }}
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
+          onFocus={cancelClose}
+          onBlur={scheduleClose}
+        >
+          <div className="step-hover-card-head">
+            <strong>{humanizeId(step.stepId)}</strong>
+            <span className={`run-status run-${step.status}`}>{runStatusLabel(step.status)}</span>
+          </div>
+          {content}
+        </div>,
+        document.body
+      )
+    : null;
+
+  return (
+    <div
+      ref={anchor}
+      className={`playbook-step-node step-${step.status}`}
+      tabIndex={0}
+      role="button"
+      aria-haspopup="dialog"
+      aria-expanded={Boolean(rect)}
+      onMouseEnter={open}
+      onMouseLeave={scheduleClose}
+      onFocus={open}
+      onBlur={scheduleClose}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          open();
+        }
+      }}
+      aria-label={`${humanizeId(step.stepId)}: ${runStatusLabel(step.status)}. Open for details.`}
+    >
+      <i />
+      <span>{humanizeId(step.stepId)}</span>
+      <small>{runStatusLabel(step.status)}</small>
+      {popover}
+    </div>
+  );
+}
 
 export function LedgerView({
   runId,
@@ -84,6 +384,7 @@ export function LedgerView({
   const [agentRuns, setAgentRuns] = useState<AgentRunSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState('');
+  const [approvalDrafts, setApprovalDrafts] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<StatusFilter>('all');
   const [actor, setActor] = useState<ActorFilter>('all');
   const [days, setDays] = useState<number>(30);
@@ -108,10 +409,24 @@ export function LedgerView({
     });
   }, []);
 
-  const decide = async (run: PlaybookRun, stepId: string, decision: 'approve' | 'reject') => {
-    setBusy(`${run.id}:${stepId}`);
+  const decide = async (
+    run: PlaybookRun,
+    step: PlaybookStepRun,
+    decision: 'approve' | 'reject',
+    replyDraft?: string,
+    originalReply?: string
+  ) => {
+    setBusy(`${run.id}:${step.stepId}`);
     try {
-      const updated = await decidePlaybookStep(run.id, stepId, decision);
+      if (decision === 'approve' && replyDraft !== undefined && replyDraft !== originalReply) {
+        await updatePlaybookApprovalBody(run.id, step.stepId, replyDraft);
+      }
+      const updated = await decidePlaybookStep(run.id, step.stepId, decision);
+      setApprovalDrafts((current) => {
+        const next = { ...current };
+        delete next[step.id];
+        return next;
+      });
       await reload();
       setToast(
         decision === 'approve' ? `Approved · ${updated.status.replace('_', ' ')}` : 'Rejected.'
@@ -164,57 +479,73 @@ export function LedgerView({
 
   return (
     <div className="page-stack">
-      {/* Control bar: Title, filter dropdowns, Refresh, and Export modal trigger */}
-      <section className="page-panel ledger-bar">
-        <div className="ledger-title-group">
-          <h3 aria-level={2}>Every run</h3>
-          <span className="ledger-count-pill">{shown.length} shown</span>
-        </div>
-        <div className="ledger-filters">
-          <label className="ledger-select">
-            <span className="li-filter-label">Status</span>
-            <select value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)}>
+      <section className="ledger-history-bar" aria-label="Run history controls">
+        <FilterToolbar
+          density="compact"
+          className="ledger-filter-toolbar"
+          leading={
+            <div className="ledger-history-title">
+              <strong>Run history</strong>
+              <span>
+                · {shown.length.toLocaleString('en-US')} {shown.length === 1 ? 'run' : 'runs'}
+              </span>
+            </div>
+          }
+          actions={
+            <>
+              {status !== 'all' || actor !== 'all' || days !== 30 ? (
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setStatus('all');
+                    setActor('all');
+                    setDays(30);
+                  }}
+                >
+                  Clear
+                </Button>
+              ) : null}
+              <Button variant="ghost" onClick={() => void reload()}>
+                <RefreshCw size={14} /> Refresh
+              </Button>
+              <Button variant="ghost" onClick={() => setExportOpen(true)}>
+                <FileDown size={14} /> Export
+              </Button>
+            </>
+          }
+        >
+          <FilterGroup label="Status">
+            <Select
+              value={status}
+              onChange={(event) => setStatus(event.target.value as StatusFilter)}
+            >
               {STATUS_FILTERS.map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entry.label}
                 </option>
               ))}
-            </select>
-          </label>
-          <label className="ledger-select">
-            <span className="li-filter-label">Who</span>
-            <select value={actor} onChange={(e) => setActor(e.target.value as ActorFilter)}>
+            </Select>
+          </FilterGroup>
+          <FilterGroup label="Run by">
+            <Select value={actor} onChange={(event) => setActor(event.target.value as ActorFilter)}>
               {ACTOR_FILTERS.map((entry) => (
                 <option key={entry.id} value={entry.id}>
                   {entry.label}
                 </option>
               ))}
-            </select>
-          </label>
-          <label className="ledger-select">
-            <span className="li-filter-label">Since</span>
-            <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            </Select>
+          </FilterGroup>
+          <FilterGroup label="When">
+            <Select value={days} onChange={(event) => setDays(Number(event.target.value))}>
               {DAY_FILTERS.map((entry) => (
                 <option key={entry} value={entry}>
-                  {entry} days
+                  {dayFilterLabel(entry)}
                 </option>
               ))}
-            </select>
-          </label>
-        </div>
-        <div className="ledger-actions">
-          <button className="secondary-button ledger-refresh" onClick={() => void reload()}>
-            <RefreshCw size={14} /> Refresh
-          </button>
-          <button
-            className="secondary-button ledger-export-trigger"
-            onClick={() => setExportOpen(true)}
-          >
-            <FileDown size={14} /> Export ledger
-          </button>
-        </div>
+            </Select>
+          </FilterGroup>
+        </FilterToolbar>
       </section>
-
       {exportOpen && (
         <LedgerExportModal
           counts={{ jobs: runs.length, agent: agentRuns.length }}
@@ -223,8 +554,12 @@ export function LedgerView({
         />
       )}
 
-      <section className="page-panel">
-        <div className="playbook-run-list">
+      <Panel
+        className="ledger-results-panel"
+        title="Runs"
+        description="Open any run to inspect every step, approval decision, and piece of evidence."
+      >
+        <div className="playbook-run-list ledger-run-list">
           {shown.map((row) => {
             if (row.kind === 'agent') {
               const run = row.run;
@@ -263,6 +598,19 @@ export function LedgerView({
             const approval = run.steps.find((step) => step.status === 'waiting_approval');
             const failed = run.steps.find((step) => step.status === 'failed');
             const completed = run.steps.filter((step) => step.status === 'completed').length;
+            const approvalInput =
+              approval?.input &&
+              typeof approval.input === 'object' &&
+              !Array.isArray(approval.input)
+                ? (approval.input as Record<string, unknown>)
+                : null;
+            const originalReply =
+              approvalInput && typeof approvalInput.body === 'string'
+                ? approvalInput.body
+                : undefined;
+            const replyDraft = approval
+              ? (approvalDrafts[approval.id] ?? originalReply)
+              : undefined;
             return (
               <article key={row.key} className={`playbook-run status-${run.status}`}>
                 <header>
@@ -272,7 +620,10 @@ export function LedgerView({
                     </span>
                     <h3>{humanizeId(run.playbookId)}</h3>
                     <code>
-                      {run.playbookId} · v{run.playbookVersion}
+                      Job · v{run.playbookVersion}
+                      {formatMoment(run.startedAt ?? run.createdAt)
+                        ? ` · ${formatMoment(run.startedAt ?? run.createdAt)}`
+                        : ''}
                     </code>
                   </div>
                   <strong>
@@ -281,11 +632,7 @@ export function LedgerView({
                 </header>
                 <div className="playbook-step-track">
                   {run.steps.map((step) => (
-                    <div key={step.id} className={`step-${step.status}`}>
-                      <i />
-                      <span>{humanizeId(step.stepId)}</span>
-                      <small>{runStatusLabel(step.status)}</small>
-                    </div>
+                    <StepHoverCard key={step.id} step={step} steps={run.steps} />
                   ))}
                 </div>
                 {run.error && <div className="error-banner">{run.error}</div>}
@@ -297,41 +644,35 @@ export function LedgerView({
                 )}
                 {approval && (
                   <div className="workflow-approval">
-                    <div className="approval-banner">
-                      <ShieldCheck size={19} />
-                      <p>
-                        <strong>Your decision controls the exact action below.</strong> Changes
-                        after approval are rejected.
-                      </p>
-                    </div>
-                    <ApprovalDecisionProof step={approval} />
-                    <p
-                      className={
-                        'approval-proof-status' +
-                        (approval.approvalPayloadHash ? ' is-ready' : ' is-blocked')
+                    <ApprovalDecisionProof
+                      step={approval}
+                      replyValue={replyDraft}
+                      replyDisabled={busy === run.id + ':' + approval.stepId}
+                      onReplyChange={
+                        originalReply !== undefined
+                          ? (value) =>
+                              setApprovalDrafts((current) => ({ ...current, [approval.id]: value }))
+                          : undefined
                       }
-                      id={'approval-proof-status-' + approval.id}
-                      role="status"
-                    >
-                      {approval.approvalPayloadHash
-                        ? 'Fingerprint verified. Approving can resume this run with exactly this payload.'
-                        : 'Approval is unavailable until the run records an exact payload fingerprint.'}
-                    </p>
+                    />
                     <div className="approval-proof-actions">
                       <button
                         className="secondary-button"
                         disabled={busy === run.id + ':' + approval.stepId}
-                        onClick={() => void decide(run, approval.stepId, 'reject')}
+                        onClick={() => void decide(run, approval, 'reject')}
                       >
                         Reject
                       </button>
                       <button
                         className="primary-button"
-                        aria-describedby={'approval-proof-status-' + approval.id}
                         disabled={
-                          busy === run.id + ':' + approval.stepId || !approval.approvalPayloadHash
+                          busy === run.id + ':' + approval.stepId ||
+                          !approval.approvalPayloadHash ||
+                          (replyDraft !== undefined && !replyDraft.trim())
                         }
-                        onClick={() => void decide(run, approval.stepId, 'approve')}
+                        onClick={() =>
+                          void decide(run, approval, 'approve', replyDraft, originalReply)
+                        }
                       >
                         {busy === run.id + ':' + approval.stepId ? (
                           <LoaderCircle className="spin" size={16} />
@@ -353,37 +694,39 @@ export function LedgerView({
             );
           })}
           {!loaded && (
-            <div className="empty-state">
-              <LoaderCircle className="spin" size={28} />
-              <h4 aria-level={3}>Loading your runs…</h4>
-              <p>One moment.</p>
-            </div>
+            <EmptyState
+              icon={<LoaderCircle className="spin" size={22} />}
+              title="Loading run history"
+              description="Reading jobs, Agent runs, approvals, and evidence."
+            />
           )}
           {loaded && activity.length === 0 && (
-            <div className="empty-state">
-              <Workflow size={28} />
-              <h4 aria-level={3}>No runs yet</h4>
-            </div>
+            <EmptyState
+              icon={<Workflow size={22} />}
+              title="No runs yet"
+              description="Jobs and Agent runs will appear here as soon as Trevra starts doing work."
+            />
           )}
           {loaded && activity.length > 0 && shown.length === 0 && (
-            <div className="empty-state">
-              <Workflow size={28} />
-              <h4 aria-level={3}>No matching runs</h4>
-              <p>Change or clear the filters.</p>
-              <button
-                className="secondary-button"
-                onClick={() => {
-                  setStatus('all');
-                  setActor('all');
-                  setDays(365);
-                }}
-              >
-                Show everything
-              </button>
-            </div>
+            <EmptyState
+              icon={<Workflow size={22} />}
+              title="No runs match these filters"
+              description="Broaden the status, runner, or time window to see more history."
+              action={
+                <Button
+                  onClick={() => {
+                    setStatus('all');
+                    setActor('all');
+                    setDays(30);
+                  }}
+                >
+                  Clear filters
+                </Button>
+              }
+            />
           )}
         </div>
-      </section>
+      </Panel>
 
       {target && <RunInspector target={target} onClose={() => onNavigate('/ledger')} />}
     </div>

@@ -97,6 +97,10 @@ services:
       #
       # Set to false to switch LinkedIn automation off entirely.
       TREVRA_LINKEDIN_LOCAL: ${TREVRA_LINKEDIN_LOCAL:-true}
+      # Internal API endpoint used by the worker to request a browser through
+      # the host-installed Companion. The laptop/host CLI still connects to the
+      # public /api/linkedin/companion/socket route; this address never leaves Docker.
+      TREVRA_COMPANION_RELAY_URL: ${TREVRA_COMPANION_RELAY_URL:-ws://127.0.0.1:8787}
       # Retained for compatibility with explicitly configured remote providers.
       # Companion owns its own browser mode, so this does not create or launch a
       # browser inside Docker.

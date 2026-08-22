@@ -368,8 +368,8 @@ export function SharedConversations() {
 
       <p className="shared-conversation-footnote">
         Email replies above use the same exact-payload approval and connected-mailbox executor as
-        Trevra playbooks. LinkedIn reply, queue and manual-task controls remain below until those
-        channel mechanics can be projected without weakening LinkedIn account safety.
+        Trevra playbooks. Use the LinkedIn inbox view above for channel-specific reply, queue, and
+        manual-task controls.
       </p>
     </section>
   );

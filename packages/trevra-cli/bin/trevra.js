@@ -51,7 +51,7 @@ const REDDIT_COMPANION_PROFILE_KEY = '__reddit__';
 function usage(exitCode = 0) {
   const out = exitCode === 0 ? process.stdout : process.stderr;
   out.write(
-    `Trevra ${VERSION}\n\nUsage:\n  <install command copied from Trevra>\n  trevra linkedin status\n  trevra linkedin logs [--follow] [--lines 200]\n  trevra linkedin reconnect [--seat owner]\n  trevra linkedin start\n  trevra linkedin stop\n  trevra linkedin restart\n  trevra linkedin uninstall\n  trevra linkedin                     # foreground/debug mode\n\nLinkedIn companion commands:\n  install        Pair if needed, install a per-user background service, and start it\n  status         Show whether this computer is paired, installed, and running\n  logs           Show local companion activity; --follow streams new entries\n  reconnect      Temporarily open the same LinkedIn profile visibly for login/CAPTCHA/2FA recovery\n  start          Start the installed background companion\n  stop           Stop it without removing pairing or the LinkedIn browser profile\n  restart        Restart the installed background companion\n  uninstall      Remove the background service; keep pairing and browser profile\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --seat KEY     LinkedIn account profile to recover (default: owner)\n  --lines N      Number of recent log lines to show (default: 200)\n  --follow, -f   Continue streaming new log entries\n  --help         Show this help\n  --version      Show the version\n`
+    `Trevra ${VERSION}\n\nUsage:\n  <install command copied from Trevra>\n  trevra linkedin setup [--force]\n  trevra linkedin status\n  trevra linkedin logs [--follow] [--lines 200]\n  trevra linkedin reconnect [--seat owner]\n  trevra linkedin start\n  trevra linkedin stop\n  trevra linkedin restart\n  trevra linkedin uninstall\n  trevra linkedin                     # foreground/debug mode\n\nLinkedIn companion commands:\n  setup          Install/register the background companion without requiring pairing\n  install        Pair if needed, ensure the background service is installed, and start it\n  status         Show whether this computer is paired, installed, and running\n  logs           Show local companion activity; --follow streams new entries\n  reconnect      Temporarily open the same LinkedIn profile visibly for login/CAPTCHA/2FA recovery\n  start          Start the installed background companion\n  stop           Stop it without removing pairing or the LinkedIn browser profile\n  restart        Restart the installed background companion\n  uninstall      Remove the background service; keep pairing and browser profile\n\nOptions:\n  --pair CODE    One-time pairing code shown in Trevra\n  --url URL      Trevra URL (default: saved URL or https://app.usetrevra.com)\n  --label NAME   Name this computer in Trevra\n  --seat KEY     LinkedIn account profile to recover (default: owner)\n  --lines N      Number of recent log lines to show (default: 200)\n  --follow, -f   Continue streaming new log entries\n  --force        Reinstall the local companion package during setup\n  --help         Show this help\n  --version      Show the version\n`
   );
   process.exit(exitCode);
 }
@@ -844,6 +844,7 @@ async function runCompanion(config, options = {}) {
 }
 
 const SERVICE_ACTIONS = new Set([
+  'setup',
   'install',
   'status',
   'logs',
@@ -873,8 +874,34 @@ function printServiceStatus(config) {
   );
   process.stdout.write(`  installed: ${status.installed ? `yes (${status.manager})` : 'no'}\n`);
   process.stdout.write(`  running:   ${status.running ? 'yes' : 'no'}\n`);
+  if (status.version) process.stdout.write(`  version:   ${status.version}\n`);
   if (status.detail) process.stdout.write(`  service:   ${status.detail}\n`);
   if (status.installed) process.stdout.write(`  package:   ${status.serviceRoot}\n`);
+}
+
+function companionInstallSpec() {
+  const installedRoot = join(HOME, 'service');
+  const runningFromInstalledService =
+    PACKAGE_ROOT === join(installedRoot, 'node_modules', 'trevra');
+  return (
+    process.env.TREVRA_COMPANION_INSTALL_SPEC?.trim() ||
+    (runningFromInstalledService ? undefined : PACKAGE_ROOT)
+  );
+}
+
+async function ensureBackgroundServiceInstalled({ force = false } = {}) {
+  const status = installedServiceStatus();
+  if (!force && status.installed && status.version === VERSION) {
+    return { changed: false, status };
+  }
+
+  stopBackgroundService();
+  await stopExistingCompanion();
+  activity('service_install_started', `version=${VERSION}`);
+  process.stdout.write(`Installing Trevra ${VERSION} as a per-user background service…\n`);
+  installStablePackage({ version: VERSION, installSpec: companionInstallSpec() });
+  registerBackgroundService();
+  return { changed: true, status: installedServiceStatus() };
 }
 
 async function main() {
@@ -896,6 +923,28 @@ async function main() {
 
   if (action === 'status') {
     printServiceStatus(saved);
+    return;
+  }
+  if (action === 'setup') {
+    const result = await ensureBackgroundServiceInstalled({ force: args.includes('--force') });
+    if (saved) {
+      if (result.changed || !result.status.running) startBackgroundService();
+      activity('service_setup_ready', `version=${VERSION} paired=true`);
+      process.stdout.write(
+        result.changed
+          ? 'Companion installed and started using the existing pairing.\n'
+          : 'Companion is already installed; existing pairing is running.\n'
+      );
+    } else {
+      stopBackgroundService();
+      activity('service_setup_ready', `version=${VERSION} paired=false`);
+      process.stdout.write(
+        result.changed
+          ? 'Companion installed. Pair this computer from Outreach → LinkedIn accounts when you are ready; no second package install will be needed.\n'
+          : 'Companion is already installed and ready to pair from Outreach → LinkedIn accounts.\n'
+      );
+    }
+    printServiceStatus(readConfig());
     return;
   }
   if (action === 'logs') {
@@ -975,28 +1024,10 @@ async function main() {
       config = { ...config, url: base };
       saveConfig(config);
     }
-    // Updating an installed service is intentionally the same command as the
-    // first install. Stop both an existing service and the old foreground mode
-    // before replacing the private npm tree; this makes `install` the seamless
-    // upgrade path for people who paired with the pre-service CLI.
-    stopBackgroundService();
-    await stopExistingCompanion();
-    activity('service_install_started', `version=${VERSION}`);
-    process.stdout.write(`Installing Trevra ${VERSION} as a per-user background service…\n`);
-    const installedRoot = join(HOME, 'service');
-    const runningFromInstalledService =
-      PACKAGE_ROOT === join(installedRoot, 'node_modules', 'trevra');
-    installStablePackage({
-      version: VERSION,
-      // First install may be running from npm's npx cache or a release tarball.
-      // Install directly from that exact package directory so background setup
-      // does not depend on the registry's current `latest` tag. An installed
-      // service update still resolves the exact version from npm.
-      installSpec:
-        process.env.TREVRA_COMPANION_INSTALL_SPEC?.trim() ||
-        (runningFromInstalledService ? undefined : PACKAGE_ROOT)
-    });
-    registerBackgroundService();
+    // A dev/self-host setup may already have installed this exact companion.
+    // Pairing then becomes cheap: reuse that package/service definition and
+    // only reinstall when the version differs (or setup was explicitly forced).
+    await ensureBackgroundServiceInstalled();
 
     // Ask the newly installed service to open the dedicated Chrome profile on
     // its FIRST start only. The one-time installer must not retain a Chrome
@@ -1013,6 +1044,14 @@ async function main() {
     return;
   }
 
+  if (action === 'run') {
+    serviceInvocation = true;
+    if (!config) {
+      activity('service_waiting_for_pairing');
+      return;
+    }
+  }
+
   config = requirePairing(config);
   if (config.url !== base) {
     config = { ...config, url: base };
@@ -1020,7 +1059,6 @@ async function main() {
   }
 
   if (action === 'run') {
-    serviceInvocation = true;
     const requestedRecoverySeat =
       typeof config.recoveryOnNextStart?.seatKey === 'string'
         ? config.recoveryOnNextStart.seatKey

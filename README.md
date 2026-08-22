@@ -78,7 +78,7 @@ Complete setup, CLI commands, API routes, scopes, and operating boundaries are d
 
 ## Hosted LinkedIn from your own computer
 
-Hosted Trevra can run LinkedIn through a Chrome profile on the workspace member's own computer instead of a datacenter browser. Pair once from **Outreach → LinkedIn accounts** with the generated version-pinned companion install command. Trevra installs a per-user background companion that starts at login and restarts after crashes, so no terminal needs to stay open.
+Hosted Trevra can run LinkedIn through a Chrome profile on the workspace member's own computer instead of a datacenter browser. Dev/self-host setup can preinstall the per-user Companion package and OS service definition before pairing. Pair once from **Outreach → LinkedIn accounts** with the generated version-pinned command; when that exact version is already installed, the command only pairs and starts it instead of reinstalling the package. The service starts at login and restarts after crashes, so no terminal needs to stay open.
 
 ```bash
 trevra linkedin status
@@ -99,19 +99,13 @@ Requirements:
 - Docker with Compose v2
 - at least 6 GB of free Docker memory for the complete Trevra + Nango stack
 
-Create your development environment file. It ships with a dedicated high-port block to avoid common local conflicts; every host port remains overrideable:
+Run the one-time development setup. It creates `.env.dev` when needed, generates the local Trevra/Companion signing key and Nango encryption key, and installs/registers the per-user Companion service once. Pairing still happens later from **Outreach → LinkedIn accounts**; setup never invents or bypasses a pairing code.
 
 ```bash
-cp .env.dev.example .env.dev
+npm run dev:setup
 ```
 
 Current defaults are `43173`, `43887`, `45432`, `45433`, `46379`, `43003`, and `43009`. Change any value in `.env.dev` before startup if one is already occupied.
-
-Generate a unique Nango encryption key and replace the example value in `.env.dev`:
-
-```bash
-openssl rand -base64 32
-```
 
 Start Trevra, PostgreSQL, Redis, and self-hosted Nango:
 
@@ -184,9 +178,11 @@ Then:
 
 ```bash
 cp .env.example .env
-npm install
+npm run dev:setup
 npm run dev
 ```
+
+`dev:setup` also fills the Companion relay/signing settings in an existing `.env` for this direct-process path. Normal `npm run dev` remains non-mutating and never reinstalls an OS service.
 
 Open `http://localhost:43173`.
 
@@ -206,7 +202,7 @@ For one operator on one machine, deploy the hardened production build on loopbac
 npm run selfhost:deploy
 ```
 
-This creates a gitignored `0600` secret file, a dedicated PostgreSQL volume, runs migrations once, and starts separate API and worker containers on `http://localhost:43900` by default. PostgreSQL is not published to the host. Create a custom-format backup with `npm run selfhost:backup`.
+This creates a gitignored `0600` secret file, installs/registers the host Companion once, creates a dedicated PostgreSQL volume, runs migrations once, and starts separate API and worker containers on `http://localhost:43900` by default. Pairing is still explicit from Outreach; PostgreSQL is not published to the host. Create a custom-format backup with `npm run selfhost:backup`.
 
 See [`docs/self-hosted-production.md`](docs/self-hosted-production.md) before exposing the service beyond the local machine; remote access requires HTTPS and secure cookies.
 

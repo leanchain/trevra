@@ -17,6 +17,7 @@ import {
 import { OWNER_ACCOUNT_KEY } from './LinkedInActiveAccount';
 import { Wall } from './LinkedInCompanion';
 import { errorMessage } from './LinkedInSafety';
+import { Select } from './ui/primitives';
 /**
  * Adding a LinkedIn account and changing one: connection first, then the
  * schedule/safety/capability controls that belong to an account after Trevra
@@ -1073,7 +1074,7 @@ export function EditAccountForm({
                 <div className="li-form-grid">
                   <label>
                     InMail availability
-                    <select
+                    <Select
                       value={capDraft.inmail}
                       onChange={(event) =>
                         setCapDraft((current) => ({
@@ -1085,7 +1086,7 @@ export function EditAccountForm({
                       <option value="unknown">Unknown / not checked</option>
                       <option value="available">Available</option>
                       <option value="unavailable">Unavailable</option>
-                    </select>
+                    </Select>
                   </label>
                   <label>
                     Monthly InMail budget

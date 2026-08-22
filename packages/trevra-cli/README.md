@@ -6,13 +6,21 @@ For hosted LinkedIn execution, Trevra keeps campaigns, pacing and safety rules i
 
 ## Install once
 
-In Trevra, open **Outreach → LinkedIn accounts → Connect this computer** and copy the generated command. It looks like:
+Dev/self-host setup can preinstall the package and OS service definition without pairing:
+
+```sh
+trevra linkedin setup
+```
+
+`setup` is idempotent and leaves an unpaired service cleanly inactive. Use `--force` only when developing the Companion itself and you intentionally want to replace the same-version local package.
+
+Then, in Trevra, open **Outreach → LinkedIn accounts → Connect this computer** and copy the generated command. It looks like:
 
 ```sh
 npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.2/trevra-0.2.2.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
 ```
 
-The command pairs the computer, installs the exact Trevra companion version into a private per-user directory, registers an OS background service, opens the dedicated LinkedIn Chrome profile visibly once for first sign-in, and starts the service. After onboarding, normal service-driven LinkedIn work uses that same persistent profile in headless/background Chrome.
+The command pairs the computer, ensures the exact Trevra companion version exists in the private per-user directory, registers the OS background service if needed, opens the dedicated LinkedIn Chrome profile visibly once for first sign-in, and starts the service. When `setup` already installed that exact version, pairing does not reinstall it. After onboarding, normal service-driven LinkedIn work uses that same persistent profile in headless/background Chrome.
 
 After that **no terminal needs to stay open**. The service starts when you sign into the computer, reconnects after network interruptions, and is restarted by the OS if the process crashes. On Linux and macOS the installer also creates `~/.local/bin/trevra`, so service controls use the installed companion version instead of whatever version `npx` currently resolves.
 
@@ -21,6 +29,7 @@ The background companion also **auto-updates**. On reconnect, hosted Trevra adve
 Trevra supports:
 
 ```sh
+trevra linkedin setup
 trevra linkedin status
 trevra linkedin logs
 trevra linkedin logs --follow

@@ -36,22 +36,77 @@ const baseStep: PlaybookStepRun = {
 };
 
 describe('ApprovalDecisionProof', () => {
-  it('puts action, evidence, policy, and fingerprint at the decision point', () => {
+  it('keeps a generic approval focused on the action and why it needs approval', () => {
     const markup = renderToStaticMarkup(<ApprovalDecisionProof step={baseStep} />);
 
-    expect(markup).toContain('Exact prepared action');
-    expect(markup).toContain('Company announcement');
-    expect(markup).toContain('Reported');
+    expect(markup).toContain('Prepared action');
+    expect(markup).toContain('Recipient');
     expect(markup).toContain('External outreach');
-    expect(markup).toContain('abcdef012345');
+    expect(markup).not.toContain('payload fingerprint');
+    expect(markup).not.toContain('abcdef012345');
   });
 
-  it('states why approval is unavailable when the fingerprint is missing', () => {
+  it('organizes community reply approvals around action, context, and collapsed checks', () => {
     const markup = renderToStaticMarkup(
-      <ApprovalDecisionProof step={{ ...baseStep, approvalPayloadHash: null }} />
+      <ApprovalDecisionProof
+        step={{
+          ...baseStep,
+          input: {
+            platform: 'stackoverflow',
+            threadExternalId: '79948695',
+            threadUrl:
+              'https://stackoverflow.com/questions/79948695/how-can-i-avoid-using-llms-as-a-software-developer',
+            community: null,
+            body: 'A prepared reply.\n\nhttps://trevra.com',
+            metadata: {
+              threadTitle: 'How can I avoid using LLMs as a software developer?',
+              threadAuthor: 'Lajos Arpad',
+              relevanceScore: 1.5,
+              angle: 'technical_deepdive',
+              safetyAllowed: true,
+              safetyReason: null,
+              safetyChecks: [
+                { check: 'daily-cap', detail: '0 of 5 posts used.', passed: true },
+                { check: 'blacklisted-keyword', detail: 'No blocked terms.', passed: true }
+              ],
+              critiquePassed: true,
+              critiqueFindings: [],
+              automationMode: 'unknown',
+              submitUrl: null
+            }
+          }
+        }}
+      />
     );
 
-    expect(markup).toContain('Payload fingerprint missing');
-    expect(markup).toContain('approval is unavailable');
+    expect(markup).toContain('How can I avoid using LLMs as a software developer?');
+    expect(markup).toContain('A prepared reply.');
+    expect(markup).toContain('2/2 safety checks passed');
+    expect(markup).toContain('Hover or focus the Guard step for safety details');
+    expect(markup).not.toContain('>Details<');
+    expect(markup).not.toContain('payload fingerprint');
+    expect(markup).not.toContain('Technical approval record');
+  });
+
+  it('renders an edited community reply directly in the approval field', () => {
+    const markup = renderToStaticMarkup(
+      <ApprovalDecisionProof
+        step={{
+          ...baseStep,
+          input: {
+            platform: 'stackoverflow',
+            threadUrl: 'https://stackoverflow.com/questions/1/example',
+            body: 'Original reply',
+            metadata: { threadTitle: 'Example thread', safetyChecks: [] }
+          }
+        }}
+        replyValue="Edited reply"
+        onReplyChange={() => undefined}
+      />
+    );
+
+    expect(markup).toContain('<textarea');
+    expect(markup).toContain('Edited reply');
+    expect(markup).not.toContain('Original reply');
   });
 });

@@ -39,7 +39,7 @@ export async function handleMcpHttpRequest(
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: (await listAgentTools(db, identity.workspaceId)).map(mcpTool)
+    tools: (await listAgentTools(db, identity.workspaceId, identity.agentId)).map(mcpTool)
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {

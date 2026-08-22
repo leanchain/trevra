@@ -223,6 +223,13 @@ export interface InstalledCommunityModule {
 
 export type AgentStatus = 'active' | 'paused' | 'disabled';
 
+export interface AgentConfig {
+  /** Additional role/instruction text injected into hosted and CLI agent runs. */
+  instructions?: string;
+  /** Missing = legacy/all enabled workspace skills. Present = explicit per-Agent allow-list. */
+  skillIds?: string[];
+}
+
 export interface AgentPrincipal {
   id: string;
   workspaceId: string;
@@ -231,6 +238,8 @@ export interface AgentPrincipal {
   status: AgentStatus;
   isDefault: boolean;
   createdByUserId: string | null;
+  policyProfile: Record<string, unknown>;
+  config: AgentConfig;
   activeTokenCount: number;
   runCount: number;
   latestRunId: string | null;

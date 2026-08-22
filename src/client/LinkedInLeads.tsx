@@ -32,6 +32,7 @@ import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { errorMessage, stageTargets, useOutreachRefresh } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 import { formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
+import { Select } from './ui/primitives';
 import { navigate } from './ui/route';
 
 /**
@@ -532,7 +533,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
             <div className="li-form-grid">
               <label>
                 Search type
-                <select
+                <Select
                   value={kind}
                   disabled={!enabled}
                   onChange={(event) => {
@@ -546,7 +547,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
                   <option value="content">{KIND_LABELS.content}</option>
                   <option value="sales_navigator">{KIND_LABELS.sales_navigator}</option>
                   <option value="post">{KIND_LABELS.post}</option>
-                </select>
+                </Select>
                 <small className="li-hint">{KIND_HINTS[kind]}</small>
               </label>
 

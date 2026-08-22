@@ -11,6 +11,7 @@ import {
 } from './api';
 import type { OpportunityRecord, OpportunityStage } from '../shared/types';
 import { errorMessage } from './LinkedInSafety';
+import { Select } from './ui/primitives';
 
 const STAGES: ReadonlyArray<{ id: OpportunityStage; label: string }> = [
   { id: 'new', label: 'New' },
@@ -169,29 +170,29 @@ export function Opportunities({ setToast }: { setToast: (message: string) => voi
             </label>
             <label>
               Person
-              <select value={personId} onChange={(event) => setPersonId(event.target.value)}>
+              <Select value={personId} onChange={(event) => setPersonId(event.target.value)}>
                 <option value="">None</option>
                 {people.map((person) => (
                   <option key={person.id} value={person.id}>
                     {person.name || person.email || person.id}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label>
               Account
-              <select value={accountId} onChange={(event) => setAccountId(event.target.value)}>
+              <Select value={accountId} onChange={(event) => setAccountId(event.target.value)}>
                 <option value="">None</option>
                 {accounts.map(({ account }) => (
                   <option key={account.id} value={account.id}>
                     {account.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label>
               Stage
-              <select
+              <Select
                 value={stage}
                 onChange={(event) => setStage(event.target.value as OpportunityStage)}
               >
@@ -200,7 +201,7 @@ export function Opportunities({ setToast }: { setToast: (message: string) => voi
                     {item.label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label>
               Next action
@@ -269,7 +270,7 @@ export function Opportunities({ setToast }: { setToast: (message: string) => voi
                     </div>
                     <label>
                       Stage
-                      <select
+                      <Select
                         disabled={busy === opportunity.id}
                         value={opportunity.stage}
                         onChange={(event) =>
@@ -281,7 +282,7 @@ export function Opportunities({ setToast }: { setToast: (message: string) => voi
                             {item.label}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </label>
                     <label>
                       Next action

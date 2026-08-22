@@ -6,6 +6,15 @@ COMPOSE=(docker compose --env-file "${ROOT_DIR}/.env.selfhost" -f "${ROOT_DIR}/c
 
 "${ROOT_DIR}/scripts/selfhost-init.sh"
 
+LINKEDIN_LOCAL="$(awk -F= '$1=="TREVRA_LINKEDIN_LOCAL" {print tolower($2)}' "${ROOT_DIR}/.env.selfhost" | tail -n1)"
+if [[ "${LINKEDIN_LOCAL:-true}" != "false" ]]; then
+  if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
+    printf 'TREVRA_LINKEDIN_LOCAL is enabled, but Node.js/npm are unavailable on the host. Install Node.js 20+ or set TREVRA_LINKEDIN_LOCAL=false in .env.selfhost.\n' >&2
+    exit 1
+  fi
+  node "${ROOT_DIR}/packages/trevra-cli/bin/trevra.js" linkedin setup
+fi
+
 # Build first so migrate/app/worker all execute the exact same immutable local
 # image. Compose then runs the migration job to completion before either long-
 # lived process is allowed to start.

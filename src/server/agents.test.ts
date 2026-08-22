@@ -118,6 +118,37 @@ describe('durable Agent principals', () => {
     ).toBeNull();
   });
 
+  it('persists editable instructions and an explicit skill assignment', async () => {
+    const created = await createAgent(db, {
+      workspaceId: WORKSPACE,
+      createdByUserId: USER,
+      name: 'Research Agent',
+      purpose: 'Qualify target accounts before outreach.',
+      instructions: 'Use first-party evidence.\nExplain why the account qualifies.',
+      skillIds: ['gtm.enrich-company', 'gtm.score-lead']
+    });
+
+    expect(created.config).toMatchObject({
+      instructions: 'Use first-party evidence.\nExplain why the account qualifies.',
+      skillIds: ['gtm.enrich-company', 'gtm.score-lead']
+    });
+
+    const updated = await updateAgent(db, {
+      workspaceId: WORKSPACE,
+      actorUserId: USER,
+      agentId: created.id,
+      purpose: 'Qualify and research named accounts.',
+      instructions: 'Cite the evidence you used.',
+      skillIds: ['gtm.research-brief']
+    });
+
+    expect(updated.purpose).toBe('Qualify and research named accounts.');
+    expect(updated.config).toMatchObject({
+      instructions: 'Cite the evidence you used.',
+      skillIds: ['gtm.research-brief']
+    });
+  });
+
   it('creates only one default Agent for repeated compatibility calls', async () => {
     const first = await ensureDefaultAgent(db, WORKSPACE, USER);
     const second = await ensureDefaultAgent(db, WORKSPACE, USER);

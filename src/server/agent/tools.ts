@@ -30,6 +30,7 @@
 
 import type { AgentScope } from '../agent-access.js';
 import type { Db } from '../db.js';
+import { configuredAgentSkillIds, getAgent } from '../agents.js';
 import {
   getPlaybookRun,
   listPlaybookRuns,
@@ -88,7 +89,7 @@ export const BUILT_IN_AGENT_TOOLS: readonly AgentToolDefinition[] = [
     destructive: false,
     idempotent: true,
     openWorld: false,
-    run: (ctx) => listWorkspaceSkills(ctx.db, ctx.workspaceId)
+    run: (ctx) => listSkillsForAgent(ctx.db, ctx.workspaceId, ctx.actorId)
   },
   {
     name: 'trevra_list_people',
@@ -396,13 +397,32 @@ export function toolNameForSkill(skillId: string): string {
   return `trevra_${skillId.replace(/[^A-Za-z0-9_-]/g, '_')}`;
 }
 
-/** Built-ins + one tool per enabled workspace skill. */
-export async function listAgentTools(db: Db, workspaceId: string): Promise<AgentToolDefinition[]> {
-  const skills = await listWorkspaceSkills(db, workspaceId);
-  return [
-    ...BUILT_IN_AGENT_TOOLS,
-    ...skills.filter((skill) => skill.enabled).map(skillToolDefinition)
-  ];
+/** Skills visible to one Agent. Legacy Agents without an explicit list inherit all enabled skills. */
+export async function listSkillsForAgent(
+  db: Db,
+  workspaceId: string,
+  agentId: string
+): Promise<PublicSkillManifest[]> {
+  const [skills, agent] = await Promise.all([
+    listWorkspaceSkills(db, workspaceId),
+    getAgent(db, workspaceId, agentId)
+  ]);
+  const allowed = agent ? configuredAgentSkillIds(agent) : null;
+  return skills.filter(
+    (skill) => skill.enabled && (allowed === null || allowed.includes(skill.id))
+  );
+}
+
+/** Built-ins + one tool per enabled skill assigned to this Agent. */
+export async function listAgentTools(
+  db: Db,
+  workspaceId: string,
+  agentId?: string
+): Promise<AgentToolDefinition[]> {
+  const skills = agentId
+    ? await listSkillsForAgent(db, workspaceId, agentId)
+    : (await listWorkspaceSkills(db, workspaceId)).filter((skill) => skill.enabled);
+  return [...BUILT_IN_AGENT_TOOLS, ...skills.map(skillToolDefinition)];
 }
 
 /** Resolve, enforce scope, run. Throws on an unknown tool or a missing scope. */
@@ -414,6 +434,12 @@ export async function callAgentTool(
 ): Promise<unknown> {
   const tool = await resolveAgentTool(ctx.db, ctx.workspaceId, name);
   if (!tool) throw new Error(`Unknown Trevra tool: ${name}`);
+  if (!isBuiltInAgentTool(name)) {
+    const available = await listSkillsForAgent(ctx.db, ctx.workspaceId, ctx.actorId);
+    if (!available.some((skill) => toolNameForSkill(skill.id) === name)) {
+      throw new Error(`Skill is not available to this Agent: ${name}`);
+    }
+  }
   if (tool.scope && !identityScopes.includes(tool.scope)) {
     throw new Error(`Agent token is missing scope: ${tool.scope}`);
   }

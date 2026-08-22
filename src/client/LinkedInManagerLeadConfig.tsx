@@ -31,7 +31,7 @@ import type {
 import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { errorMessage } from './LinkedInSafety';
 import { ActionMenu } from './ui/action-menu';
-
+import { Select } from './ui/primitives';
 /**
  * Building a lead list, and living with one afterwards.
  *
@@ -687,7 +687,7 @@ export function LinkedInManagerLeadConfig({
           {entry.label}
           {entry.required && <em>Required</em>}
         </span>
-        <select
+        <Select
           value={chosen}
           disabled={busy !== ''}
           onChange={(event) => changeMapping(entry.field, event.target.value)}
@@ -701,7 +701,7 @@ export function LinkedInManagerLeadConfig({
               {header || '(unnamed column)'}
             </option>
           ))}
-        </select>
+        </Select>
         <span className="lead-map-note">
           {chosen && auto && chosen !== auto
             ? `Changed from “${auto}”`
@@ -787,7 +787,7 @@ export function LinkedInManagerLeadConfig({
           {!compact && (
             <label>
               Add these leads to
-              <select
+              <Select
                 value={destination}
                 disabled={busy !== ''}
                 onChange={(event) => setDestination(event.target.value)}
@@ -798,7 +798,7 @@ export function LinkedInManagerLeadConfig({
                     {list.name} · {plural(list.leadCount, 'lead')}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
           )}
           {(compact || destination === 'new') && (
@@ -1093,7 +1093,7 @@ export function LinkedInManagerLeadConfig({
               <div className="li-filter-row">
                 <label>
                   List
-                  <select
+                  <Select
                     value={openListId}
                     disabled={contactsLoading}
                     onChange={(event) => void openList(event.target.value)}
@@ -1103,7 +1103,7 @@ export function LinkedInManagerLeadConfig({
                         {list.name} · {plural(list.leadCount, 'lead')}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   Find someone

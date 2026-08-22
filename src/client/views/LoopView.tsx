@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CheckCircle2, ChevronRight, Clock3, Inbox, LoaderCircle, Send } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Inbox, LoaderCircle, Send } from 'lucide-react';
 import type { DashboardPayload, PlaybookRun } from '../../shared/types';
 import {
   fetchLoopCost,
@@ -21,6 +21,7 @@ import {
 import { errorMessage, useOutreachRefresh, useSeatLimits } from '../LinkedInSafety';
 import { DEFAULT_WINDOW_DAYS, LinkedInFunnel } from '../LinkedInAnalyticsScreen';
 import { ConfidenceTag, WindowPicker } from '../LinkedInViz';
+import { Select } from '../ui/primitives';
 import { ACTIVATION_STEPS, nextActivationStep, type ActivationSignals } from './activation';
 import { money, usd } from './format';
 
@@ -456,13 +457,6 @@ export function LoopView({
   }
 
   const awaitingReply = funnel ? funnel.sent : null;
-  const accepted = funnel ? funnel.accepted : null;
-  const replied = funnel ? funnel.replied : null;
-  const waitingValue = today
-    ? String(today.needsAttention.length)
-    : waitingCount === null
-      ? '—'
-      : String(waitingCount);
 
   return (
     <>
@@ -519,7 +513,7 @@ export function LoopView({
         })}
       </section>
 
-      <section className="metrics-grid metrics-grid-four">
+      <section className="metrics-grid metrics-grid-two" aria-label="Current outreach movement">
         <Metric
           icon={<Send />}
           label="Going out"
@@ -552,28 +546,6 @@ export function LoopView({
           value={awaitingReply === null ? '—' : String(awaitingReply)}
           detail={analyticsError ? 'Outreach ledger unavailable' : 'Last ' + String(days) + ' days'}
         />
-        <Metric
-          icon={<CheckCircle2 />}
-          label="Accepted / replied"
-          value={accepted === null || replied === null ? '—' : String(accepted + replied)}
-          detail={
-            accepted === null || replied === null
-              ? 'Outreach ledger unavailable'
-              : String(accepted) + ' accepted · ' + String(replied) + ' replied'
-          }
-        />
-        <Metric
-          icon={<Clock3 />}
-          label="Waiting on you"
-          value={waitingValue}
-          detail={
-            today
-              ? today.needsAttention.length
-                ? 'Across GTM'
-                : 'Nothing waiting'
-              : 'Attention state unavailable'
-          }
-        />
       </section>
 
       <PlanWork onNavigate={onNavigate} initiallyOpen={plannerInitiallyOpen} />
@@ -586,40 +558,7 @@ export function LoopView({
           </span>
           <ChevronRight size={17} aria-hidden="true" />
         </summary>
-        <div className="loop-secondary-body">
-          <section className="page-panel">
-            <div className="section-heading">
-              <div>
-                <h2>Cost and activity</h2>
-                <p>Last 30 days.</p>
-              </div>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => onNavigate('/loop/cost')}
-              >
-                View details <ChevronRight size={15} />
-              </button>
-            </div>
-            {cost ? (
-              <div className="run-facts">
-                <div className="run-fact">
-                  <span>Spent on models</span>
-                  <strong>{usd(cost.spent.costCents)}</strong>
-                  <small>USD, billed by your model provider</small>
-                </div>
-                <div className="run-fact">
-                  <span>Outreach actions sent</span>
-                  <strong>{cost.sent.actionsTotal.toLocaleString('en-US')}</strong>
-                </div>
-              </div>
-            ) : (
-              <p className="onboarding-loading">
-                {loopLoading ? 'Reading cost and activity…' : 'Cost and activity unavailable.'}
-              </p>
-            )}
-          </section>
-
+        <div className="loop-secondary-body loop-performance-grid">
           <LinkedInFunnel
             analytics={analytics}
             loading={analyticsLoading}
@@ -628,6 +567,39 @@ export function LoopView({
             days={days}
             onDaysChange={setDays}
           />
+
+          <section className="page-panel loop-cost-summary">
+            <div className="section-heading">
+              <div>
+                <h2>Model usage</h2>
+                <p>Last 30 days.</p>
+              </div>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => onNavigate('/loop/cost')}
+              >
+                Cost details <ChevronRight size={15} />
+              </button>
+            </div>
+            {cost ? (
+              <div className="run-facts">
+                <div className="run-fact">
+                  <span>Spent</span>
+                  <strong>{usd(cost.spent.costCents)}</strong>
+                  <small>USD, billed by your model provider</small>
+                </div>
+                <div className="run-fact">
+                  <span>Model calls</span>
+                  <strong>{cost.spent.calls.toLocaleString('en-US')}</strong>
+                </div>
+              </div>
+            ) : (
+              <p className="onboarding-loading">
+                {loopLoading ? 'Reading model usage…' : 'Model usage unavailable.'}
+              </p>
+            )}
+          </section>
         </div>
       </details>
     </>
@@ -854,7 +826,7 @@ function PlanWork({
           <div className="gtm-plan-form">
             <label>
               Goal
-              <select
+              <Select
                 value={objective}
                 onChange={(event) => {
                   setObjective(event.target.value as PlannerObjective);
@@ -866,13 +838,13 @@ function PlanWork({
                     {item.label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
 
             {objective === 'prepare_outreach' ? (
               <label>
                 People
-                <select
+                <Select
                   value={leadListId}
                   onChange={(event) => {
                     setLeadListId(event.target.value);
@@ -885,7 +857,7 @@ function PlanWork({
                       {list.name} · {list.leadCount} people
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
             ) : objective === 'capture_inbound' ? null : (
               <>

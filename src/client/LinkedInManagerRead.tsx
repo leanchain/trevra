@@ -86,6 +86,7 @@ import { useWorkspaceMembers } from './TeamScreen';
 import { ConfirmDrawer } from './ui/dialog';
 import { ChoiceMenu } from './ui/choice-menu';
 import { ActionMenu } from './ui/action-menu';
+import { Select } from './ui/primitives';
 import { Hint } from './ui/hint';
 
 /**
@@ -833,13 +834,13 @@ function MemberRecoveryControls({
       )}
       <label className="li-inline-field">
         Resume from
-        <select value={stepId} onChange={(event) => setStepId(event.target.value)}>
+        <Select value={stepId} onChange={(event) => setStepId(event.target.value)}>
           {steps.map((step, index) => (
             <option key={step.id} value={step.id}>
               {index + 1}. {ACTION_LABEL[step.action]}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
       <button
         className="li-mini-button"
@@ -947,7 +948,7 @@ function CampaignExclusionEditor({
         </label>
         <label>
           Excluded lead lists
-          <select
+          <Select
             multiple
             value={excludedLists}
             onChange={(event) =>
@@ -963,7 +964,7 @@ function CampaignExclusionEditor({
                   {list.name}
                 </option>
               ))}
-          </select>
+          </Select>
         </label>
         <label className="li-check-row">
           <input
@@ -1206,7 +1207,7 @@ function CampaignScheduleEditor({
         </fieldset>
         <label>
           At campaign end
-          <select
+          <Select
             value={endBehavior}
             onChange={(event) =>
               setEndBehavior(event.target.value as ManagedCampaign['schedule']['endBehavior'])
@@ -1215,7 +1216,7 @@ function CampaignScheduleEditor({
             <option value="finish_waves">Stop new admission; finish admitted waves</option>
             <option value="pause_all">Pause all campaign work</option>
             <option value="stop_immediately">Stop immediately</option>
-          </select>
+          </Select>
         </label>
       </div>
       {scheduleError && <p className="error-banner">{scheduleError}</p>}
@@ -1353,7 +1354,7 @@ function CampaignMembers({
         </label>
         <label>
           Status
-          <select
+          <Select
             value={status}
             onChange={(event) => setStatus(event.target.value as 'all' | MemberStatus)}
           >
@@ -1363,16 +1364,16 @@ function CampaignMembers({
                 {STATUS_LABEL[value]}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label>
           Sort by
-          <select value={sort} onChange={(event) => setSort(event.target.value as MemberSort)}>
+          <Select value={sort} onChange={(event) => setSort(event.target.value as MemberSort)}>
             <option value="next">Next action first</option>
             <option value="name">Name A–Z</option>
             <option value="status">Status</option>
             <option value="step">Furthest through the sequence</option>
-          </select>
+          </Select>
         </label>
         <p className="li-hint">
           Showing {shown.length} of {plural(members.length, 'lead')}.
@@ -1394,7 +1395,7 @@ function CampaignMembers({
             <>
               <label>
                 Follow-up campaign
-                <select
+                <Select
                   value={targetCampaignId}
                   onChange={(event) => setTargetCampaignId(event.target.value)}
                 >
@@ -1404,7 +1405,7 @@ function CampaignMembers({
                       {campaign.name} ({CAMPAIGN_STATUS_LABEL[campaign.status]})
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <button
                 className="secondary-button"
@@ -2798,45 +2799,55 @@ export function OutreachManagerRead({
                     </div>
                   </div>
 
-                  <div className="mgr-meta">
-                    <span>
-                      Sends from <b>{campaign.senderKeys.map(seatLabel).join(', ')}</b>
-                    </span>
-                    <span>
-                      Owned by <b>{campaign.ownerName ?? 'workspace owner'}</b>
-                      {isWorkspaceOwner && workspaceMembers.length > 0 && (
-                        <ChoiceMenu
-                          label={`Change owner for ${campaign.name}`}
-                          title="Choose campaign owner"
-                          items={workspaceMembers.map((member) => ({
-                            id: member.userId,
-                            label: member.name
-                          }))}
-                          selectedId={campaign.ownerUserId}
-                          disabled={busy !== ''}
-                          onChoose={(userId) => transferCampaignOwner(campaign, userId)}
-                        />
-                      )}
-                    </span>
-                    <span>
-                      {plural(campaign.memberCount, 'lead')} from{' '}
-                      {listOf(campaign)?.name ?? 'a deleted list'}
-                    </span>
-                    <span>
-                      {workflow
-                        ? `${workflow.name} · ${plural(campaignSteps.length, 'step')}${
-                            campaign.workflowVersion === null
-                              ? ''
-                              : campaign.workflowVersion === workflow.version
-                                ? ` · v${campaign.workflowVersion}`
-                                : ` · running v${campaign.workflowVersion}, the workflow is now v${workflow.version}`
-                          }`
-                        : campaignSteps.length > 0
-                          ? `Its workflow was deleted · still running its own copy of ${plural(campaignSteps.length, 'step')}`
-                          : 'Workflow deleted'}
-                    </span>
-                    {campaign.startedAt && <span>Started {ago(campaign.startedAt, now)}</span>}
-                  </div>
+                  {open ? (
+                    <div className="mgr-meta">
+                      <span>
+                        Sends from <b>{campaign.senderKeys.map(seatLabel).join(', ')}</b>
+                      </span>
+                      <span>
+                        Owned by <b>{campaign.ownerName ?? 'workspace owner'}</b>
+                        {isWorkspaceOwner && workspaceMembers.length > 0 && (
+                          <ChoiceMenu
+                            label={`Change owner for ${campaign.name}`}
+                            title="Choose campaign owner"
+                            items={workspaceMembers.map((member) => ({
+                              id: member.userId,
+                              label: member.name
+                            }))}
+                            selectedId={campaign.ownerUserId}
+                            disabled={busy !== ''}
+                            onChoose={(userId) => transferCampaignOwner(campaign, userId)}
+                          />
+                        )}
+                      </span>
+                      <span>
+                        {plural(campaign.memberCount, 'lead')} from{' '}
+                        {listOf(campaign)?.name ?? 'a deleted list'}
+                      </span>
+                      <span>
+                        {workflow
+                          ? `${workflow.name} · ${plural(campaignSteps.length, 'step')}${
+                              campaign.workflowVersion === null
+                                ? ''
+                                : campaign.workflowVersion === workflow.version
+                                  ? ` · v${campaign.workflowVersion}`
+                                  : ` · running v${campaign.workflowVersion}, the workflow is now v${workflow.version}`
+                            }`
+                          : campaignSteps.length > 0
+                            ? `Its workflow was deleted · still running its own copy of ${plural(campaignSteps.length, 'step')}`
+                            : 'Workflow deleted'}
+                      </span>
+                      {campaign.startedAt && <span>Started {ago(campaign.startedAt, now)}</span>}
+                    </div>
+                  ) : (
+                    <div className="mgr-meta mgr-meta-compact">
+                      <span>
+                        {plural(campaign.memberCount, 'lead')} · {campaign.inSequenceCount} in
+                        sequence
+                      </span>
+                      <span>{campaign.senderKeys.map(seatLabel).join(', ')}</span>
+                    </div>
+                  )}
 
                   {open && workflow && campaign.status === 'running' && (
                     <p className="mgr-warmup">
@@ -2849,8 +2860,12 @@ export function OutreachManagerRead({
                     </p>
                   )}
 
-                  <StatusBar counts={counts} total={campaign.memberCount} />
-                  <StatusLegend counts={counts} total={campaign.memberCount} />
+                  {open && (
+                    <>
+                      <StatusBar counts={counts} total={campaign.memberCount} />
+                      <StatusLegend counts={counts} total={campaign.memberCount} />
+                    </>
+                  )}
 
                   {/*
                   A TERMINAL CAMPAIGN GETS AN EXPLANATION, NOT A WARM-UP LINE.
@@ -3413,7 +3428,7 @@ export function OutreachManagerRead({
                         <div className="li-filter-row">
                           <label>
                             Campaign priority
-                            <select
+                            <Select
                               value={campaign.priority}
                               disabled={busy !== ''}
                               onChange={(event) =>
@@ -3426,7 +3441,7 @@ export function OutreachManagerRead({
                               <option value="low">Low</option>
                               <option value="normal">Normal</option>
                               <option value="high">High</option>
-                            </select>
+                            </Select>
                           </label>
                           <p className="li-hint">
                             Priority allocates remaining sender capacity; it never raises a safety
@@ -3514,7 +3529,7 @@ export function OutreachManagerRead({
             <div className="li-filter-row">
               <label>
                 Campaign
-                <select
+                <Select
                   value={campaignFilter}
                   onChange={(event) => setCampaignFilter(event.target.value)}
                 >
@@ -3524,18 +3539,18 @@ export function OutreachManagerRead({
                       {campaign.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <label>
                 LinkedIn account
-                <select value={seatFilter} onChange={(event) => pickSeatFilter(event.target.value)}>
+                <Select value={seatFilter} onChange={(event) => pickSeatFilter(event.target.value)}>
                   <option value="">All accounts</option>
                   {seats.map((seat) => (
                     <option key={seat.seatKey} value={seat.seatKey}>
                       {seat.label}
                     </option>
                   ))}
-                </select>
+                </Select>
               </label>
               <div className="mgr-window" role="group" aria-label="Time window">
                 {(

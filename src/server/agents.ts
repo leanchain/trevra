@@ -13,7 +13,11 @@ export interface AgentPrincipal {
   isDefault: boolean;
   createdByUserId: string | null;
   policyProfile: Record<string, unknown>;
-  config: Record<string, unknown>;
+  config: {
+    instructions?: string;
+    skillIds?: string[];
+    [key: string]: unknown;
+  };
   activeTokenCount: number;
   runCount: number;
   latestRunId: string | null;
@@ -211,28 +215,55 @@ export async function listAgents(db: Db, workspaceId: string): Promise<AgentPrin
 
 export async function createAgent(
   db: Db,
-  input: { workspaceId: string; createdByUserId: string; name: string; purpose: string }
+  input: {
+    workspaceId: string;
+    createdByUserId: string;
+    name: string;
+    purpose: string;
+    instructions?: string;
+    skillIds?: string[];
+  }
 ): Promise<AgentPrincipal> {
   const name = input.name.trim();
   const purpose = input.purpose.trim();
+  const instructions = input.instructions?.trim() ?? '';
+  const skillIds = input.skillIds
+    ? [...new Set(input.skillIds.map((value) => value.trim()).filter(Boolean))]
+    : undefined;
   if (!name) throw new AgentPrincipalError('Agent name is required.');
   if (!purpose) throw new AgentPrincipalError('Agent purpose is required.');
   if (name.length > 100) throw new AgentPrincipalError('Agent name is too long.');
   if (purpose.length > 500) throw new AgentPrincipalError('Agent purpose is too long.');
+  if (instructions.length > 4000) throw new AgentPrincipalError('Agent instructions are too long.');
+  const config = {
+    ...(instructions ? { instructions } : {}),
+    ...(skillIds !== undefined ? { skillIds } : {})
+  };
   const agentId = id('agent');
   const now = new Date().toISOString();
   await db
     .prepare(
       `
       INSERT INTO agents (
-        id,workspace_id,created_by_user_id,name,purpose,status,is_default,created_at,updated_at
-      ) VALUES (?,?,?,?,?,'active',FALSE,?,?)
+        id,workspace_id,created_by_user_id,name,purpose,status,is_default,config_json,created_at,updated_at
+      ) VALUES (?,?,?,?,?,'active',FALSE,?,?,?)
     `
     )
-    .run(agentId, input.workspaceId, input.createdByUserId, name, purpose, now, now);
+    .run(
+      agentId,
+      input.workspaceId,
+      input.createdByUserId,
+      name,
+      purpose,
+      JSON.stringify(config),
+      now,
+      now
+    );
   await recordAgentAudit(db, input.workspaceId, input.createdByUserId, 'agent.created', agentId, {
     name,
-    purpose
+    purpose,
+    instructions,
+    skillIds
   });
   const created = await getAgent(db, input.workspaceId, agentId);
   if (!created) throw new Error('Agent could not be reloaded.');
@@ -247,6 +278,8 @@ export async function updateAgent(
     agentId: string;
     name?: string;
     purpose?: string;
+    instructions?: string;
+    skillIds?: string[];
     status?: AgentStatus;
   }
 ): Promise<AgentPrincipal> {
@@ -254,20 +287,39 @@ export async function updateAgent(
   if (!existing) throw new AgentPrincipalError('Agent not found in this workspace.', 404);
   const name = input.name === undefined ? existing.name : input.name.trim();
   const purpose = input.purpose === undefined ? existing.purpose : input.purpose.trim();
+  const instructions =
+    input.instructions === undefined
+      ? typeof existing.config.instructions === 'string'
+        ? existing.config.instructions
+        : ''
+      : input.instructions.trim();
+  const skillIds =
+    input.skillIds === undefined
+      ? configuredAgentSkillIds(existing)
+      : [...new Set(input.skillIds.map((value) => value.trim()).filter(Boolean))];
   if (!name) throw new AgentPrincipalError('Agent name is required.');
   if (!purpose) throw new AgentPrincipalError('Agent purpose is required.');
   if (name.length > 100) throw new AgentPrincipalError('Agent name is too long.');
   if (purpose.length > 500) throw new AgentPrincipalError('Agent purpose is too long.');
+  if (instructions.length > 4000) throw new AgentPrincipalError('Agent instructions are too long.');
   const status = input.status ?? existing.status;
+  const config = {
+    ...existing.config,
+    ...(instructions ? { instructions } : { instructions: undefined }),
+    ...(skillIds !== null ? { skillIds } : {})
+  };
+  if (!instructions) delete config.instructions;
   const now = new Date().toISOString();
   await db
     .prepare(
-      'UPDATE agents SET name=?,purpose=?,status=?,updated_at=? WHERE workspace_id=? AND id=?'
+      'UPDATE agents SET name=?,purpose=?,status=?,config_json=?,updated_at=? WHERE workspace_id=? AND id=?'
     )
-    .run(name, purpose, status, now, input.workspaceId, input.agentId);
+    .run(name, purpose, status, JSON.stringify(config), now, input.workspaceId, input.agentId);
   await recordAgentAudit(db, input.workspaceId, input.actorUserId, 'agent.updated', input.agentId, {
     name,
     purpose,
+    instructions,
+    skillIds,
     status
   });
   const updated = await getAgent(db, input.workspaceId, input.agentId);
@@ -301,6 +353,22 @@ async function recordAgentAudit(
       JSON.stringify(metadata),
       new Date().toISOString()
     );
+}
+
+export function configuredAgentSkillIds(agent: AgentPrincipal): string[] | null {
+  const value = agent.config.skillIds;
+  if (!Array.isArray(value)) return null;
+  return [
+    ...new Set(
+      value
+        .filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
+        .map((entry) => entry.trim())
+    )
+  ];
+}
+
+export function agentInstructions(agent: AgentPrincipal): string {
+  return typeof agent.config.instructions === 'string' ? agent.config.instructions.trim() : '';
 }
 
 function serializeAgent(row: Record<string, unknown>): AgentPrincipal {

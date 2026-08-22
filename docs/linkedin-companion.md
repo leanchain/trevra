@@ -6,15 +6,17 @@ The hosted platform owns campaigns, due work, pacing, safety decisions, leases a
 
 ## User journey
 
-1. Open **Outreach → LinkedIn accounts** in hosted Trevra.
+On dev and single-operator self-hosted installs, Trevra may preinstall/register the Companion before pairing (`npm run dev:setup` or `npm run selfhost:deploy`). Preinstall is pairing-independent: the OS service exits successfully while no device credential exists, so it cannot enter a crash loop or run browser work before authorization.
+
+1. Open **Outreach → LinkedIn accounts** in Trevra.
 2. Choose **Connect this computer**.
-3. Run the generated one-time install command:
+3. Run the generated one-time pairing/install command:
 
    ```bash
    npx --yes --package=https://github.com/leanchain/trevra/releases/download/companion-v0.2.2/trevra-0.2.2.tgz trevra linkedin install --pair XXXX-XXXX-XXXX --url https://app.usetrevra.com
    ```
 
-4. Trevra pairs the computer, installs a private per-user companion package and registers the operating system's background service. Chrome opens with a Trevra-specific persistent profile; sign into LinkedIn there if it is not already signed in.
+4. Trevra pairs the computer, ensures the exact private per-user companion package/service is installed, and starts it. When dev/self-host setup already installed that exact version, this step reuses it instead of reinstalling. Chrome opens with a Trevra-specific persistent profile; sign into LinkedIn there if it is not already signed in.
 5. In Trevra choose **Check this account on LinkedIn**. Trevra verifies which LinkedIn account the local browser is using and records the seat identity.
 6. The companion runs independently once paired: it works in the background as long as the paired computer is on, whether or not any Trevra tab is open. No terminal has to remain open.
 
@@ -23,6 +25,7 @@ The background companion also auto-updates on reconnect. Hosted Trevra advertise
 Service controls are:
 
 ```bash
+trevra linkedin setup
 trevra linkedin status
 trevra linkedin logs
 trevra linkedin logs --follow

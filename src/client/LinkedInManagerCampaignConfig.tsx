@@ -24,6 +24,7 @@ import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflow
 import type { CampaignLaunchPreview, ManagedCampaign } from '../server/linkedin/managed-campaigns';
 import { errorMessage } from './LinkedInSafety';
 import { useIsWorkspaceOwner } from './auth-client';
+import { Select } from './ui/primitives';
 
 /**
  * Creating a campaign, with the consequences shown before the button.
@@ -900,7 +901,7 @@ export function LinkedInManagerCampaignConfig({
                       {senderKeys.map((key) => (
                         <label key={`mailbox-${key}`}>
                           {seats.find((candidate) => candidate.seatKey === key)?.label ?? key}
-                          <select
+                          <Select
                             value={mailboxAssignments[key] ?? ''}
                             onChange={(event) =>
                               setMailboxAssignments((current) => ({
@@ -915,7 +916,7 @@ export function LinkedInManagerCampaignConfig({
                                 {mailbox.provider} · {mailbox.dailyLimit}/day · {mailbox.timezone}
                               </option>
                             ))}
-                          </select>
+                          </Select>
                         </label>
                       ))}
                     </div>
@@ -1085,7 +1086,7 @@ export function LinkedInManagerCampaignConfig({
 
                 <label>
                   Campaign priority
-                  <select
+                  <Select
                     value={priority}
                     onChange={(event) =>
                       setPriority(event.target.value as ManagedCampaign['priority'])
@@ -1094,7 +1095,7 @@ export function LinkedInManagerCampaignConfig({
                     <option value="low">Low</option>
                     <option value="normal">Normal</option>
                     <option value="high">High</option>
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   Maximum wave size
@@ -1225,7 +1226,7 @@ export function LinkedInManagerCampaignConfig({
                 </fieldset>
                 <label>
                   At campaign end
-                  <select
+                  <Select
                     value={endBehavior}
                     onChange={(event) =>
                       setEndBehavior(
@@ -1236,7 +1237,7 @@ export function LinkedInManagerCampaignConfig({
                     <option value="finish_waves">Finish admitted waves; admit nobody new</option>
                     <option value="pause_all">Pause campaign and hold queued work</option>
                     <option value="stop_immediately">Stop and release remaining leads</option>
-                  </select>
+                  </Select>
                 </label>
                 <fieldset className="li-span-2">
                   <legend>Exclusions</legend>

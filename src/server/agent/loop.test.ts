@@ -7,6 +7,7 @@ import type {
   LanguageModelV4GenerateResult
 } from '@ai-sdk/provider';
 import { AGENT_SCOPES } from '../agent-access.js';
+import { ensureDefaultAgent } from '../agents.js';
 import { openDatabase, type Db } from '../db.js';
 import { setAgentBudget, unreportedUsageFloorCents } from './budget.js';
 import { listAgentTools } from './tools.js';
@@ -192,9 +193,7 @@ async function runRowCount(): Promise<number> {
   return row?.total ?? 0;
 }
 
-async function stepsOf(
-  runId: string
-): Promise<
+async function stepsOf(runId: string): Promise<
   Array<{
     seq: number;
     kind: string;
@@ -399,6 +398,35 @@ describe('a run that calls one tool and then answers', () => {
   beforeEach(async () => {
     await configureByok();
     await setAgentBudget(db, WORKSPACE_ID, { enabled: true });
+  });
+
+  it('injects the selected Agent purpose and multiline instructions into the run prompt', async () => {
+    const agent = await ensureDefaultAgent(db, WORKSPACE_ID);
+    await db
+      .prepare('UPDATE agents SET purpose=?,config_json=? WHERE workspace_id=? AND id=?')
+      .run(
+        'Research named accounts before outreach.',
+        JSON.stringify({ instructions: 'Use first-party evidence.\nCite the strongest signal.' }),
+        WORKSPACE_ID,
+        agent.id
+      );
+    let prompt = '';
+    installModel(async (options) => {
+      prompt = JSON.stringify(options.prompt);
+      return answer('done');
+    });
+
+    const run = await runHostedAgent(db, {
+      workspaceId: WORKSPACE_ID,
+      agentId: agent.id,
+      goal: 'Qualify Acme',
+      trigger: 'manual'
+    });
+
+    expect(run.status).toBe('completed');
+    expect(prompt).toContain('Research named accounts before outreach.');
+    expect(prompt).toContain('Use first-party evidence.');
+    expect(prompt).toContain('Cite the strongest signal.');
   });
 
   it('completes, records model and tool steps in the order they happened, and summarises', async () => {

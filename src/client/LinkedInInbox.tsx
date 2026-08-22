@@ -43,14 +43,13 @@ import { relativeTime } from './LinkedInScreen';
 import { DELAY_CHOICES, plannedForFrom, queueWaitCopy, type ScheduleMode } from './LinkedInTiming';
 import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag } from './LinkedInViz';
+import { Select } from './ui/primitives';
 
 /**
  * `/outreach/inbox` -- THE ONE PLACE AN OPERATOR ANSWERS A PERSON.
  *
  * Two kinds of thing land here and they are not the same kind of thing. A
  * CONVERSATION is something a human sent; a MANUAL-MESSAGE TASK is a campaign
- * step that Trevra will not perform on its own and is waiting on the operator
- * for. Both are answered with the same keyboard, so both belong on this
  * screen -- but a task is drawn as a to-do, never as a received message,
  * because an inbox that pads its unread count with its own homework is an
  * inbox nobody trusts twice.
@@ -999,7 +998,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
             onChange={() => setScheduleMode('in')}
           />
           After a wait of
-          <select
+          <Select
             value={delayMinutes}
             aria-label="How long to wait before this is sent"
             onChange={(event) => {
@@ -1012,7 +1011,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                 {choice.label}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
         <label>
           <input
@@ -1159,7 +1158,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
           >
             Has a reply
           </button>
-          <select
+          <Select
             aria-label="Campaign"
             value={filters.campaignId}
             onChange={(event) =>
@@ -1172,7 +1171,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
                 {campaign.name}
               </option>
             ))}
-          </select>
+          </Select>
           {loading && <LoaderCircle className="spin" size={14} aria-label="Reading the inbox" />}
         </div>
         <button

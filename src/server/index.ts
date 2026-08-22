@@ -67,18 +67,22 @@ if (process.env.NODE_ENV === 'production') {
    * meaning by naming each other. A path one side claims and the other does
    * not is a broken reload, so they change together.
    */
-  const APP_PATH_HEADS = new Set([
-    'loop',
-    'outreach',
-    'ledger',
-    'research',
-    'setup', // SECTIONS in ui/route.ts
-    'leads',
-    'login' // SHELL_PATHS in ui/route.ts
-  ]);
+  const APP_PATH_PATTERNS = [
+    /^\/loop(?:\/cost)?\/?$/,
+    /^\/outreach\/?$/,
+    /^\/outreach\/(?:new|inbound|inbox|opportunities|posts|settings)\/?$/,
+    /^\/outreach\/campaign\/[^/]+\/?$/,
+    /^\/outreach\/workflow\/[^/]+(?:\/[^/]+)?\/?$/,
+    /^\/ledger\/?$/,
+    /^\/ledger\/run\/[^/]+\/?$/,
+    /^\/research\/?$/,
+    /^\/setup\/?$/,
+    /^\/setup\/(?:workspace|capture)\/?$/,
+    /^\/setup\/team\/[^/]+\/?$/,
+    /^\/login\/?$/
+  ];
   app.get(/^\/[^.]*$/, (req, res, next) => {
-    const head = req.path.replace(/^\//, '').split('/')[0] ?? '';
-    if (!APP_PATH_HEADS.has(head)) return next();
+    if (!APP_PATH_PATTERNS.some((pattern) => pattern.test(req.path))) return next();
     res.type('html').set({
       // Never cached: these URLs are the app, and a stale index names asset
       // hashes that no longer exist.
@@ -86,7 +90,7 @@ if (process.env.NODE_ENV === 'production') {
       'Content-Language': 'en',
       // NOINDEX, because these are screens behind a sign-in. A crawler that
       // reaches one gets the shell and no content, and a shell indexed under
-      // seven URLs is seven near-duplicate empty pages.
+      // several URLs is several near-duplicate empty pages.
       'X-Robots-Tag': 'noindex, nofollow'
     });
     res.send(renderAppIndex(indexTemplate, String(res.locals.cspNonce ?? '')));

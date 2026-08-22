@@ -357,38 +357,41 @@ export function LeadCaptureSetup({ setToast }: { setToast: (message: string) => 
               )}
             </div>
 
-            <div className="capture-recipes">
-              <nav aria-label="Integration recipes">
-                {(['cloudflare', 'next', 'curl'] as const).map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={recipeKind === value ? 'is-active' : undefined}
-                    onClick={() => setRecipeKind(value)}
-                  >
-                    {value === 'next'
-                      ? 'Next.js / Vercel'
-                      : value === 'cloudflare'
-                        ? 'Cloudflare Worker'
-                        : 'curl / raw HTTP'}
-                  </button>
-                ))}
-              </nav>
-              <pre>
-                <code>{integrationRecipe}</code>
-              </pre>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() =>
-                  void navigator.clipboard
-                    .writeText(integrationRecipe)
-                    .then(() => setToast('Recipe copied.'))
-                }
-              >
-                <Copy size={14} /> Copy recipe
-              </button>
-            </div>
+            <details className="capture-recipes">
+              <summary>Implementation recipe</summary>
+              <div className="capture-recipes-body">
+                <nav aria-label="Integration recipes">
+                  {(['cloudflare', 'next', 'curl'] as const).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className={recipeKind === value ? 'is-active' : undefined}
+                      onClick={() => setRecipeKind(value)}
+                    >
+                      {value === 'next'
+                        ? 'Next.js / Vercel'
+                        : value === 'cloudflare'
+                          ? 'Cloudflare Worker'
+                          : 'curl / raw HTTP'}
+                    </button>
+                  ))}
+                </nav>
+                <pre>
+                  <code>{integrationRecipe}</code>
+                </pre>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() =>
+                    void navigator.clipboard
+                      .writeText(integrationRecipe)
+                      .then(() => setToast('Recipe copied.'))
+                  }
+                >
+                  <Copy size={14} /> Copy recipe
+                </button>
+              </div>
+            </details>
           </div>
         )}
       </section>

@@ -15,6 +15,7 @@ import { authClient, useIsWorkspaceOwner } from './auth-client';
 import { relativeTime } from './LinkedInScreen';
 import { reloadOutreach } from './LinkedInSafety';
 import { ConfirmDrawer } from './ui/dialog';
+import { EmptyState, InlineActions, Panel } from './ui/layout';
 import { Button, Field, Input, Select, Textarea } from './ui/primitives';
 import type { Route } from './ui/route';
 
@@ -335,17 +336,15 @@ function AgentTeamPanel({
   };
 
   return (
-    <section className="page-panel" id="agent-team">
-      <div className="section-heading">
-        <div>
-          <h3>Agents</h3>
-          <p>Define each worker’s job, operating instructions, and the GTM skills it may use.</p>
-        </div>
-        <div className="mgr-actions">
+    <Panel
+      id="agent-team"
+      title="Agents"
+      description="Define each worker’s job, operating instructions, and the GTM skills it may use."
+      actions={
+        <InlineActions>
           {!loading && <span className="status-pill">{agents.length} on team</span>}
           {isOwner && !showCreate && (
             <Button
-              variant="secondary"
               onClick={() => {
                 setEditingId(null);
                 setSkillIds(enabledSkillIds());
@@ -355,16 +354,16 @@ function AgentTeamPanel({
               <Plus size={14} /> Add Agent
             </Button>
           )}
-        </div>
-      </div>
-
+        </InlineActions>
+      }
+    >
       {error && <div className="error-banner">{error}</div>}
       {loading ? (
         <p className="empty-copy">
           <LoaderCircle className="spin" size={14} /> Reading Agents…
         </p>
       ) : agents.length === 0 ? (
-        <p className="workspace-empty">No Agents yet. Use Add Agent to define the first worker.</p>
+        <EmptyState description="No Agents yet. Use Add Agent to define the first worker." />
       ) : (
         <div className="workspace-agent-list">
           {agents.map((agent) => {
@@ -616,7 +615,7 @@ function AgentTeamPanel({
         Skills are an Agent’s modular GTM tools. Credential scopes are separate access permissions.
         Agents still cannot approve their own consequential external actions.
       </p>
-    </section>
+    </Panel>
   );
 }
 function TeamMembersPanel({
@@ -751,187 +750,175 @@ function TeamMembersPanel({
   };
 
   return (
-    <div className="page-stack">
-      <div className="workspace-team-grid">
-        <div className="workspace-team-column">
-          <AgentTeamPanel isOwner={isOwner} setToast={setToast} onNavigate={onNavigate} />
-        </div>
+    <>
+      <AgentTeamPanel isOwner={isOwner} setToast={setToast} onNavigate={onNavigate} />
 
-        <div className="workspace-team-column">
-          <section className="page-panel" id="team">
-            <div className="section-heading">
+      <Panel
+        id="team"
+        title="People & access"
+        description="See who can enter this workspace and invite the next teammate from one place."
+        actions={
+          <InlineActions>
+            {!isPending && <span className="status-pill">{members.length} people</span>}
+            {isOwner && !showInvite && (
+              <Button onClick={() => setShowInvite(true)}>
+                <UserPlus size={14} /> Invite person
+              </Button>
+            )}
+          </InlineActions>
+        }
+      >
+        {isPending ? (
+          <p className="empty-copy">Reading the member list…</p>
+        ) : members.length === 0 ? (
+          <EmptyState description="No workspace members were returned." />
+        ) : (
+          <div className="li-table-scroll compact">
+            <table className="li-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                  {isOwner && <th />}
+                </tr>
+              </thead>
+              <tbody>
+                {members.map((member) => (
+                  <tr key={member.id}>
+                    <td>{member.name}</td>
+                    <td>{member.email}</td>
+                    <td>{member.role}</td>
+                    {isOwner && (
+                      <td>
+                        {member.role !== 'owner' && (
+                          <button
+                            className="li-mini-button li-mini-danger"
+                            type="button"
+                            disabled={removeBusy}
+                            onClick={() => setConfirmRemove(member)}
+                          >
+                            <Trash2 size={13} /> Remove
+                          </button>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {isOwner && showInvite && (
+          <div className="workspace-subsection">
+            <div className="workspace-subsection-heading">
               <div>
-                <h3>People & access</h3>
-                <p>See who can enter this workspace and invite the next teammate from one place.</p>
-              </div>
-              <div className="mgr-actions">
-                {!isPending && <span className="status-pill">{members.length} people</span>}
-                {isOwner && !showInvite && (
-                  <Button variant="secondary" onClick={() => setShowInvite(true)}>
-                    <UserPlus size={14} /> Invite person
-                  </Button>
-                )}
+                <h4>Invite someone</h4>
+                <p>They receive workspace access only after accepting the invitation.</p>
               </div>
             </div>
+            {addError && <div className="error-banner">{addError}</div>}
+            <div className="li-filter-row">
+              <Field label="Email">
+                <Input
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="teammate@example.com"
+                />
+              </Field>
+              <Field label="Role">
+                <Select
+                  value={role}
+                  onChange={(event) => setRole(event.target.value as 'owner' | 'member')}
+                >
+                  <option value="member">Member</option>
+                  <option value="owner">Owner</option>
+                </Select>
+              </Field>
+              <div className="mgr-actions">
+                <Button
+                  variant="ghost"
+                  disabled={addBusy}
+                  onClick={() => {
+                    setEmail('');
+                    setRole('member');
+                    setAddError('');
+                    setShowInvite(false);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={addBusy || !email.trim()}
+                  onClick={() => void addTeammate()}
+                >
+                  {addBusy ? <LoaderCircle className="spin" size={14} /> : <UserPlus size={14} />}
+                  Send invite
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
 
-            {isPending ? (
-              <p className="empty-copy">Reading the member list…</p>
-            ) : members.length === 0 ? (
-              <p className="workspace-empty">No workspace members were returned.</p>
-            ) : (
+        {isOwner && (invitationsLoading || Boolean(invitationsError) || invitations.length > 0) && (
+          <div className="workspace-subsection">
+            <div className="workspace-subsection-heading">
+              <h4>Pending invitations</h4>
+              {!invitationsLoading && invitations.length > 0 && (
+                <span>{invitations.length} pending</span>
+              )}
+            </div>
+            {invitationsError && <div className="error-banner">{invitationsError}</div>}
+            {invitationsLoading ? (
+              <p className="empty-copy">Reading pending invitations…</p>
+            ) : invitations.length > 0 ? (
               <div className="li-table-scroll compact">
                 <table className="li-table">
                   <thead>
                     <tr>
-                      <th>Name</th>
                       <th>Email</th>
                       <th>Role</th>
-                      {isOwner && <th />}
+                      <th>Expires</th>
+                      <th />
                     </tr>
                   </thead>
                   <tbody>
-                    {members.map((member) => (
-                      <tr key={member.id}>
-                        <td>{member.name}</td>
-                        <td>{member.email}</td>
-                        <td>{member.role}</td>
-                        {isOwner && (
-                          <td>
-                            {member.role !== 'owner' && (
-                              <button
-                                className="li-mini-button li-mini-danger"
-                                type="button"
-                                disabled={removeBusy}
-                                onClick={() => setConfirmRemove(member)}
-                              >
-                                <Trash2 size={13} /> Remove
-                              </button>
-                            )}
-                          </td>
-                        )}
+                    {invitations.map((invitation) => (
+                      <tr key={invitation.id}>
+                        <td>{invitation.email}</td>
+                        <td>{invitation.role === 'owner' ? 'Owner' : 'Member'}</td>
+                        <td>{relativeTime(invitation.expiresAt)}</td>
+                        <td>
+                          <div className="li-row-actions">
+                            <button
+                              className="li-mini-button"
+                              type="button"
+                              onClick={() => void copyInviteLink(invitation.id)}
+                            >
+                              <Copy size={13} /> Copy invite link
+                            </button>
+                            <button
+                              className="li-mini-button li-mini-danger"
+                              type="button"
+                              disabled={cancelBusy}
+                              onClick={() => setConfirmCancelInvite(invitation)}
+                            >
+                              <Trash2 size={13} /> Cancel
+                            </button>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
-
-            {isOwner && showInvite && (
-              <div className="workspace-subsection">
-                <div className="workspace-subsection-heading">
-                  <div>
-                    <h4>Invite someone</h4>
-                    <p>They receive workspace access only after accepting the invitation.</p>
-                  </div>
-                </div>
-                {addError && <div className="error-banner">{addError}</div>}
-                <div className="li-filter-row">
-                  <Field label="Email">
-                    <Input
-                      type="email"
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      placeholder="teammate@example.com"
-                    />
-                  </Field>
-                  <Field label="Role">
-                    <Select
-                      value={role}
-                      onChange={(event) => setRole(event.target.value as 'owner' | 'member')}
-                    >
-                      <option value="member">Member</option>
-                      <option value="owner">Owner</option>
-                    </Select>
-                  </Field>
-                  <div className="mgr-actions">
-                    <Button
-                      variant="ghost"
-                      disabled={addBusy}
-                      onClick={() => {
-                        setEmail('');
-                        setRole('member');
-                        setAddError('');
-                        setShowInvite(false);
-                      }}
-                    >
-                      Cancel
-                    </Button>
-                    <Button
-                      variant="primary"
-                      disabled={addBusy || !email.trim()}
-                      onClick={() => void addTeammate()}
-                    >
-                      {addBusy ? (
-                        <LoaderCircle className="spin" size={14} />
-                      ) : (
-                        <UserPlus size={14} />
-                      )}
-                      Send invite
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {isOwner &&
-              (invitationsLoading || Boolean(invitationsError) || invitations.length > 0) && (
-                <div className="workspace-subsection">
-                  <div className="workspace-subsection-heading">
-                    <h4>Pending invitations</h4>
-                    {!invitationsLoading && invitations.length > 0 && (
-                      <span>{invitations.length} pending</span>
-                    )}
-                  </div>
-                  {invitationsError && <div className="error-banner">{invitationsError}</div>}
-                  {invitationsLoading ? (
-                    <p className="empty-copy">Reading pending invitations…</p>
-                  ) : invitations.length > 0 ? (
-                    <div className="li-table-scroll compact">
-                      <table className="li-table">
-                        <thead>
-                          <tr>
-                            <th>Email</th>
-                            <th>Role</th>
-                            <th>Expires</th>
-                            <th />
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {invitations.map((invitation) => (
-                            <tr key={invitation.id}>
-                              <td>{invitation.email}</td>
-                              <td>{invitation.role === 'owner' ? 'Owner' : 'Member'}</td>
-                              <td>{relativeTime(invitation.expiresAt)}</td>
-                              <td>
-                                <div className="li-row-actions">
-                                  <button
-                                    className="li-mini-button"
-                                    type="button"
-                                    onClick={() => void copyInviteLink(invitation.id)}
-                                  >
-                                    <Copy size={13} /> Copy invite link
-                                  </button>
-                                  <button
-                                    className="li-mini-button li-mini-danger"
-                                    type="button"
-                                    disabled={cancelBusy}
-                                    onClick={() => setConfirmCancelInvite(invitation)}
-                                  >
-                                    <Trash2 size={13} /> Cancel
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : null}
-                </div>
-              )}
-          </section>
-        </div>
-      </div>
+            ) : null}
+          </div>
+        )}
+      </Panel>
 
       {confirmRemove && (
         <ConfirmDrawer
@@ -983,7 +970,7 @@ function TeamMembersPanel({
           onConfirm={() => void cancelInvite()}
         />
       )}
-    </div>
+    </>
   );
 }
 

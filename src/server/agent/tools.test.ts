@@ -291,6 +291,46 @@ describe('skill tools', () => {
     }
   });
 
+  it('enforces an Agent-specific skill allow-list in listing and execution', async () => {
+    const now = new Date().toISOString();
+    await db
+      .prepare(
+        `INSERT INTO agents (
+          id,workspace_id,name,purpose,status,is_default,config_json,created_at,updated_at
+        ) VALUES (?,?,?,?,'active',FALSE,?,?,?)`
+      )
+      .run(
+        ACTOR_ID,
+        WORKSPACE_ID,
+        'Restricted Agent',
+        'Use only explicitly assigned skills.',
+        JSON.stringify({ skillIds: [] }),
+        now,
+        now
+      );
+
+    expect(
+      (await listAgentTools(db, WORKSPACE_ID, ACTOR_ID)).some((tool) => tool.name === SCORE_TOOL)
+    ).toBe(false);
+    const listed = (await callAgentTool(ctx(), [], 'trevra_list_skills', {})) as Array<{
+      id: string;
+    }>;
+    expect(listed.some((skill) => skill.id === SCORE_SKILL_ID)).toBe(false);
+    await expect(callAgentTool(ctx(), ['skills:run'], SCORE_TOOL, SCORE_ARGS)).rejects.toThrow(
+      'Skill is not available to this Agent'
+    );
+
+    await db
+      .prepare('UPDATE agents SET config_json=? WHERE workspace_id=? AND id=?')
+      .run(JSON.stringify({ skillIds: [SCORE_SKILL_ID] }), WORKSPACE_ID, ACTOR_ID);
+    expect(
+      (await listAgentTools(db, WORKSPACE_ID, ACTOR_ID)).some((tool) => tool.name === SCORE_TOOL)
+    ).toBe(true);
+    await expect(
+      callAgentTool(ctx(), ['skills:run'], SCORE_TOOL, SCORE_ARGS)
+    ).resolves.toBeTruthy();
+  });
+
   it('carries the skill scope and side-effect annotations', async () => {
     const tools = await listAgentTools(db, WORKSPACE_ID);
     const score = tools.find((tool) => tool.name === SCORE_TOOL);

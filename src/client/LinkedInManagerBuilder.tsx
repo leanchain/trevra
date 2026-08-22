@@ -20,7 +20,7 @@ import {
 import { LinkedInManagerLeadConfig } from './LinkedInManagerLeadConfig';
 import { LinkedInManagerWorkflowConfig } from './LinkedInManagerWorkflowConfig';
 import { errorMessage } from './LinkedInSafety';
-
+import { Select } from './ui/primitives';
 interface Readiness {
   seats: number;
   lists: number;
@@ -280,7 +280,7 @@ function SimplePrepareOutreach({
         {seats.length > 1 && (
           <label>
             LinkedIn account
-            <select
+            <Select
               value={senderKey}
               onChange={(event) => {
                 setSenderKey(event.target.value);
@@ -293,7 +293,7 @@ function SimplePrepareOutreach({
                   {seat.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </label>
         )}
       </div>

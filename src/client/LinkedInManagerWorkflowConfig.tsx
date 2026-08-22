@@ -26,7 +26,7 @@ import {
 import type { LinkedInWorkflow, WorkflowDelay, WorkflowStep } from '../server/linkedin/workflows';
 import { errorMessage } from './LinkedInSafety';
 import { useIsWorkspaceOwner } from './auth-client';
-
+import { Select } from './ui/primitives';
 /* ---------------------------------------------------------------------------
  * The reusable workflow builder.
  *
@@ -1706,14 +1706,14 @@ export function LinkedInManagerWorkflowConfig({
       <label className="li-block-label">
         Template library
         {isOwner ? (
-          <select
+          <Select
             value={scope}
             disabled={Boolean(id)}
             onChange={(event) => setScope(event.target.value as 'workspace' | 'personal')}
           >
             <option value="workspace">Workspace — visible to everyone</option>
             <option value="personal">Personal — visible only to me</option>
-          </select>
+          </Select>
         ) : (
           <span className="li-hint">Personal — visible only to you</span>
         )}
@@ -2061,7 +2061,7 @@ function WorkflowStepCard({
       <div className="li-form-grid li-step-fields">
         <label>
           Action
-          <select
+          <Select
             value={step.action}
             aria-label={`Action for step ${index + 1}`}
             onChange={(event) => onChangeAction(event.target.value as Action)}
@@ -2075,7 +2075,7 @@ function WorkflowStepCard({
                 ))}
               </optgroup>
             ))}
-          </select>
+          </Select>
         </label>
         <div className="li-wf-wait">
           <label>
@@ -2097,13 +2097,13 @@ function WorkflowStepCard({
           </label>
           <label>
             Unit
-            <select
+            <Select
               value={step.delayBefore.unit}
               onChange={(event) => setDelay({ unit: event.target.value as 'hours' | 'days' })}
             >
               <option value="hours">hours</option>
               <option value="days">days</option>
-            </select>
+            </Select>
           </label>
         </div>
         <p className="li-hint li-span-2">
@@ -2133,14 +2133,14 @@ function WorkflowStepCard({
           </label>
           <label>
             SLA unit
-            <select
+            <Select
               disabled={!step.sla}
               value={step.sla?.unit ?? 'hours'}
               onChange={(event) => setSla({ unit: event.target.value as 'hours' | 'days' })}
             >
               <option value="hours">hours</option>
               <option value="days">days</option>
-            </select>
+            </Select>
           </label>
         </div>
         <p className="li-hint li-span-2">
@@ -2375,7 +2375,7 @@ function WorkflowStepCard({
         {step.action === 'message' && (
           <label className="li-span-2">
             Condition
-            <select
+            <Select
               value={step.config.requiresAcceptedConnection ? 'accepted' : 'always'}
               onChange={(event) =>
                 onChange({
@@ -2389,7 +2389,7 @@ function WorkflowStepCard({
             >
               <option value="always">Always send when this step is due</option>
               <option value="accepted">Only if the connection request was accepted</option>
-            </select>
+            </Select>
           </label>
         )}
 
@@ -2487,7 +2487,7 @@ function WorkflowStepCard({
             </label>
             <label>
               Unit
-              <select
+              <Select
                 value={step.config.duration.unit}
                 onChange={(event) =>
                   onChange({
@@ -2503,7 +2503,7 @@ function WorkflowStepCard({
               >
                 <option value="hours">hours</option>
                 <option value="days">days</option>
-              </select>
+              </Select>
             </label>
             <p className="li-hint">
               Passive timer only. Trevra does not poll any condition during this node.
@@ -2515,7 +2515,7 @@ function WorkflowStepCard({
           <div className="li-span-2 li-form-grid">
             <label>
               Condition
-              <select
+              <Select
                 value={step.config.condition.kind}
                 onChange={(event) =>
                   onChange({
@@ -2537,12 +2537,12 @@ function WorkflowStepCard({
                     {label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             {['accepted', 'replied'].includes(step.config.condition.kind) && (
               <label>
                 Result from earlier step
-                <select
+                <Select
                   value={step.config.condition.ofStepId ?? ''}
                   onChange={(event) =>
                     onChange({
@@ -2569,7 +2569,7 @@ function WorkflowStepCard({
                         {candidate.id} · {ACTION_META[candidate.action].label}
                       </option>
                     ))}
-                </select>
+                </Select>
               </label>
             )}
             {step.action === 'monitor' && (
@@ -2600,7 +2600,7 @@ function WorkflowStepCard({
                 </label>
                 <label>
                   Timeout unit
-                  <select
+                  <Select
                     value={step.config.timeout.unit}
                     onChange={(event) =>
                       onChange({
@@ -2617,7 +2617,7 @@ function WorkflowStepCard({
                   >
                     <option value="hours">hours</option>
                     <option value="days">days</option>
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   Poll every (minutes)
@@ -2644,7 +2644,7 @@ function WorkflowStepCard({
             )}
             <label>
               YES →
-              <select
+              <Select
                 value={step.config.yesStepId}
                 onChange={(event) =>
                   onChange({
@@ -2659,11 +2659,11 @@ function WorkflowStepCard({
                     {candidate.id} · {ACTION_META[candidate.action].label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label>
               NO / timeout →
-              <select
+              <Select
                 value={step.config.noStepId}
                 onChange={(event) =>
                   onChange({
@@ -2678,7 +2678,7 @@ function WorkflowStepCard({
                     {candidate.id} · {ACTION_META[candidate.action].label}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <p className="li-hint li-span-2">
               {step.action === 'monitor'
@@ -2691,7 +2691,7 @@ function WorkflowStepCard({
         {step.action === 'end' && (
           <label>
             End outcome
-            <select
+            <Select
               value={step.config.outcome}
               onChange={(event) =>
                 onChange({
@@ -2705,7 +2705,7 @@ function WorkflowStepCard({
               <option value="not_accepted">Not accepted</option>
               <option value="manual">Manual handoff</option>
               <option value="excluded">Excluded</option>
-            </select>
+            </Select>
           </label>
         )}
 
@@ -2768,7 +2768,7 @@ function WorkflowStepCard({
                 </label>
                 <label>
                   Tracking policy
-                  <select
+                  <Select
                     value={step.config.tracking}
                     onChange={(event) =>
                       onChange({
@@ -2783,7 +2783,7 @@ function WorkflowStepCard({
                     <option value="off">Off</option>
                     <option value="opens">Opens</option>
                     <option value="opens_clicks">Opens + clicks</option>
-                  </select>
+                  </Select>
                   <small className="li-acct-range">
                     Trevra does not inject a tracking pixel or rewrite links here. Open/click
                     conditions change only when a configured provider sends a signed event for this
@@ -2925,7 +2925,7 @@ function VariantMediaFields({
     <div className="li-form-grid li-wf-media-fields">
       <label>
         Attachment
-        <select
+        <Select
           value={mediaKind}
           onChange={(event) => {
             const next = event.target.value as 'none' | 'file' | 'gif';
@@ -2937,7 +2937,7 @@ function VariantMediaFields({
           <option value="none">No attachment</option>
           <option value="file">File / image</option>
           <option value="gif">GIF</option>
-        </select>
+        </Select>
       </label>
       {mediaKind !== 'none' && (
         <>

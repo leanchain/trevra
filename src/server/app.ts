@@ -65,7 +65,8 @@ import {
   listPlaybookRuns,
   listWorkspacePlaybooks,
   PlaybookError,
-  startPlaybookRun
+  startPlaybookRun,
+  updatePlaybookApprovalBody
 } from './playbooks/engine.js';
 import { listDomainEvents } from './control-plane/events.js';
 import { listWorkspacePolicies } from './control-plane/policy.js';
@@ -81,8 +82,10 @@ import {
 import { AgentBudgetError, getAgentBudget, setAgentBudget } from './agent/budget.js';
 import {
   AgentPrincipalError,
+  configuredAgentSkillIds,
   createAgent,
   ensureDefaultAgent,
+  getAgent,
   listAgents,
   updateAgent
 } from './agents.js';
@@ -881,7 +884,14 @@ export function createApp(db: Db) {
     requireAgentScope(db, 'skills:read'),
     async (req: AgentRequest, res, next) => {
       try {
-        res.json({ skills: await listWorkspaceSkills(db, req.agent!.workspaceId) });
+        const skills = await listWorkspaceSkills(db, req.agent!.workspaceId);
+        const agent = await getAgent(db, req.agent!.workspaceId, req.agent!.agentId);
+        const allowed = agent ? configuredAgentSkillIds(agent) : null;
+        res.json({
+          skills: skills.filter(
+            (skill) => skill.enabled && (allowed === null || allowed.includes(skill.id))
+          )
+        });
       } catch (error) {
         next(error);
       }
@@ -893,9 +903,15 @@ export function createApp(db: Db) {
     requireAgentScope(db, 'skills:run'),
     async (req: AgentRequest, res, next) => {
       try {
+        const skillId = String(req.params.id);
+        const agent = await getAgent(db, req.agent!.workspaceId, req.agent!.agentId);
+        const allowed = agent ? configuredAgentSkillIds(agent) : null;
+        if (allowed !== null && !allowed.includes(skillId)) {
+          return res.status(403).json({ error: `Skill is not assigned to this Agent: ${skillId}` });
+        }
         const result = await executeWorkspaceSkill(db, {
           workspaceId: req.agent!.workspaceId,
-          skillId: String(req.params.id),
+          skillId,
           payload: req.body ?? {},
           actorType: 'agent',
           actorId: req.agent!.agentId
@@ -1013,6 +1029,15 @@ export function createApp(db: Db) {
   // workspace spending its own minute; nothing below it can spend anyone
   // else's.
   app.use('/api', workspaceLimiter);
+
+  app.get('/api/skills', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ skills: await listWorkspaceSkills(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
 
   // ---------------------------------------------------------------------
   // Generic GTM lead capture management. Reads are workspace-visible; source
@@ -1426,6 +1451,25 @@ export function createApp(db: Db) {
     }
   });
 
+  app.patch(
+    '/api/playbook-runs/:id/steps/:stepId/approval-body',
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = playbookApprovalBodySchema.parse(req.body ?? {});
+        const run = await updatePlaybookApprovalBody(db, {
+          workspaceId: req.auth!.workspaceId,
+          runId: String(req.params.id),
+          stepId: String(req.params.stepId),
+          userId: req.auth!.userId,
+          body: input.body
+        });
+        res.json({ run });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
   app.post(
     '/api/playbook-runs/:id/steps/:stepId/decision',
     async (req: AuthedRequest, res, next) => {
@@ -1688,10 +1732,13 @@ export function createApp(db: Db) {
       const input = z
         .object({
           name: z.string().trim().min(1).max(100),
-          purpose: z.string().trim().min(1).max(500)
+          purpose: z.string().trim().min(1).max(500),
+          instructions: z.string().trim().max(4000).optional(),
+          skillIds: z.array(z.string().trim().min(1).max(200)).max(100).optional()
         })
         .strict()
         .parse(req.body ?? {});
+      await assertAssignableAgentSkills(db, req.auth!.workspaceId, input.skillIds);
       res.status(201).json({
         agent: await createAgent(db, {
           workspaceId: req.auth!.workspaceId,
@@ -1716,15 +1763,22 @@ export function createApp(db: Db) {
           .object({
             name: z.string().trim().min(1).max(100).optional(),
             purpose: z.string().trim().min(1).max(500).optional(),
+            instructions: z.string().trim().max(4000).optional(),
+            skillIds: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
             status: z.enum(['active', 'paused', 'disabled']).optional()
           })
           .strict()
           .refine(
             (patch) =>
-              patch.name !== undefined || patch.purpose !== undefined || patch.status !== undefined,
-            { message: 'Provide name, purpose, status, or any combination' }
+              patch.name !== undefined ||
+              patch.purpose !== undefined ||
+              patch.instructions !== undefined ||
+              patch.skillIds !== undefined ||
+              patch.status !== undefined,
+            { message: 'Provide name, purpose, instructions, skills, status, or any combination' }
           )
           .parse(req.body ?? {});
+        await assertAssignableAgentSkills(db, req.auth!.workspaceId, input.skillIds);
         res.json({
           agent: await updateAgent(db, {
             workspaceId: req.auth!.workspaceId,
@@ -6526,6 +6580,13 @@ const playbookDecisionSchema = z.object({
   comment: z.string().trim().max(1000).optional()
 });
 
+const playbookApprovalBodySchema = z.object({
+  body: z
+    .string()
+    .max(20_000)
+    .refine((value) => value.trim().length > 0, { message: 'Reply cannot be empty' })
+});
+
 const eventFiltersSchema = z.object({
   streamType: z.string().min(1).max(100).optional(),
   streamId: z.string().min(1).max(200).optional(),
@@ -6856,6 +6917,22 @@ function carriesSessionCredential(req: Request): boolean {
  * `POST /api/linkedin/manager/campaigns/:id/pause`: a kill switch only an
  * absent owner can reach is not a kill switch.
  */
+async function assertAssignableAgentSkills(
+  db: Db,
+  workspaceId: string,
+  skillIds: string[] | undefined
+): Promise<void> {
+  if (skillIds === undefined) return;
+  const skills = await listWorkspaceSkills(db, workspaceId);
+  const enabled = new Set(skills.filter((skill) => skill.enabled).map((skill) => skill.id));
+  const unavailable = [...new Set(skillIds)].filter((skillId) => !enabled.has(skillId));
+  if (unavailable.length > 0) {
+    throw new AgentPrincipalError(
+      `These skills are not enabled in this workspace: ${unavailable.join(', ')}`
+    );
+  }
+}
+
 function ownerOnly(act: string): RequestHandler {
   return (req, res, next) => {
     if ((req as AuthedRequest).auth!.role !== 'owner') {

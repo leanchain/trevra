@@ -9,6 +9,8 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks || true",
     "dev": "concurrently -k -n api,worker,web -c auto \"tsx watch src/server/index.ts\" \"PORT=43888 tsx watch src/worker/index.ts\" \"vite --host 0.0.0.0\"",
+    "dev:setup": "node scripts/dev-setup.mjs",
+    "companion:setup": "node packages/trevra-cli/bin/trevra.js linkedin setup",
     "build": "npm run catalog:build && npm run typecheck && vite build && tsc -p tsconfig.server.json",
     "start": "NODE_ENV=production node dist-server/server/index.js",
     "typecheck": "tsc --noEmit",

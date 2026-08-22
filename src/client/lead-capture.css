@@ -131,10 +131,21 @@
 
 .capture-recipes {
   margin-top: 18px;
-  display: grid;
-  gap: 10px;
   padding-top: 16px;
   border-top: 1px solid var(--t-line-soft);
+}
+
+.capture-recipes > summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-strong);
+}
+
+.capture-recipes-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 12px;
 }
 
 .capture-recipes nav {

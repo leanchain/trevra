@@ -10,7 +10,12 @@ import {
 } from '../db.js';
 import { listDomainEvents } from '../control-plane/events.js';
 import { registerSkill } from '../skills/registry.js';
-import { decidePlaybookApproval, getPlaybookRun, startPlaybookRun } from './engine.js';
+import {
+  decidePlaybookApproval,
+  getPlaybookRun,
+  startPlaybookRun,
+  updatePlaybookApprovalBody
+} from './engine.js';
 import { registerPlaybook } from './registry.js';
 
 registerSkill({
@@ -445,6 +450,44 @@ describe('GTM-only prepared action boundary', () => {
         now
       );
   }
+
+  it('lets a human edit the body before approval and pins the action to the edited text', async () => {
+    const database = await openTestDb();
+    const waiting = await startPlaybookRun(database, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      playbookId: 'test.email-action-playbook',
+      payload: {
+        recipient: 'buyer@example.com',
+        subject: 'Audit result',
+        body: 'Original body.'
+      },
+      actorType: 'user',
+      actorId: DEMO_USER_ID
+    });
+    const before = waiting.steps.find((step) => step.stepId === 'approve-email');
+
+    const edited = await updatePlaybookApprovalBody(database, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      runId: waiting.id,
+      stepId: 'approve-email',
+      userId: DEMO_USER_ID,
+      body: 'Edited by the human before approval.'
+    });
+    const approval = edited.steps.find((step) => step.stepId === 'approve-email');
+    expect(approval?.input).toMatchObject({ body: 'Edited by the human before approval.' });
+    expect(approval?.approvalPayloadHash).not.toBe(before?.approvalPayloadHash);
+
+    const completed = await decidePlaybookApproval(database, {
+      workspaceId: DEMO_WORKSPACE_ID,
+      runId: waiting.id,
+      stepId: 'approve-email',
+      userId: DEMO_USER_ID,
+      decision: 'approve'
+    });
+    expect(completed.steps.find((step) => step.stepId === 'send-email')?.input).toMatchObject({
+      body: 'Edited by the human before approval.'
+    });
+  });
 
   async function runEmail(database: Db) {
     const run = await startPlaybookRun(database, {

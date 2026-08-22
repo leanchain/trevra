@@ -34,7 +34,7 @@
 import { dynamicTool, generateText, isStepCount, jsonSchema } from 'ai';
 import type { AgentScope } from '../agent-access.js';
 import type { Db } from '../db.js';
-import { resolveActiveAgent } from '../agents.js';
+import { agentInstructions, resolveActiveAgent } from '../agents.js';
 import { AgentBudgetError, assertAgentBudgetAvailable, recordAgentModelCall } from './budget.js';
 import {
   appendAgentRunStep,
@@ -105,6 +105,17 @@ export const HOSTED_AGENT_SYSTEM_PROMPT = [
   '- Finish with a short plain-language summary of what you found and what is now waiting for a human.'
 ].join('\n');
 
+function systemPromptForAgent(agent: Awaited<ReturnType<typeof resolveActiveAgent>>): string {
+  const instructions = agentInstructions(agent);
+  return [
+    HOSTED_AGENT_SYSTEM_PROMPT,
+    '',
+    `Your Agent identity is “${agent.name}”.`,
+    `Your purpose in this workspace: ${agent.purpose}`,
+    ...(instructions ? ['', 'Operator instructions for this Agent:', instructions] : [])
+  ].join('\n');
+}
+
 /**
  * Run the hosted agent once, and return the finished run.
  *
@@ -121,6 +132,7 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
   await assertAgentBudgetAvailable(db, input.workspaceId);
 
   const maxSteps = clampSteps(input.maxSteps);
+  const systemPrompt = systemPromptForAgent(agent);
 
   // 2. The self-hosted CLI backend, if the OPERATOR configured one globally.
   //
@@ -146,7 +158,7 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
       trigger: input.trigger,
       maxSteps,
       scopes: HOSTED_AGENT_SCOPES,
-      systemPrompt: HOSTED_AGENT_SYSTEM_PROMPT
+      systemPrompt
     });
   }
 
@@ -170,7 +182,7 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
       trigger: input.trigger,
       maxSteps,
       scopes: HOSTED_AGENT_SCOPES,
-      systemPrompt: HOSTED_AGENT_SYSTEM_PROMPT
+      systemPrompt
     });
   }
 
@@ -194,7 +206,7 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
   // as an error rather than as an output that happens to mention one.
   const toolErrors = new Map<string, string>();
 
-  const definitions = await listAgentTools(db, input.workspaceId);
+  const definitions = await listAgentTools(db, input.workspaceId, agent.id);
   const tools = Object.fromEntries(
     definitions.map((definition) => [
       definition.name,
@@ -249,7 +261,7 @@ export async function runHostedAgent(db: Db, input: HostedAgentRunInput): Promis
   try {
     const result = await generateText({
       model: resolved.model,
-      system: HOSTED_AGENT_SYSTEM_PROMPT,
+      system: systemPrompt,
       prompt: input.goal,
       tools,
       stopWhen: [

@@ -25,6 +25,8 @@ The job uses a dedicated connection with no statement timeout — a data-rewriti
 
 This keeps Nango infrastructure failures and schema changes outside Trevra's commercial ledger. Redis is also isolated to Nango.
 
+Run `npm run dev:setup` once before the first local stack start. It creates `.env.dev` when needed, generates the local Trevra/Companion and Nango encryption keys, and installs/registers the per-user Companion without pairing it. The normal `docker compose ... up` and `npm run dev` commands remain non-mutating and do not reinstall OS services.
+
 Persistent Docker volumes:
 
 - `trevra-postgres-data`;
