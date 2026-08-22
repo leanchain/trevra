@@ -57,6 +57,7 @@ import {
   previewWorkspaceErasure,
   revokeAgentToken,
   saveAgentBudget,
+  saveAgentSchedule,
   saveAgentCliConfig,
   saveAgentCliToken,
   saveAgentKey,
@@ -1260,6 +1261,15 @@ function agentSetupMessage(error: unknown, fallback: string): string {
 const andList = (parts: string[]) =>
   parts.length <= 1 ? (parts[0] ?? '') : `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}`;
 
+const DEFAULT_AUTOPILOT_GOAL =
+  'Review current priorities, conversations, signals, and anything waiting for a decision, then prepare the GTM work that is worth a human looking at.';
+const AUTOPILOT_CADENCES = [
+  { minutes: 60, label: 'Every hour' },
+  { minutes: 240, label: 'Every 4 hours' },
+  { minutes: 720, label: 'Every 12 hours' },
+  { minutes: 1440, label: 'Every day' }
+] as const;
+
 /**
  * Trevra's agent, running on the operator's own key.
  *
@@ -1309,6 +1319,8 @@ function HostedAgentPanel({
   const [replacingKey, setReplacingKey] = useState(false);
   const [capDollars, setCapDollars] = useState('20');
   const [goal, setGoal] = useState('');
+  const [scheduleGoal, setScheduleGoal] = useState(DEFAULT_AUTOPILOT_GOAL);
+  const [scheduleInterval, setScheduleInterval] = useState(1440);
   const [confirmRemoveKey, setConfirmRemoveKey] = useState(false);
   // The third way to run the hosted agent: a workspace's own Claude/Codex
   // subscription (docs/cli-agent-and-hosted.md). Mirrors the BYOK state above.
@@ -1337,6 +1349,8 @@ function HostedAgentPanel({
                 nextAgents.find((agent) => agent.status === 'active')?.id ??
                 '')
         );
+        setScheduleGoal(next.schedule?.goal ?? DEFAULT_AUTOPILOT_GOAL);
+        setScheduleInterval(next.schedule?.intervalMinutes ?? 1440);
         if (next.cli.config) {
           setCliKind(next.cli.config.cli);
           setCliModel(next.cli.config.model);
@@ -1418,6 +1432,49 @@ function HostedAgentPanel({
       );
     } catch (error) {
       setProblem(agentSetupMessage(error, 'Could not change the spending switch'));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const setAutopilot = async (enabled: boolean) => {
+    if (!scheduleGoal.trim() || !agentId) return;
+    setBusy('schedule-toggle');
+    setProblem('');
+    try {
+      const schedule = await saveAgentSchedule({
+        enabled,
+        goal: scheduleGoal.trim(),
+        intervalMinutes: scheduleInterval,
+        agentId
+      });
+      setSetup((current) => current && { ...current, schedule });
+      setToast(
+        enabled
+          ? 'GTM Autopilot is on. Trevra will keep preparing the next work on this cadence.'
+          : 'GTM Autopilot is off. Scheduled agent runs will not start.'
+      );
+    } catch (error) {
+      setProblem(agentSetupMessage(error, 'Could not change GTM Autopilot'));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const saveAutopilot = async () => {
+    if (!scheduleGoal.trim() || !agentId) return;
+    setBusy('schedule-save');
+    setProblem('');
+    try {
+      const schedule = await saveAgentSchedule({
+        goal: scheduleGoal.trim(),
+        intervalMinutes: scheduleInterval,
+        agentId
+      });
+      setSetup((current) => current && { ...current, schedule });
+      setToast('GTM Autopilot instructions saved.');
+    } catch (error) {
+      setProblem(agentSetupMessage(error, 'Could not save GTM Autopilot'));
     } finally {
       setBusy('');
     }
@@ -1627,6 +1684,12 @@ function HostedAgentPanel({
               : !goal.trim()
                 ? 'Write what it should work on first.'
                 : null;
+
+  const scheduleDirty =
+    !setup.schedule ||
+    setup.schedule.goal !== scheduleGoal.trim() ||
+    setup.schedule.intervalMinutes !== scheduleInterval ||
+    setup.schedule.agentId !== agentId;
 
   const goalField = (label: string) => (
     <label>
@@ -1912,6 +1975,96 @@ function HostedAgentPanel({
           {busy === 'save' ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Save{' '}
           {pendingLabels.length > 1 ? 'these changes' : 'this change'}
         </button>
+      </div>
+
+      <div className="byok-block">
+        <div className="byok-block-head">
+          <div>
+            <h4 aria-level={3}>
+              <Repeat size={15} /> GTM Autopilot
+            </h4>
+            <p>
+              Like auto-research for the whole GTM loop: on a cadence, read fresh research, signals
+              and replies, then prepare the next work worth your attention. External actions still
+              stop at your approval boundary.
+            </p>
+          </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={Boolean(setup.schedule?.enabled)}
+              disabled={busy === 'schedule-toggle' || !scheduleGoal.trim() || !agentId}
+              aria-label="GTM Autopilot"
+              onChange={(event) => void setAutopilot(event.target.checked)}
+            />
+            <span />
+          </label>
+        </div>
+        <div className="byok-fields byok-fields-autopilot">
+          <label>
+            Agent
+            <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+              {agents.map((agent) => (
+                <option key={agent.id} value={agent.id} disabled={agent.status !== 'active'}>
+                  {agent.name}
+                  {agent.status === 'active' ? '' : ` · ${agent.status}`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Standing GTM goal
+            <textarea
+              rows={3}
+              value={scheduleGoal}
+              onChange={(event) => setScheduleGoal(event.target.value)}
+            />
+          </label>
+          <label>
+            Cadence
+            <select
+              value={scheduleInterval}
+              onChange={(event) => setScheduleInterval(Number(event.target.value))}
+            >
+              {AUTOPILOT_CADENCES.map((cadence) => (
+                <option key={cadence.minutes} value={cadence.minutes}>
+                  {cadence.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {setup.schedule && (
+          <p className="byok-schedule-status">
+            {setup.schedule.enabled ? 'Running' : 'Paused'} · last run{' '}
+            {setup.schedule.lastRunAt
+              ? new Date(setup.schedule.lastRunAt).toLocaleString()
+              : 'never'}{' '}
+            · next {new Date(setup.schedule.nextRunAt ?? Date.now()).toLocaleString()}
+          </p>
+        )}
+        {!budget.enabled && (
+          <p className="byok-schedule-status">
+            Autopilot can be configured while spending is off, but scheduled model runs will not
+            start until spending is enabled.
+          </p>
+        )}
+        <div className="panel-footer">
+          <button
+            className="secondary-button"
+            disabled={
+              !scheduleDirty || !scheduleGoal.trim() || !agentId || busy === 'schedule-save'
+            }
+            onClick={() => void saveAutopilot()}
+          >
+            {busy === 'schedule-save' ? (
+              <LoaderCircle className="spin" size={15} />
+            ) : (
+              <Check size={15} />
+            )}{' '}
+            Save autopilot
+          </button>
+        </div>
       </div>
 
       <div className="byok-block">

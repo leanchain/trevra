@@ -4736,6 +4736,16 @@ button:disabled {
 .byok-fields-schedule {
   grid-template-columns: 1fr minmax(0, 200px);
 }
+.byok-fields-autopilot {
+  grid-template-columns: minmax(120px, 0.7fr) minmax(260px, 2fr) minmax(140px, 0.8fr);
+  max-width: 880px;
+}
+.byok-schedule-status {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.5;
+}
 .byok-amount {
   display: flex;
   align-items: center;
@@ -4835,13 +4845,15 @@ button:disabled {
   cursor: not-allowed;
 }
 @media (max-width: 1100px) {
-  .byok-fields {
+  .byok-fields,
+  .byok-fields-autopilot {
     grid-template-columns: 1fr 1fr;
   }
 }
 @media (max-width: 720px) {
   .byok-fields,
-  .byok-fields-schedule {
+  .byok-fields-schedule,
+  .byok-fields-autopilot {
     grid-template-columns: 1fr;
   }
   .byok-key-stored,

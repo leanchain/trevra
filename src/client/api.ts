@@ -10,6 +10,7 @@ import type {
   AgentModelConfig,
   AgentRun,
   AgentRunSummary,
+  AgentSchedule,
   AgentScope,
   AgentSetup,
   AgentTokenSummary,
@@ -558,6 +559,19 @@ export async function saveAgentBudget(input: {
     body: JSON.stringify(input)
   });
   return result.budget;
+}
+
+export async function saveAgentSchedule(input: {
+  enabled?: boolean;
+  goal?: string;
+  intervalMinutes?: number;
+  agentId?: string;
+}): Promise<AgentSchedule> {
+  const result = await request<{ schedule: AgentSchedule }>('/api/agent-setup/schedule', {
+    method: 'PUT',
+    body: JSON.stringify(input)
+  });
+  return result.schedule;
 }
 
 /**
