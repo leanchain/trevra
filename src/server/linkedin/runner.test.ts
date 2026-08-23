@@ -312,6 +312,122 @@ describe('managed campaign runner', () => {
     expect(plannedInvites.every((action) => action.status === 'planned')).toBe(true);
   });
 
+  it('repairs a progressed legacy member whose admission metadata is missing and resumes the next step', async () => {
+    const workflow = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Legacy admission recovery',
+        steps: [
+          {
+            id: 'view',
+            action: 'profile_view',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          },
+          {
+            id: 'invite',
+            action: 'connection_request',
+            delayBefore: { amount: 1, unit: 'days' },
+            config: { message: 'Hi {{first_name}}' }
+          }
+        ]
+      },
+      NOW
+    );
+    const listId = await seededList('Legacy admission lead', [
+      { first: 'Lena', last: 'Legacy', company: 'Acme', slug: 'lena-legacy-admission' }
+    ]);
+    const campaignId = await runningCampaign(listId, workflow.id, 'Legacy admission campaign');
+
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(1);
+    const view = (await actions()).find((action) => action.kind === 'profile_view');
+    expect(view?.campaign_member_id).toBeTruthy();
+    await settleAction(view as ActionRow, new Date(view?.planned_for as string));
+
+    // Recreate the production upgrade state: the member has objectively
+    // progressed to step 2, but migration 086's newer admission metadata is
+    // absent. Before the repair the due-member query ignored this row forever.
+    await db
+      .prepare(
+        `UPDATE linkedin_campaign_members
+         SET admitted_at=NULL,wave_id=NULL,assigned_seat_key=NULL,
+             workflow_snapshot_json=NULL,workflow_version=NULL
+         WHERE workspace_id=? AND id=?`
+      )
+      .run(WORKSPACE, view?.campaign_member_id);
+    await db
+      .prepare('DELETE FROM linkedin_campaign_waves WHERE workspace_id=? AND campaign_id=?')
+      .run(WORKSPACE, campaignId);
+
+    const resumed = await runManagedCampaigns(db, WORKSPACE, at(DAY + HOUR));
+    const invite = (await actions()).find(
+      (action) => action.kind === 'invite' && action.campaign_member_id === view?.campaign_member_id
+    );
+    expect(resumed.actionsPlanned).toBeGreaterThanOrEqual(1);
+    expect(invite?.workflow_step_id).toBe('invite');
+    expect(invite?.status).toBe('planned');
+
+    const repaired = await db
+      .prepare(
+        `SELECT admitted_at,wave_id,assigned_seat_key,workflow_snapshot_json
+         FROM linkedin_campaign_members WHERE workspace_id=? AND id=?`
+      )
+      .get<{
+        admitted_at: Date | string | null;
+        wave_id: string | null;
+        assigned_seat_key: string | null;
+        workflow_snapshot_json: unknown;
+      }>(WORKSPACE, view?.campaign_member_id);
+    expect(repaired?.admitted_at).not.toBeNull();
+    expect(repaired?.wave_id).toMatch(/^liwave_legacy_/);
+    expect(repaired?.assigned_seat_key).toBe('owner');
+    expect(repaired?.workflow_snapshot_json).toBeTruthy();
+  });
+
+  it('returns an untouched legacy active member to pending admission instead of declaring it already admitted', async () => {
+    const workflow = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Legacy untouched recovery',
+        steps: [
+          {
+            id: 'invite',
+            action: 'connection_request',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          }
+        ]
+      },
+      NOW
+    );
+    const listId = await seededList('Legacy untouched lead', [
+      { first: 'Uma', last: 'Untouched', company: 'Acme', slug: 'uma-legacy-untouched' }
+    ]);
+    const campaignId = await runningCampaign(listId, workflow.id, 'Legacy untouched campaign');
+    await db
+      .prepare(
+        `UPDATE linkedin_campaign_members
+         SET status='active',step_index=0,current_step_id='invite',admitted_at=NULL,
+             wave_id=NULL,assigned_seat_key=NULL,workflow_snapshot_json=NULL,workflow_version=NULL
+         WHERE workspace_id=? AND campaign_id=?`
+      )
+      .run(WORKSPACE, campaignId);
+
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBeGreaterThanOrEqual(
+      1
+    );
+    const waves = await db
+      .prepare(
+        'SELECT ordinal FROM linkedin_campaign_waves WHERE workspace_id=? AND campaign_id=? ORDER BY ordinal'
+      )
+      .all<{ ordinal: number }>(WORKSPACE, campaignId);
+    // The row was put back behind the admission boundary and admitted normally,
+    // so it belongs to wave 1. Ordinal 0 is reserved for proven legacy progress.
+    expect(waves.map((wave) => Number(wave.ordinal))).toEqual([1]);
+  });
+
   it('shares one sender ceiling across competing campaigns instead of recreating it per campaign', async () => {
     await upsertSeat(db, WORKSPACE, { dailyProfileViewLimit: 10, safetyBandOverride: true }, NOW);
     await db

@@ -946,6 +946,112 @@ export function allocateCampaignCapacity(
   return out;
 }
 
+const LEGACY_SEQUENCE_EVIDENCE_SQL = `(
+  m.step_index > 0
+  OR m.last_action_id IS NOT NULL
+  OR COALESCE(m.completed_step_ids,'[]'::jsonb) <> '[]'::jsonb
+  OR EXISTS (
+    SELECT 1 FROM linkedin_actions legacy_action
+    WHERE legacy_action.workspace_id=m.workspace_id AND legacy_action.campaign_member_id=m.id
+  )
+  OR EXISTS (
+    SELECT 1 FROM linkedin_campaign_channel_actions legacy_channel
+    WHERE legacy_channel.workspace_id=m.workspace_id AND legacy_channel.member_id=m.id
+  )
+  OR EXISTS (
+    SELECT 1 FROM linkedin_manual_tasks legacy_task
+    WHERE legacy_task.workspace_id=m.workspace_id AND legacy_task.member_id=m.id
+  )
+)`;
+
+/**
+ * Heal legacy campaign members that predate capacity-safe admission waves.
+ * Progress we can prove is preserved in an ordinal-0 legacy wave. Untouched
+ * active rows return to pending so current capacity decides when they enter.
+ */
+async function repairLegacyCampaignAdmissionState(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  now: Date
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx
+      .prepare(
+        `INSERT INTO linkedin_campaign_waves
+           (id,workspace_id,campaign_id,ordinal,admitted_at,member_count,admission_reason,capacity_snapshot,created_at)
+         SELECT 'liwave_legacy_' || SUBSTRING(MD5(m.workspace_id || ':' || m.campaign_id),1,16),
+                m.workspace_id,m.campaign_id,0,
+                MIN(COALESCE(
+                  (SELECT MIN(COALESCE(a.recorded_at,a.planned_for,a.created_at))
+                   FROM linkedin_actions a
+                   WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id),
+                  m.created_at
+                )),
+                COUNT(*)::int,
+                'Recovered in-flight members created before capacity-safe campaign waves.',
+                '{}'::jsonb,?::timestamptz
+         FROM linkedin_campaign_members m
+         WHERE m.workspace_id=? AND m.campaign_id=? AND m.admitted_at IS NULL
+           AND (
+             m.status IN ('waiting','manual')
+             OR (m.status='active' AND ${LEGACY_SEQUENCE_EVIDENCE_SQL})
+             OR (m.status='paused' AND (
+               m.paused_from_status IN ('waiting','manual')
+               OR (m.paused_from_status='active' AND ${LEGACY_SEQUENCE_EVIDENCE_SQL})
+             ))
+           )
+         GROUP BY m.workspace_id,m.campaign_id
+         ON CONFLICT (campaign_id,ordinal) DO NOTHING`
+      )
+      .run(now.toISOString(), workspaceId, campaignId);
+
+    await tx
+      .prepare(
+        `UPDATE linkedin_campaign_members m
+         SET admitted_at=COALESCE(
+               (SELECT MIN(COALESCE(a.recorded_at,a.planned_for,a.created_at))
+                FROM linkedin_actions a
+                WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id),
+               m.created_at
+             ),
+             wave_id=COALESCE(m.wave_id,w.id),
+             assigned_seat_key=COALESCE(m.assigned_seat_key,c.seat_key),
+             workflow_snapshot_json=COALESCE(m.workflow_snapshot_json,c.sequence_json),
+             workflow_version=COALESCE(
+               m.workflow_version,
+               CASE WHEN (c.sequence_json->>'workflowVersion') ~ '^[0-9]+$'
+                    THEN (c.sequence_json->>'workflowVersion')::integer ELSE NULL END
+             )
+         FROM linkedin_campaigns c
+         LEFT JOIN linkedin_campaign_waves w
+           ON w.workspace_id=c.workspace_id AND w.campaign_id=c.id AND w.ordinal=0
+         WHERE m.workspace_id=? AND m.campaign_id=? AND m.admitted_at IS NULL
+           AND c.workspace_id=m.workspace_id AND c.id=m.campaign_id
+           AND (
+             m.status IN ('waiting','manual')
+             OR (m.status='active' AND ${LEGACY_SEQUENCE_EVIDENCE_SQL})
+             OR (m.status='paused' AND (
+               m.paused_from_status IN ('waiting','manual')
+               OR (m.paused_from_status='active' AND ${LEGACY_SEQUENCE_EVIDENCE_SQL})
+             ))
+           )`
+      )
+      .run(workspaceId, campaignId);
+
+    await tx
+      .prepare(
+        `UPDATE linkedin_campaign_members m
+         SET status='pending',current_step_id=NULL,next_eligible_at=NULL,
+             assigned_seat_key=NULL,workflow_snapshot_json=NULL,workflow_version=NULL,wave_id=NULL
+         WHERE m.workspace_id=? AND m.campaign_id=? AND m.admitted_at IS NULL
+           AND m.status='active' AND m.step_index=0
+           AND NOT ${LEGACY_SEQUENCE_EVIDENCE_SQL}`
+      )
+      .run(workspaceId, campaignId);
+  });
+}
+
 async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Promise<RunnerResult> {
   const result: RunnerResult = {
     campaignsTicked: 0,
@@ -1000,6 +1106,7 @@ async function planManagedCampaigns(db: Db, workspaceId: string, now: Date): Pro
         ? snapshot
         : ((await getWorkflow(db, workspaceId, campaign.workflow_id))?.steps ?? []);
     if (steps.length === 0) continue;
+    await repairLegacyCampaignAdmissionState(db, workspaceId, campaign.id, now);
     cachedSteps.set(campaign.id, steps);
 
     const live = await db
