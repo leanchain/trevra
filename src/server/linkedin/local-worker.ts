@@ -1152,9 +1152,42 @@ export async function runLinkedInLocalBatch(
       result.haltReason = current;
       break;
     }
-
     const action = await store.claimNextDueAction(batchId, now(), deferred);
     if (!action) break;
+
+    // A managed queue row can become obsolete after it was planned: the member can
+    // reply, finish, pause, or move to another workflow node. That is queue
+    // STATE, not send SAFETY. Resolve it before branch/pacing/business-hours so
+    // an obsolete row cannot be kept alive by a gate that only matters if we
+    // might actually execute it. The same state is checked again immediately
+    // before the driver below to catch races that happen during the gap/gate.
+    let claimedExecutionState: 'execute' | 'defer' | 'retire';
+    try {
+      claimedExecutionState = await store.actionExecutionState(action);
+    } catch (cause) {
+      await store.releaseClaim(action.id, null);
+      result.blocked += 1;
+      result.halted = true;
+      result.haltReason = `The campaign/member state for action ${action.id} could not be evaluated: ${cause instanceof Error ? cause.message : String(cause)}`;
+      break;
+    }
+    if (claimedExecutionState === 'defer') {
+      await store.releaseClaim(action.id, null);
+      deferred.push(action.id);
+      result.branchPending += 1;
+      log(`LinkedIn local worker deferred action ${action.id}: campaign/member is paused.`);
+      continue;
+    }
+    if (claimedExecutionState === 'retire') {
+      await store.settleBranchSkipped(
+        action.id,
+        'The campaign member replied, ended, or moved to another workflow node before execution.',
+        now()
+      );
+      result.branchSkipped += 1;
+      log(`LinkedIn local worker retired stale action ${action.id} before safety evaluation.`);
+      continue;
+    }
 
     /**
      * THE BRANCH, EVALUATED IN THE LOOP AND NOT IN THE CLAIM.

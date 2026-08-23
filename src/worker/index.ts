@@ -259,9 +259,14 @@ async function linkedinCycle(): Promise<void> {
 await cycle();
 const timer = setInterval(() => void cycle(), runtime.automationIntervalMs);
 timer.unref();
+// Run the LinkedIn cycle once immediately after boot as well as on the cadence.
+// Do not await it: one browser batch can legitimately run for many minutes, and
+// worker startup/health plus the other timers must not wait behind real browser
+// pacing. `linkedinRunning` makes the interval tick a no-op while this pass is
+// still active, so this cannot create overlapping LinkedIn cycles.
+void linkedinCycle();
 const linkedinTimer = setInterval(() => void linkedinCycle(), runtime.automationIntervalMs);
 linkedinTimer.unref();
-
 // Presence alerting is operational monitoring, not business automation. It
 // must not inherit a deployment's five-minute automation cadence, otherwise a
 // five-minute disconnect grace can become almost ten minutes before the first

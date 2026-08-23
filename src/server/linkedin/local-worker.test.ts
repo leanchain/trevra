@@ -860,11 +860,9 @@ describe('the safety gate runs per action', () => {
     // Three actions, three verdicts. A batch-level check would show one.
     expect(evaluated).toEqual(['lact_1', 'lact_2', 'lact_3']);
     expect(calls).toHaveLength(3);
-    expect(result.executed).toBe(3);
     expect(harness.sent).toEqual(['lact_1', 'lact_2', 'lact_3']);
   });
-
-  it('re-checks campaign/member state after the safety gate and retires a stale claim before the driver', async () => {
+  it('retires a stale campaign row before the safety gate can keep it alive', async () => {
     const harness = fakeStore(threeActions, {
       executionState: async (candidate) => (candidate.id === 'lact_1' ? 'retire' : 'execute')
     });
@@ -882,7 +880,44 @@ describe('the safety gate runs per action', () => {
       }
     });
 
+    // The stale row never reaches pacing/business-hours at all. This is the
+    // production regression where an obsolete 09:01 row was repeatedly refused
+    // by today's 09:18 day-shape window and therefore never reached retirement.
+    expect(evaluated).toEqual(['lact_2', 'lact_3']);
+    expect(calls.map((entry) => entry.target)).toEqual([
+      'https://www.linkedin.com/in/b/',
+      'https://www.linkedin.com/in/c/'
+    ]);
+    expect(harness.branchSkipped.map((entry) => entry.id)).toEqual(['lact_1']);
+    expect(result.branchSkipped).toBe(1);
+    expect(result.executed).toBe(2);
+  });
+
+  it('re-checks campaign/member state after the safety gate to catch a last-moment race', async () => {
+    const stateReads = new Map<string, number>();
+    const harness = fakeStore(threeActions, {
+      executionState: async (candidate) => {
+        const reads = (stateReads.get(candidate.id) ?? 0) + 1;
+        stateReads.set(candidate.id, reads);
+        return candidate.id === 'lact_1' && reads >= 2 ? 'retire' : 'execute';
+      }
+    });
+    const { driver, calls } = fakeDriver();
+    const evaluated: string[] = [];
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async (candidate) => {
+        evaluated.push(candidate.id);
+        return verdict();
+      }
+    });
+
     expect(evaluated).toEqual(['lact_1', 'lact_2', 'lact_3']);
+    expect(stateReads.get('lact_1')).toBe(2);
     expect(calls.map((entry) => entry.target)).toEqual([
       'https://www.linkedin.com/in/b/',
       'https://www.linkedin.com/in/c/'
