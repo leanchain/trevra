@@ -12,7 +12,7 @@ x-trevra-common: &trevra-common
   environment:
     NODE_ENV: production
     TREVRA_DEPLOYMENT_MODE: hosted
-    DATABASE_AUTO_MIGRATE: "false"
+    DATABASE_AUTO_MIGRATE: 'false'
   read_only: true
   tmpfs:
     - /tmp:size=64m,mode=1777
@@ -25,16 +25,16 @@ x-trevra-common: &trevra-common
     driver: json-file
     options:
       max-size: 10m
-      max-file: "3"
+      max-file: '3'
 
 services:
   migrate:
     <<: *trevra-common
-    command: ["node", "dist-server/server/migrate-job.js"]
+    command: ['node', 'dist-server/server/migrate-job.js']
     environment:
       NODE_ENV: production
       TREVRA_DEPLOYMENT_MODE: hosted
-      DATABASE_AUTO_MIGRATE: "false"
+      DATABASE_AUTO_MIGRATE: 'false'
       PORT: 8082
       NODE_OPTIONS: --max-old-space-size=384
     healthcheck:
@@ -43,14 +43,14 @@ services:
     # deploy-micro.sh pauses the old worker first, so this larger one-shot ceiling
     # still fits the 1 GB app micro without competing with two worker processes.
     mem_limit: 480m
-    restart: "no"
+    restart: 'no'
 
   trevra:
     <<: *trevra-common
     environment:
       NODE_ENV: production
       TREVRA_DEPLOYMENT_MODE: hosted
-      DATABASE_AUTO_MIGRATE: "false"
+      DATABASE_AUTO_MIGRATE: 'false'
       # The API owns the public companion WebSocket; both API and worker attach
       # back to it over the private Compose network. No browser/CDP port is ever
       # exposed on the member laptop or the Oracle VM.
@@ -58,7 +58,7 @@ services:
       PORT: 8080
       NODE_OPTIONS: --max-old-space-size=320
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/api/health']
       interval: 30s
       timeout: 5s
       start_period: 40s
@@ -72,31 +72,36 @@ services:
 
   worker:
     <<: *trevra-common
-    command: ["node", "dist-server/worker/index.js"]
+    command: ['node', 'dist-server/worker/index.js']
     environment:
       NODE_ENV: production
       TREVRA_DEPLOYMENT_MODE: hosted
-      DATABASE_AUTO_MIGRATE: "false"
+      DATABASE_AUTO_MIGRATE: 'false'
       TREVRA_COMPANION_RELAY_URL: ws://trevra:8080
       PORT: 8081
       NODE_OPTIONS: --max-old-space-size=256
       AUTOMATION_INTERVAL_MS: ${AUTOMATION_INTERVAL_MS:-300000}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8081/health']
       interval: 30s
       timeout: 5s
       start_period: 40s
       retries: 3
+    # The worker's boot cycle may immediately attach to Companion. Waiting only
+    # for migrations let it race the API/relay container and turn a healthy
+    # paired computer into ECONNREFUSED until the next five-minute tick.
     depends_on:
       migrate:
         condition: service_completed_successfully
+      trevra:
+        condition: service_healthy
     mem_limit: 320m
     restart: unless-stopped
     stop_grace_period: 30s
 
   cloudflared:
     image: cloudflare/cloudflared@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
-    command: ["tunnel", "--no-autoupdate", "run"]
+    command: ['tunnel', '--no-autoupdate', 'run']
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
@@ -108,5 +113,5 @@ services:
       driver: json-file
       options:
         max-size: 10m
-        max-file: "3"
+        max-file: '3'
     restart: unless-stopped

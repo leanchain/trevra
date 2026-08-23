@@ -12,7 +12,7 @@ x-trevra-common: &trevra-common
   environment:
     NODE_ENV: production
     TREVRA_DEPLOYMENT_MODE: hosted
-    DATABASE_AUTO_MIGRATE: "false"
+    DATABASE_AUTO_MIGRATE: 'false'
     DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
   read_only: true
   tmpfs:
@@ -26,7 +26,7 @@ x-trevra-common: &trevra-common
     driver: json-file
     options:
       max-size: 10m
-      max-file: "3"
+      max-file: '3'
 
 services:
   postgres:
@@ -38,7 +38,7 @@ services:
     volumes:
       - /mnt/data/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trevra -d trevra"]
+      test: ['CMD-SHELL', 'pg_isready -U trevra -d trevra']
       interval: 5s
       timeout: 5s
       retries: 20
@@ -46,11 +46,11 @@ services:
 
   migrate:
     <<: *trevra-common
-    command: ["node", "dist-server/server/migrate-job.js"]
+    command: ['node', 'dist-server/server/migrate-job.js']
     environment:
       NODE_ENV: production
       TREVRA_DEPLOYMENT_MODE: hosted
-      DATABASE_AUTO_MIGRATE: "false"
+      DATABASE_AUTO_MIGRATE: 'false'
       PORT: 8082
       DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
     healthcheck:
@@ -58,14 +58,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    restart: "no"
+    restart: 'no'
 
   trevra:
     <<: *trevra-common
     environment:
       NODE_ENV: production
       TREVRA_DEPLOYMENT_MODE: hosted
-      DATABASE_AUTO_MIGRATE: "false"
+      DATABASE_AUTO_MIGRATE: 'false'
       TREVRA_COMPANION_RELAY_URL: ws://trevra:8080
       PORT: 8080
       DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
@@ -73,7 +73,7 @@ services:
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/health"]
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8080/api/health']
       interval: 30s
       timeout: 5s
       start_period: 30s
@@ -83,29 +83,34 @@ services:
 
   worker:
     <<: *trevra-common
-    command: ["node", "dist-server/worker/index.js"]
+    command: ['node', 'dist-server/worker/index.js']
     environment:
       NODE_ENV: production
       TREVRA_DEPLOYMENT_MODE: hosted
-      DATABASE_AUTO_MIGRATE: "false"
+      DATABASE_AUTO_MIGRATE: 'false'
       TREVRA_COMPANION_RELAY_URL: ws://trevra:8080
       PORT: 8081
       DATABASE_URL: postgresql://trevra:${TREVRA_DB_PASSWORD:?Set TREVRA_DB_PASSWORD}@postgres:5432/trevra
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/health"]
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:8081/health']
       interval: 30s
       timeout: 5s
       start_period: 40s
       retries: 3
+    # The worker's boot cycle may immediately attach to Companion. Start it only
+    # after the API-owned relay is accepting connections so boot cannot strand a
+    # due LinkedIn queue behind a transient ECONNREFUSED.
     depends_on:
       migrate:
         condition: service_completed_successfully
+      trevra:
+        condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 30s
 
   cloudflared:
     image: cloudflare/cloudflared@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
-    command: ["tunnel", "--no-autoupdate", "run"]
+    command: ['tunnel', '--no-autoupdate', 'run']
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
