@@ -75,7 +75,8 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
   const noDeviceOnline =
     Boolean(status) &&
     (status!.devices.length === 0 || !status!.devices.some((device) => device.online));
-  if (!status?.attention.length && !noDeviceOnline) return null;
+  const activeRecoveries = status?.recoveries ?? [];
+  if (!status?.attention.length && !noDeviceOnline && activeRecoveries.length === 0) return null;
 
   const copy = async (command: string, kind: 'pair' | 'reconnect' = 'reconnect') => {
     try {
@@ -187,6 +188,32 @@ export function LinkedInCompanionAttention({ setToast }: { setToast: (message: s
           )}
         </Panel>
       )}
+
+      {activeRecoveries.map((recovery) => (
+        <Panel
+          key={recovery.seatKey}
+          className="li-companion-attention li-companion-recovery"
+          role="status"
+          aria-live="polite"
+          icon={<Laptop size={18} />}
+          title={
+            recovery.status === 'verified'
+              ? `${recovery.label} is recovered`
+              : `Recovering ${recovery.label}`
+          }
+          description={
+            recovery.status === 'verified'
+              ? 'LinkedIn is signed in and the old security warning is cleared. Background campaign work remains paused only while this visible recovery Chrome window is open.'
+              : 'The visible Trevra Chrome window is open for sign-in, CAPTCHA, 2FA or device verification. Trevra checks only the local session state and marks it recovered as soon as LinkedIn is genuinely signed in.'
+          }
+        >
+          <p className="li-hint">
+            {recovery.status === 'verified'
+              ? `Verified ${recovery.verifiedAt ? relativeTime(recovery.verifiedAt) : 'just now'}. You may keep using the window; close it whenever you want the background companion to resume.`
+              : `Recovery started ${relativeTime(recovery.startedAt)}. No campaign action can run from this computer until the recovery window closes.`}
+          </p>
+        </Panel>
+      ))}
 
       {status?.attention.length ? (
         <section className="page-panel li-companion-attention" role="alert" aria-live="polite">

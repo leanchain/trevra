@@ -315,18 +315,6 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-function readDevToolsEndpoint(profileDir) {
-  try {
-    const [port, path] = readFileSync(join(profileDir, 'DevToolsActivePort'), 'utf8')
-      .trim()
-      .split(/\r?\n/);
-    if (!port || !path) return null;
-    return `ws://127.0.0.1:${Number(port)}${path}`;
-  } catch {
-    return null;
-  }
-}
-
 async function endpointResponds(endpoint) {
   if (!endpoint) return false;
   return new Promise((resolveCheck) => {
@@ -345,6 +333,100 @@ async function endpointResponds(endpoint) {
       resolveCheck(false);
     });
   });
+}
+
+async function recoverySessionHealthy(endpoint) {
+  if (!endpoint) return false;
+  return new Promise((resolveCheck) => {
+    const ws = new WebSocket(endpoint);
+    let cookies = null;
+    let targets = null;
+    let settled = false;
+    const finish = (healthy) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        /* already closed */
+      }
+      resolveCheck(healthy);
+    };
+    const decide = () => {
+      if (!cookies || !targets) return;
+      const authenticatedCookie = cookies.some(
+        (cookie) =>
+          cookie?.name === 'li_at' &&
+          typeof cookie?.value === 'string' &&
+          cookie.value.length > 0 &&
+          /(^|\.)linkedin\.com$/i.test(String(cookie?.domain ?? '').replace(/^\./, ''))
+      );
+      const healthyPage = targets.some((target) => {
+        if (target?.type !== 'page' || typeof target?.url !== 'string') return false;
+        try {
+          const url = new URL(target.url);
+          if (!/(^|\.)linkedin\.com$/i.test(url.hostname)) return false;
+          return !/^\/(?:login(?:\/|$)|uas\/login|checkpoint(?:\/|$)|authwall(?:\/|$)|flagship-web\/login)/i.test(
+            url.pathname
+          );
+        } catch {
+          return false;
+        }
+      });
+      finish(authenticatedCookie && healthyPage);
+    };
+    const timer = setTimeout(() => {
+      try {
+        ws.terminate();
+      } catch {
+        /* already closed */
+      }
+      finish(false);
+    }, 2500);
+    ws.once('open', () => {
+      ws.send(JSON.stringify({ id: 1, method: 'Storage.getCookies' }));
+      ws.send(JSON.stringify({ id: 2, method: 'Target.getTargets' }));
+    });
+    ws.on('message', (raw) => {
+      try {
+        const message = JSON.parse(raw.toString());
+        if (message.id === 1)
+          cookies = Array.isArray(message.result?.cookies) ? message.result.cookies : [];
+        if (message.id === 2)
+          targets = Array.isArray(message.result?.targetInfos) ? message.result.targetInfos : [];
+        decide();
+      } catch {
+        /* wait for the next frame */
+      }
+    });
+    ws.once('error', () => finish(false));
+  });
+}
+
+async function reportRecoveryState(config, seatKey, state) {
+  try {
+    const endpoint = new URL('/api/linkedin/companion/recovery/status', config.url);
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.token}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ seatKey, state })
+    });
+    if (!response.ok) {
+      activity('recovery_status_failed', `seat=${seatKey} state=${state} http=${response.status}`);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    activity(
+      'recovery_status_failed',
+      `seat=${seatKey} state=${state} ${error instanceof Error ? error.message : String(error)}`
+    );
+    return false;
+  }
 }
 
 const browsers = new Map();
@@ -517,49 +599,67 @@ async function runVisibleRecovery(config, seatKey = 'owner') {
   ensurePrivateDir(PROFILES);
   let stopping = false;
   let handle = null;
+  let probeTimer = null;
+  let probing = false;
+  let verifiedAnnounced = false;
 
-  const finish = (code) => {
+  const reportCurrentState = async () => {
+    if (stopping || probing || !handle?.endpoint) return;
+    probing = true;
+    try {
+      const healthy = await recoverySessionHealthy(handle.endpoint);
+      const state = healthy ? 'verified' : 'open';
+      await reportRecoveryState(config, seatKey, state);
+      if (healthy && !verifiedAnnounced) {
+        verifiedAnnounced = true;
+        activity('recovery_session_verified', `seat=${seatKey}`);
+        process.stdout.write(
+          'LinkedIn is signed in. Trevra has marked this account recovered. Keep using this visible window if you need to; background campaign work remains paused until you close it.\n'
+        );
+      }
+    } finally {
+      probing = false;
+    }
+  };
+
+  const finish = async (code) => {
     if (stopping) return;
     stopping = true;
+    if (probeTimer) clearInterval(probeTimer);
+    await reportRecoveryState(config, seatKey, 'closed');
+    activity('recovery_browser_closed', `seat=${seatKey}`);
     releaseLock();
     process.exit(code);
   };
-  process.once('SIGINT', () => {
-    stopping = true;
+
+  const stopFromSignal = (code) => {
     try {
       handle?.child?.kill();
     } catch {
       /* already gone */
     }
-    releaseLock();
-    process.exit(0);
-  });
-  process.once('SIGTERM', () => {
-    stopping = true;
-    try {
-      handle?.child?.kill();
-    } catch {
-      /* already gone */
-    }
-    releaseLock();
-    process.exit(0);
-  });
+    void finish(code);
+  };
+  process.once('SIGINT', () => stopFromSignal(0));
+  process.once('SIGTERM', () => stopFromSignal(0));
   process.once('exit', releaseLock);
 
   activity('recovery_browser_opening', `seat=${seatKey}`);
   process.stdout.write(
-    'Opening the dedicated LinkedIn profile visibly. Complete LinkedIn sign-in, CAPTCHA, 2FA or device verification, then close this Chrome window. Background mode will resume automatically.\n'
+    'Opening the dedicated LinkedIn profile visibly. Complete LinkedIn sign-in, CAPTCHA, 2FA or device verification. Trevra will mark the account recovered as soon as this window is genuinely signed in; close the window whenever you want background mode to resume.\n'
   );
   handle = await ensureBrowser(config.workspaceId, seatKey, { headless: false });
   activity('recovery_browser_ready', `seat=${seatKey}`);
+  await reportRecoveryState(config, seatKey, 'open');
+  await reportCurrentState();
+  probeTimer = setInterval(() => void reportCurrentState(), 10_000);
+  probeTimer.unref();
 
   if (handle.child) {
-    if (handle.child.exitCode !== null) finish(75);
+    if (handle.child.exitCode !== null) await finish(75);
     else
       handle.child.once('exit', () => {
-        if (stopping) return;
-        activity('recovery_browser_closed', `seat=${seatKey}`);
-        finish(75);
+        if (!stopping) void finish(75);
       });
     await new Promise(() => {});
   }
@@ -568,10 +668,7 @@ async function runVisibleRecovery(config, seatKey = 'owner') {
   // handle to watch. Poll only the loopback DevTools endpoint; once the member
   // closes that window the service exits with the normal restart code.
   while (!stopping && (await endpointResponds(handle.endpoint))) await sleep(750);
-  if (!stopping) {
-    activity('recovery_browser_closed', `seat=${seatKey}`);
-    finish(75);
-  }
+  if (!stopping) await finish(75);
 }
 
 async function runCompanion(config, options = {}) {

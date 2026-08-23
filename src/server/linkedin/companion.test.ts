@@ -22,8 +22,6 @@ import {
   createCompanionPairing,
   exchangeCompanionPairing,
   listCompanionStatus,
-  markCompanionControlConnected,
-  markCompanionControlDisconnected,
   notifyCompanionSeatAttentionEmails,
   notifyDisconnectedCompanionDevices,
   revokeCompanionDevice
@@ -232,15 +230,12 @@ describe('LinkedIn companion pairing and presence', () => {
       label: 'Laptop',
       now: NOW
     });
-
-    // Pairing alone is not presence. The DB lease begins when the bearer
-    // authenticates; the UI's stronger online bit requires a live control
-    // WebSocket too.
+    // Pairing alone is not presence. The durable heartbeat begins when the
+    // paired device authenticates; the UI uses that heartbeat so an API-process
+    // restart cannot falsely paint a connected computer as offline.
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(false);
     await authenticateCompanionToken(db, paired.token, NOW);
     expect(await companionWorkspaceReady(db, WORKSPACE_ID, NOW)).toBe(true);
-    markCompanionControlConnected(paired.deviceId, 'test-control');
-
     // Readiness ages out once the device heartbeat goes stale.
     expect(
       await companionWorkspaceReady(
@@ -254,12 +249,9 @@ describe('LinkedIn companion pairing and presence', () => {
       expect.objectContaining({ id: paired.deviceId, online: true, label: 'Laptop' })
     ]);
 
-    // A known socket close updates user-facing presence immediately rather
-    // than lying "online" for the remainder of the 90-second DB lease.
-    markCompanionControlDisconnected(paired.deviceId, 'test-control');
-    expect((await listCompanionStatus(db, WORKSPACE_ID, NOW)).devices).toEqual([
-      expect.objectContaining({ id: paired.deviceId, online: false, label: 'Laptop' })
-    ]);
+    // The user-facing online badge follows the authenticated heartbeat lease;
+    // actual browser execution separately requires the relay's live control
+    // socket at the instant the worker connects.
   });
 
   it('marks a fresh catch-up opportunity on every connection, since this only ever runs once per connection', async () => {

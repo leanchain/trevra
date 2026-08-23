@@ -2301,9 +2301,19 @@ export interface LinkedInCompanionAttention {
   since: string;
 }
 
+export interface LinkedInCompanionRecovery {
+  seatKey: string;
+  label: string;
+  status: 'open' | 'verified';
+  startedAt: string;
+  verifiedAt: string | null;
+  lastSeenAt: string;
+}
+
 export interface LinkedInCompanionStatus {
   devices: LinkedInCompanionDevice[];
   attention: LinkedInCompanionAttention[];
+  recoveries: LinkedInCompanionRecovery[];
   /** Owner-only: pair or replace the workspace's trusted computer. */
   canManage: boolean;
   /** Any workspace member may keep the already-paired companion active. */
@@ -2331,7 +2341,6 @@ export async function revokeLinkedInCompanionDevice(
     method: 'DELETE'
   });
 }
-
 /* =====================================================================
  * Lead sourcing (migration 030).
  *

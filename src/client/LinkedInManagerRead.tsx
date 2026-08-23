@@ -80,6 +80,7 @@ import {
   type EnforcedCeiling,
   type ManagedKind
 } from './LinkedInManagerCampaignConfig';
+import { ACTION_LABEL, campaignStepProgress } from './LinkedInManagerProgress';
 import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
 import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { useIsWorkspaceOwner } from './auth-client';
@@ -158,36 +159,6 @@ const STATUS_LABEL: Record<MemberStatus, string> = {
   failed: 'Failed'
 };
 const LIVE_STATUSES: readonly MemberStatus[] = ['pending', 'active', 'waiting', 'manual'];
-
-const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
-  profile_view: 'View their profile',
-  connection_request: 'Send a connection request',
-  message: 'Send a message',
-  manual_message: 'A message you write yourself',
-  follow: 'Follow them',
-  unfollow: 'Unfollow them',
-  disconnect: 'Remove the connection',
-  follow_company: 'Follow company',
-  like_company_post: 'Like company post',
-  invite_to_follow_company: 'Invite to follow company',
-  invite_to_event: 'Invite to event',
-  invite_to_group: 'Invite to group',
-  group_message: 'Group message',
-  event_message: 'Event message',
-  withdraw_pending: 'Withdraw the invite if still pending',
-  like_post: 'Like a recent post',
-  endorse_skills: 'Endorse skills',
-  wait: 'Wait',
-  condition: 'Condition',
-  monitor: 'Monitor',
-  end: 'End',
-  inmail: 'InMail',
-  email: 'Email',
-  find_email: 'Find email',
-  add_tag: 'Add tag',
-  remove_tag: 'Remove tag',
-  manual_comment: 'Manual comment'
-};
 
 const CAMPAIGN_STATUS_LABEL: Record<ManagedCampaign['status'], string> = {
   draft: 'Not started',
@@ -459,6 +430,35 @@ function StatusLegend({ counts, total }: { counts: Record<MemberStatus, number>;
   );
 }
 
+function WorkflowStepProgress({
+  steps,
+  queues,
+  pending
+}: {
+  steps: readonly WorkflowStep[];
+  queues: CampaignQueueSummary;
+  pending: number;
+}) {
+  const progress = campaignStepProgress(steps, queues.backlogByStep);
+  if (steps.length === 0) return null;
+  return (
+    <div className="mgr-workflow-progress" aria-label="Workflow step progress">
+      <div className="mgr-workflow-stage is-pending">
+        <span>Not started</span>
+        <strong>{pending}</strong>
+      </div>
+      {progress.map((entry, index) => (
+        <div className="mgr-workflow-stage" key={entry.stepId}>
+          <span>
+            {index + 1}. {entry.label}
+          </span>
+          <strong>{entry.count}</strong>
+          <small>{entry.count === 0 ? 'No leads here' : `${entry.due} due now`}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
 function MemberState({ status }: { status: MemberStatus }) {
   return (
     <span className="mgr-state">
@@ -634,7 +634,32 @@ function campaignBlockers({
   const queues = operations?.queues;
   if (queues?.queuedReady) {
     const onlineCompanion = Boolean(companionStatus?.devices.some((device) => device.online));
-    if (!workerStatus)
+    const seatRecovery = companionStatus?.recoveries.find((recovery) =>
+      campaign.senderKeys.includes(recovery.seatKey)
+    );
+    const seatAttention = companionStatus?.attention.find((attention) =>
+      campaign.senderKeys.includes(attention.seatKey)
+    );
+    if (seatRecovery)
+      out.push({
+        title:
+          seatRecovery.status === 'verified'
+            ? 'LinkedIn recovered — recovery window still open'
+            : 'LinkedIn recovery in progress',
+        detail:
+          seatRecovery.status === 'verified'
+            ? `${queues.queuedReady} planned action(s) are due. The LinkedIn session is healthy, but Trevra intentionally keeps background execution paused until the visible recovery Chrome window closes.`
+            : `${queues.queuedReady} planned action(s) are due, but the visible recovery window is still completing sign-in or verification. No campaign action can run until recovery finishes.`
+      });
+    else if (seatAttention)
+      out.push({
+        title:
+          seatAttention.kind === 'challenge'
+            ? 'LinkedIn needs human verification'
+            : 'LinkedIn session needs reconnect',
+        detail: `${queues.queuedReady} planned action(s) are due, but the account session is not ready. ${seatAttention.message}`
+      });
+    else if (!workerStatus)
       out.push({
         title: 'Executor status unavailable',
         detail: `${queues.queuedReady} planned action(s) are due, but Trevra could not read browser-worker status.`
@@ -2880,6 +2905,13 @@ export function OutreachManagerRead({
                     <>
                       <StatusBar counts={counts} total={campaign.memberCount} />
                       <StatusLegend counts={counts} total={campaign.memberCount} />
+                      {operations && (
+                        <WorkflowStepProgress
+                          steps={campaignSteps}
+                          queues={operations.queues}
+                          pending={campaign.pendingCount}
+                        />
+                      )}
                     </>
                   )}
 

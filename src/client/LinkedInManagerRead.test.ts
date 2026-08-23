@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { WorkflowStep } from '../server/linkedin/workflows';
 import type { LinkedInLimitsReport } from './api';
+import { campaignStepProgress } from './LinkedInManagerProgress';
 import { accountWarmupLabel } from './LinkedInWarmup';
 
 function report(patch: Partial<LinkedInLimitsReport['seat']> = {}): LinkedInLimitsReport {
@@ -47,5 +49,49 @@ describe('campaign account warm-up label', () => {
     expect(
       accountWarmupLabel(report({ posture: 'steady', warmupWeek: 4, warmupMultiplier: 1 }))
     ).toBe('account warm-up complete');
+  });
+});
+
+describe('campaign workflow step progress', () => {
+  it('maps backlog counts onto the workflow steps', () => {
+    const steps = [
+      {
+        id: 'step-1',
+        action: 'profile_view',
+        config: {},
+        delayBefore: { unit: 'hours', amount: 0 }
+      },
+      {
+        id: 'step-2',
+        action: 'connection_request',
+        config: { message: 'Hi' },
+        delayBefore: { unit: 'days', amount: 1 }
+      }
+    ] as unknown as WorkflowStep[];
+
+    expect(
+      campaignStepProgress(steps, [
+        { stepId: 'step-1', count: 11, due: 11 },
+        { stepId: 'step-2', count: 5, due: 5 }
+      ])
+    ).toEqual([
+      { stepId: 'step-1', label: 'View their profile', count: 11, due: 11 },
+      { stepId: 'step-2', label: 'Send a connection request', count: 5, due: 5 }
+    ]);
+  });
+
+  it('keeps an empty workflow step visible', () => {
+    const steps = [
+      {
+        id: 'step-1',
+        action: 'profile_view',
+        config: {},
+        delayBefore: { unit: 'hours', amount: 0 }
+      }
+    ] as unknown as WorkflowStep[];
+
+    expect(campaignStepProgress(steps, [])).toEqual([
+      { stepId: 'step-1', label: 'View their profile', count: 0, due: 0 }
+    ]);
   });
 });

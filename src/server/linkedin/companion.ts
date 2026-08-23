@@ -8,6 +8,7 @@ import {
   notifyLinkedInSeatRecovered
 } from '../notifications.js';
 import { recordSeatEvent } from './seat-events.js';
+import { stampSeatSessionValid } from './seats.js';
 import { markWorkspaceAvailabilityReturn } from './side-tasks.js';
 
 const PAIRING_TTL_MS = 10 * 60_000;
@@ -21,30 +22,10 @@ export const COMPANION_DEVICE_ONLINE_MS = 90_000;
 export const COMPANION_DEVICE_DISCONNECT_GRACE_MS = 5 * 60_000;
 const TOKEN_PREFIX = 'trv_cmp_';
 
-// DB heartbeats answer "was this device seen recently?". The API process also
-// knows the stronger fact "is a control WebSocket alive right now?". Keep that
-// fact in memory because the relay itself is in-memory and this deployment is
-// intentionally single-API-instance. A set of connection ids makes a fast
-// reconnect safe when the old socket closes after its replacement opened.
-const liveCompanionControls = new Map<string, Set<string>>();
-
-export function markCompanionControlConnected(deviceId: string, connectionId: string): void {
-  const controls = liveCompanionControls.get(deviceId) ?? new Set<string>();
-  controls.add(connectionId);
-  liveCompanionControls.set(deviceId, controls);
-}
-
-export function markCompanionControlDisconnected(deviceId: string, connectionId: string): void {
-  const controls = liveCompanionControls.get(deviceId);
-  if (!controls) return;
-  controls.delete(connectionId);
-  if (controls.size === 0) liveCompanionControls.delete(deviceId);
-}
-
-function companionControlIsLive(deviceId: string): boolean {
-  return (liveCompanionControls.get(deviceId)?.size ?? 0) > 0;
-}
-
+// User-facing presence and recovery state are durable database heartbeats. The
+// reverse-CDP relay keeps its live WebSocket ownership in its own process-local
+// `controls` map and checks it immediately before accepting browser work; do not
+// mix that ephemeral transport fact back into the website's online/offline UI.
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -77,17 +58,23 @@ export interface CompanionAttention {
   since: string;
 }
 
+export interface CompanionRecoveryView {
+  seatKey: string;
+  label: string;
+  status: 'open' | 'verified';
+  startedAt: string;
+  verifiedAt: string | null;
+  lastSeenAt: string;
+}
+
 export interface CompanionStatus {
   /** The one paired computer this workspace may run background LinkedIn work from. */
   devices: CompanionDeviceView[];
-  /**
-   * Human-required LinkedIn recovery, one latest state per seat. A later
-   * session_reused/login event clears it implicitly, so no separate mutable
-   * alert flag can get stuck after the browser is healthy again.
-   */
+  /** Human-required LinkedIn recovery still unresolved by a healthy-session proof. */
   attention: CompanionAttention[];
+  /** A visible recovery Chrome window that is still active on the paired computer. */
+  recoveries: CompanionRecoveryView[];
 }
-
 export async function createCompanionPairing(
   db: Db,
   input: { workspaceId: string; actorUserId: string | null; now?: Date }
@@ -202,11 +189,18 @@ export async function exchangeCompanionPairing(
   });
 }
 
-export async function authenticateCompanionToken(
+interface CompanionTokenIdentity {
+  deviceId: string;
+  workspaceId: string;
+  label: string;
+  wasDisconnected: boolean;
+}
+
+async function companionTokenIdentity(
   db: Db,
   token: string,
-  now: Date = new Date()
-): Promise<{ deviceId: string; workspaceId: string; label: string } | null> {
+  now: Date
+): Promise<CompanionTokenIdentity | null> {
   if (!token.startsWith(TOKEN_PREFIX) || token.length < TOKEN_PREFIX.length + 32) return null;
   const row = await db
     .prepare(
@@ -221,6 +215,48 @@ export async function authenticateCompanionToken(
     );
   if (!row) return null;
   await touchCompanionDevice(db, row.id, now);
+  return {
+    deviceId: row.id,
+    workspaceId: row.workspace_id,
+    label: row.label,
+    wasDisconnected: row.was_disconnected
+  };
+}
+
+export async function authenticateCompanionRecoveryToken(
+  db: Db,
+  token: string,
+  now: Date = new Date()
+): Promise<{ deviceId: string; workspaceId: string; label: string } | null> {
+  const identity = await companionTokenIdentity(db, token, now);
+  if (!identity) return null;
+  return {
+    deviceId: identity.deviceId,
+    workspaceId: identity.workspaceId,
+    label: identity.label
+  };
+}
+
+export async function authenticateCompanionToken(
+  db: Db,
+  token: string,
+  now: Date = new Date()
+): Promise<{ deviceId: string; workspaceId: string; label: string } | null> {
+  const identity = await companionTokenIdentity(db, token, now);
+  if (!identity) return null;
+  const row = {
+    id: identity.deviceId,
+    workspace_id: identity.workspaceId,
+    label: identity.label,
+    was_disconnected: identity.wasDisconnected
+  };
+  await db
+    .prepare(
+      `UPDATE linkedin_companion_recoveries
+       SET status='closed',closed_at=?,last_seen_at=?
+       WHERE workspace_id=? AND device_id=? AND status<>'closed'`
+    )
+    .run(iso(now), iso(now), row.workspace_id, row.id);
   // This runs exactly once per FRESH control connection (companion start, a
   // restart, or either half of `trevra linkedin reconnect`) -- never on a
   // routine keepalive ping, which touches `last_seen_at` directly in
@@ -359,9 +395,9 @@ export async function notifyCompanionSeatAttentionEmails(
       SELECT DISTINCT ON (workspace_id, seat_key)
         id, workspace_id, seat_key, kind
       FROM linkedin_seat_events
-      WHERE kind IN ('challenge','reconnect_required','session_reused','login')
+      WHERE kind IN ('challenge','reconnect_required','session_reused','login','recovery_verified')
       ORDER BY workspace_id, seat_key, occurred_at DESC,
-               CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END DESC
+               CASE WHEN kind IN ('session_reused','login','recovery_verified') THEN 1 ELSE 0 END DESC
     )
     SELECT id, workspace_id, seat_key, kind
     FROM latest l
@@ -413,24 +449,24 @@ export async function notifyCompanionSeatAttentionEmails(
         lag(id) OVER (
           PARTITION BY workspace_id, seat_key
           ORDER BY occurred_at ASC,
-                   CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END ASC
+                   CASE WHEN kind IN ('session_reused','login','recovery_verified') THEN 1 ELSE 0 END ASC
         ) AS previous_id,
         lag(kind) OVER (
           PARTITION BY workspace_id, seat_key
           ORDER BY occurred_at ASC,
-                   CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END ASC
+                   CASE WHEN kind IN ('session_reused','login','recovery_verified') THEN 1 ELSE 0 END ASC
         ) AS previous_kind,
         row_number() OVER (
           PARTITION BY workspace_id, seat_key
           ORDER BY occurred_at DESC,
-                   CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END DESC
+                   CASE WHEN kind IN ('session_reused','login','recovery_verified') THEN 1 ELSE 0 END DESC
         ) AS rn
       FROM linkedin_seat_events e
-      WHERE kind IN ('challenge','reconnect_required','session_reused','login')
+      WHERE kind IN ('challenge','reconnect_required','session_reused','login','recovery_verified')
     )
     SELECT id, workspace_id, seat_key, previous_id
     FROM ordered o
-    WHERE rn=1 AND kind IN ('session_reused','login')
+    WHERE rn=1 AND kind IN ('session_reused','login','recovery_verified')
       AND previous_kind IN ('challenge','reconnect_required')
       AND EXISTS (
         SELECT 1 FROM linkedin_seat_events n
@@ -471,6 +507,94 @@ export async function notifyCompanionSeatAttentionEmails(
   }
 }
 
+export async function updateCompanionRecovery(
+  db: Db,
+  identity: { deviceId: string; workspaceId: string },
+  input: { seatKey: string; state: 'open' | 'verified' | 'closed' },
+  now: Date = new Date()
+): Promise<boolean> {
+  const seat = await db
+    .prepare('SELECT label FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')
+    .get<{ label: string }>(identity.workspaceId, input.seatKey);
+  if (!seat) return false;
+
+  if (input.state === 'closed') {
+    await db
+      .prepare(
+        `INSERT INTO linkedin_companion_recoveries
+           (workspace_id,seat_key,device_id,status,started_at,last_seen_at,closed_at)
+         VALUES (?,?,?,'closed',?,?,?)
+         ON CONFLICT (workspace_id,seat_key) DO UPDATE SET
+           device_id=EXCLUDED.device_id,status='closed',last_seen_at=EXCLUDED.last_seen_at,
+           closed_at=EXCLUDED.closed_at`
+      )
+      .run(identity.workspaceId, input.seatKey, identity.deviceId, iso(now), iso(now), iso(now));
+    return true;
+  }
+
+  const status = input.state;
+  await db
+    .prepare(
+      `INSERT INTO linkedin_companion_recoveries
+         (workspace_id,seat_key,device_id,status,started_at,verified_at,last_seen_at,closed_at)
+       VALUES (?,?,?,?,?,?::timestamptz,?,NULL)
+       ON CONFLICT (workspace_id,seat_key) DO UPDATE SET
+         device_id=EXCLUDED.device_id,
+         status=CASE
+           WHEN linkedin_companion_recoveries.status='verified'
+             AND EXCLUDED.status='open'
+             AND linkedin_companion_recoveries.device_id=EXCLUDED.device_id
+             AND linkedin_companion_recoveries.last_seen_at >= EXCLUDED.last_seen_at - INTERVAL '90 seconds'
+             THEN 'verified'
+           ELSE EXCLUDED.status
+         END,
+         started_at=CASE
+           WHEN linkedin_companion_recoveries.status='closed'
+             OR linkedin_companion_recoveries.device_id<>EXCLUDED.device_id
+             OR linkedin_companion_recoveries.last_seen_at < EXCLUDED.last_seen_at - INTERVAL '90 seconds'
+             THEN EXCLUDED.started_at
+           ELSE linkedin_companion_recoveries.started_at
+         END,
+         verified_at=CASE
+           WHEN EXCLUDED.status='open' AND (
+             linkedin_companion_recoveries.status='closed'
+             OR linkedin_companion_recoveries.device_id<>EXCLUDED.device_id
+             OR linkedin_companion_recoveries.last_seen_at < EXCLUDED.last_seen_at - INTERVAL '90 seconds'
+           ) THEN NULL
+           ELSE COALESCE(EXCLUDED.verified_at,linkedin_companion_recoveries.verified_at)
+         END,
+         last_seen_at=EXCLUDED.last_seen_at,
+         closed_at=NULL`
+    )
+    .run(
+      identity.workspaceId,
+      input.seatKey,
+      identity.deviceId,
+      status,
+      iso(now),
+      input.state === 'verified' ? iso(now) : null,
+      iso(now)
+    );
+
+  if (input.state === 'verified') {
+    await stampSeatSessionValid(db, identity.workspaceId, now, input.seatKey);
+    if (await companionSeatNeedsAttention(db, identity.workspaceId, input.seatKey)) {
+      await recordSeatEvent(
+        db,
+        {
+          workspaceId: identity.workspaceId,
+          seatKey: input.seatKey,
+          kind: 'recovery_verified',
+          detail:
+            'The paired computer confirmed that the visible LinkedIn recovery window is signed in. Background execution remains paused until that window closes.'
+        },
+        now
+      );
+    }
+  }
+  return true;
+}
+
 export async function listCompanionStatus(
   db: Db,
   workspaceId: string,
@@ -502,9 +626,9 @@ export async function listCompanionStatus(
     FROM linkedin_seat_events e
     LEFT JOIN linkedin_seats s ON s.workspace_id=e.workspace_id AND s.seat_key=e.seat_key
     WHERE e.workspace_id=?
-      AND e.kind IN ('challenge','reconnect_required','session_reused','login')
+      AND e.kind IN ('challenge','reconnect_required','session_reused','login','recovery_verified')
     ORDER BY e.seat_key, e.occurred_at DESC,
-             CASE WHEN e.kind IN ('session_reused','login') THEN 1 ELSE 0 END DESC
+             CASE WHEN e.kind IN ('session_reused','login','recovery_verified') THEN 1 ELSE 0 END DESC
   `
     )
     .all<{
@@ -516,17 +640,38 @@ export async function listCompanionStatus(
     }>(workspaceId);
 
   const threshold = now.getTime() - COMPANION_DEVICE_ONLINE_MS;
+  const recoveries = await db
+    .prepare(
+      `SELECT r.seat_key,r.status,
+              to_char(r.started_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS started_at,
+              to_char(r.verified_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS verified_at,
+              to_char(r.last_seen_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_seen_at,
+              COALESCE(s.label,r.seat_key) AS label
+       FROM linkedin_companion_recoveries r
+       LEFT JOIN linkedin_seats s ON s.workspace_id=r.workspace_id AND s.seat_key=r.seat_key
+       WHERE r.workspace_id=? AND r.status IN ('open','verified') AND r.last_seen_at>=?::timestamptz
+       ORDER BY r.started_at DESC`
+    )
+    .all<{
+      seat_key: string;
+      status: 'open' | 'verified';
+      started_at: string;
+      verified_at: string | null;
+      last_seen_at: string;
+      label: string;
+    }>(workspaceId, iso(new Date(threshold)));
+
   return {
     devices: devices.map((device) => ({
       id: device.id,
       label: device.label,
       createdAt: device.created_at,
       lastSeenAt: device.last_seen_at,
-      online: Boolean(
-        companionControlIsLive(device.id) &&
-        device.last_seen_at &&
-        new Date(device.last_seen_at).getTime() >= threshold
-      )
+      // User-facing presence is a durable authenticated heartbeat. The relay
+      // itself performs the stricter live-WebSocket check before any browser
+      // request, so an API-process restart cannot falsely paint an online
+      // computer as offline while still preserving execution safety.
+      online: Boolean(device.last_seen_at && new Date(device.last_seen_at).getTime() >= threshold)
     })),
     attention: latestAuthEvents
       .filter(
@@ -539,7 +684,15 @@ export async function listCompanionStatus(
         kind: event.kind,
         message: event.detail ?? 'LinkedIn needs your attention on the paired computer.',
         since: event.occurred_at
-      }))
+      })),
+    recoveries: recoveries.map((recovery) => ({
+      seatKey: recovery.seat_key,
+      label: recovery.label,
+      status: recovery.status,
+      startedAt: recovery.started_at,
+      verifiedAt: recovery.verified_at,
+      lastSeenAt: recovery.last_seen_at
+    }))
   };
 }
 
@@ -555,9 +708,9 @@ export async function companionSeatNeedsAttention(
     SELECT kind
     FROM linkedin_seat_events
     WHERE workspace_id=? AND seat_key=?
-      AND kind IN ('challenge','reconnect_required','session_reused','login')
+      AND kind IN ('challenge','reconnect_required','session_reused','login','recovery_verified')
     ORDER BY occurred_at DESC,
-             CASE WHEN kind IN ('session_reused','login') THEN 1 ELSE 0 END DESC
+             CASE WHEN kind IN ('session_reused','login','recovery_verified') THEN 1 ELSE 0 END DESC
     LIMIT 1
   `
     )
@@ -578,7 +731,6 @@ export async function revokeCompanionDevice(
   `
     )
     .run(iso(now), workspaceId, deviceId);
-  if (result.changes > 0) liveCompanionControls.delete(deviceId);
   return result.changes > 0;
 }
 
@@ -595,17 +747,24 @@ export async function companionWorkspaceReady(
   const row = await db
     .prepare(
       `
-    SELECT EXISTS(
-      SELECT 1 FROM linkedin_companion_devices
-      WHERE workspace_id=? AND revoked_at IS NULL AND last_seen_at>=?
-    ) AS device_online
+    SELECT
+      EXISTS(
+        SELECT 1 FROM linkedin_companion_devices
+        WHERE workspace_id=? AND revoked_at IS NULL AND last_seen_at>=?::timestamptz
+      ) AS device_online,
+      EXISTS(
+        SELECT 1 FROM linkedin_companion_recoveries
+        WHERE workspace_id=? AND status IN ('open','verified') AND last_seen_at>=?::timestamptz
+      ) AS recovery_active
   `
     )
-    .get<{ device_online: boolean }>(
+    .get<{ device_online: boolean; recovery_active: boolean }>(
+      workspaceId,
+      iso(new Date(now.getTime() - COMPANION_DEVICE_ONLINE_MS)),
       workspaceId,
       iso(new Date(now.getTime() - COMPANION_DEVICE_ONLINE_MS))
     );
-  return Boolean(row?.device_online);
+  return Boolean(row?.device_online) && !Boolean(row?.recovery_active);
 }
 
 export function companionBrowserConfigured(env: NodeJS.ProcessEnv = process.env): boolean {

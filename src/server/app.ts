@@ -241,12 +241,14 @@ import {
 } from './linkedin/hosted-execution.js';
 import { companionReleasePackage } from './linkedin/companion-release.js';
 import {
+  authenticateCompanionRecoveryToken,
   companionSeatNeedsAttention,
   companionWorkspaceReady,
   createCompanionPairing,
   exchangeCompanionPairing,
   listCompanionStatus,
-  revokeCompanionDevice
+  revokeCompanionDevice,
+  updateCompanionRecovery
 } from './linkedin/companion.js';
 import {
   detectLinkedInSeat,
@@ -840,6 +842,37 @@ export function createApp(db: Db) {
     }
   });
 
+  // Visible recovery runs while the normal companion service is intentionally
+  // stopped. Its paired-device token is therefore the credential for a tiny
+  // status-only channel: heartbeat the computer, durably mark the recovery
+  // window, and clear an old challenge only after the local Chrome profile has
+  // positively proved an authenticated LinkedIn session. This endpoint never
+  // opens a browser and cannot queue/execute LinkedIn work.
+  app.post('/api/linkedin/companion/recovery/status', async (req, res, next) => {
+    try {
+      const token =
+        req
+          .header('authorization')
+          ?.match(/^Bearer\s+(.+)$/i)?.[1]
+          ?.trim() ?? '';
+      const identity = token ? await authenticateCompanionRecoveryToken(db, token) : null;
+      if (!identity) return res.status(401).json({ error: 'Unauthorized' });
+      const input = z
+        .object({
+          seatKey: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
+          state: z.enum(['open', 'verified', 'closed'])
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const updated = await updateCompanionRecovery(db, identity, input);
+      if (!updated) return res.status(404).json({ error: 'LinkedIn account not found' });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post('/api/admin/registry/publishers/:id/verification', async (req, res, next) => {
     try {
       const expected = process.env.TRACTION_ADMIN_TOKEN?.trim();
@@ -861,6 +894,8 @@ export function createApp(db: Db) {
   });
 
   // Agent tokens deliberately expose a smaller surface than browser sessions.
+  // Claude Code, Codex, and other MCP clients can inspect and run skills, but
+  // cannot silently inherit billing, integration, or account-management access.
   // Claude Code, Codex, and other MCP clients can inspect and run skills, but
   // cannot silently inherit billing, integration, or account-management access.
   app.post(

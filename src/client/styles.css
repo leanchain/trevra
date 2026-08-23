@@ -9312,6 +9312,49 @@ button:disabled {
   font-size: var(--t-text-xs);
   line-height: 1.45;
 }
+.mgr-workflow-progress {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin: 2px 0 4px;
+}
+.mgr-workflow-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 10px;
+  min-height: 52px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-field);
+}
+.mgr-workflow-stage > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: var(--t-text-xs);
+  font-weight: var(--t-w-bold);
+}
+.mgr-workflow-stage > strong {
+  font-size: var(--t-text-lg);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.mgr-workflow-stage > small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: var(--t-text-2xs);
+}
+.mgr-workflow-stage.is-pending > small {
+  display: none;
+}
+
+/* Expanding a campaign should answer the operator's immediate question before
+   exposing the full execution console. One compact health row stays visible;
+   queue diagnostics, settings, waves and the lead table are opt-in below it. */
 .mgr-campaign-section-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

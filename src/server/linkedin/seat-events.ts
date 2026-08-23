@@ -30,6 +30,7 @@ export type LinkedInSeatEventKind =
   | 'navigate'
   | 'login'
   | 'session_reused'
+  | 'recovery_verified'
   | 'reconnect_required'
   | 'challenge'
   | 'limit_wall'
@@ -56,9 +57,15 @@ export function parseBackgroundRunDetail(raw: string | null): LinkedInBackground
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
     if (typeof value.startedAt !== 'string' || typeof value.finishedAt !== 'string') return null;
-    if (!Array.isArray(value.tasks) || !value.tasks.every((task) => typeof task === 'string')) return null;
-    if (!Array.isArray(value.failedTasks) || !value.failedTasks.every((task) => typeof task === 'string')) return null;
-    if (value.status !== 'completed' && value.status !== 'partial' && value.status !== 'blocked') return null;
+    if (!Array.isArray(value.tasks) || !value.tasks.every((task) => typeof task === 'string'))
+      return null;
+    if (
+      !Array.isArray(value.failedTasks) ||
+      !value.failedTasks.every((task) => typeof task === 'string')
+    )
+      return null;
+    if (value.status !== 'completed' && value.status !== 'partial' && value.status !== 'blocked')
+      return null;
     if (value.reason !== null && typeof value.reason !== 'string') return null;
     return {
       startedAt: value.startedAt,
@@ -151,7 +158,9 @@ export async function listSeatEvents(
 export async function pruneSeatEvents(db: Db, now: Date = new Date()): Promise<void> {
   try {
     const cutoff = new Date(now.getTime() - SEAT_EVENT_RETENTION_DAYS * 86_400_000);
-    await db.prepare('DELETE FROM linkedin_seat_events WHERE occurred_at < ?').run(cutoff.toISOString());
+    await db
+      .prepare('DELETE FROM linkedin_seat_events WHERE occurred_at < ?')
+      .run(cutoff.toISOString());
   } catch {
     // Same reasoning as `recordSeatEvent`: housekeeping never breaks a tick.
   }
@@ -187,7 +196,11 @@ export async function setSeatRestingUntil(
 }
 
 /** Null when the seat may act now. Never throws; unreadable means "may act". */
-export async function seatRestingUntil(db: Db, workspaceId: string, seatKey: string): Promise<Date | null> {
+export async function seatRestingUntil(
+  db: Db,
+  workspaceId: string,
+  seatKey: string
+): Promise<Date | null> {
   try {
     const row = await db
       .prepare('SELECT resting_until FROM linkedin_seats WHERE workspace_id=? AND seat_key=?')

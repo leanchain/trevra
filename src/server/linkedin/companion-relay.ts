@@ -9,8 +9,6 @@ import {
   companionDeviceIsActive,
   companionRelaySecretMatches,
   companionWorkspaceReady,
-  markCompanionControlConnected,
-  markCompanionControlDisconnected,
   touchCompanionDevice
 } from './companion.js';
 
@@ -93,8 +91,6 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
       connectedAt: Date.now(),
       lastDbTouch: Date.now()
     };
-    markCompanionControlConnected(connection.deviceId, connection.connectionId);
-
     // Application pings update the DB lease, but are not a transport liveness
     // check. A protocol ping/pong catches half-open sockets; the ws client
     // answers these automatically. One missed heartbeat terminates the control.
@@ -191,7 +187,6 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
 
     ws.on('close', () => {
       clearInterval(heartbeat);
-      markCompanionControlDisconnected(connection.deviceId, connection.connectionId);
       if (controls.get(connection.workspaceId) === connection)
         controls.delete(connection.workspaceId);
       for (const session of [...sessions.values()]) {
