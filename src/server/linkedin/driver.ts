@@ -154,6 +154,8 @@ export interface LinkedInLocator {
    * `textContent`: the words are still right, they are simply flat.
    */
   innerText?(options?: { timeout?: number }): Promise<string>;
+  /** Optional DOM attribute read. Used by read-only drivers to resolve links without navigating to them. */
+  getAttribute?(name: string, options?: { timeout?: number }): Promise<string | null>;
 }
 
 export interface LinkedInPage {

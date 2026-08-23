@@ -349,6 +349,11 @@ class FakePage implements LinkedInPage {
   fill(selector: string, value: string): void {
     if (selector.includes('msg-form__contenteditable')) this.typed.push(value);
   }
+
+  attribute(selector: string, name: string): string | null {
+    if (name !== 'href' || !selector.includes('msg-thread__link-to-profile')) return null;
+    return this.openThread()?.profileUrl ?? null;
+  }
 }
 
 class FakeLocator implements LinkedInLocator {
@@ -386,6 +391,10 @@ class FakeLocator implements LinkedInLocator {
 
   async fill(text: string): Promise<void> {
     this.page.fill(this.selector, text);
+  }
+
+  async getAttribute(name: string): Promise<string | null> {
+    return this.page.attribute(this.selector, name);
   }
 }
 
@@ -442,7 +451,7 @@ describe('rendered timestamps', () => {
 });
 
 describe('listConversations', () => {
-  it('reads the rail, resolves each id from the URL and each profile from the hop', async () => {
+  it('reads the rail, resolves each id from the URL and each participant from the existing link', async () => {
     const state = world({
       threads: [
         thread(0, { unread: true, stamp: 'Aug 3' }),
@@ -549,9 +558,10 @@ describe('listConversations', () => {
       now: clock
     });
 
-    // Two conversations: /messaging/ (unpaced, it is the first), then open+hop
-    // for each, then one return to the rail before the second row.
-    expect(first.slept).toHaveLength(5);
+    // Two conversations: /messaging/ is the first navigation, then each thread
+    // is opened with one return to the rail between them. Reading the existing
+    // participant href adds no navigation of its own.
+    expect(first.slept).toHaveLength(2);
     // Reproducible, which is what a seeded draw buys and Math.random() destroys.
     expect(second.slept).toEqual(first.slept);
     expect(other.slept).not.toEqual(first.slept);
@@ -563,7 +573,7 @@ describe('listConversations', () => {
     expect(new Set(first.slept).size).toBeGreaterThan(1);
   });
 
-  it('skips the profile hop when the caller already has the URL', async () => {
+  it('skips participant-link resolution when the caller already has the URL', async () => {
     const state = world({ threads: [thread(0), thread(1)] });
     const { slept, sleep } = recorder();
     const listing = await listConversations(new FakePage(state), {
@@ -574,8 +584,8 @@ describe('listConversations', () => {
     if (!isThreadListing(listing)) throw new Error('expected a listing');
     expect(listing.threads[0].profileUrl).toBeNull();
     expect(listing.threads[1].profileUrl).toBe('https://www.linkedin.com/in/jonas/');
-    // One hop instead of two, and one fewer return to the rail.
-    expect(slept).toHaveLength(3);
+    // Link resolution is DOM-only, so it adds no navigation either way.
+    expect(slept).toHaveLength(2);
   });
 
   it('STOPS the walk at a limit wall instead of clicking through it', async () => {
@@ -633,7 +643,7 @@ describe('listConversations', () => {
     expect(listing.degraded[0]).toContain('re-ordered mid-walk');
   });
 
-  it('records a profile hop that lands somewhere that is not a profile, and keeps the conversation', async () => {
+  it('keeps a conversation when the participant link has no usable profile URL', async () => {
     const state = world({ threads: [thread(0, { profileUrl: null })] });
     const listing = await listConversations(new FakePage(state), {
       sleep: recorder().sleep,

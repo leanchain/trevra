@@ -4197,67 +4197,23 @@ export async function loadLinkedInPlaywright(
  */
 const BROWSER_CHANNELS: readonly string[] = ['chrome', 'chromium'];
 
-/** Where a real session starts. Never a target, never a search. */
-const FEED_URL = 'https://www.linkedin.com/feed/';
-
 /**
- * The pages a person opens for no campaign reason at all.
- *
- * AN ACCOUNT THAT ONLY EVER DOES OUTREACH IS A ROBOT WITH A JOB. Every real
- * member checks who viewed them, clears a notification, looks at My Network.
- * None of it sends anything, none of it is paced (nothing here consumes a
- * ceiling -- these are reads of the member's OWN surfaces, not of other
- * people's profiles), and it is the cheapest possible way for a sitting to
- * contain something other than the thing that gets accounts flagged.
- */
-const NOISE_URLS: readonly string[] = [
-  'https://www.linkedin.com/mynetwork/',
-  'https://www.linkedin.com/notifications/',
-  'https://www.linkedin.com/feed/'
-];
-
-/**
- * Land on the feed and read it before the caller navigates anywhere.
- *
- * DECORATION, NEVER CORRECTNESS. A page object that cannot navigate (every
- * test fake), a feed that redirects to the sign-in page (a signed-out profile
- * -- which is exactly what a person opening LinkedIn would see), a navigation
- * that times out: all of them land here and are dropped. The caller's own
- * first `goto` is the one that matters and it happens either way.
+ * Compatibility hook retained for callers that used to perform a synthetic
+ * pre-task browsing sequence. It deliberately performs no navigation now.
  */
 export async function warmUpSession(
   page: unknown,
   seed: string,
   log: (message: string) => void
 ): Promise<void> {
-  const target = page as {
-    goto?: (
-      url: string,
-      options?: { waitUntil?: 'domcontentloaded'; timeout?: number }
-    ) => Promise<unknown>;
-    waitForTimeout?: (ms: number) => Promise<void>;
-  };
-  if (typeof target.goto !== 'function' || typeof target.waitForTimeout !== 'function') return;
-  try {
-    await target.goto(FEED_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    await settle(target as HumanPage, `${seed}#feed`);
-    await readPage(target as HumanPage, `${seed}#feed-read`);
-    // AND SOMETIMES SOMETHING ELSE FIRST. Seeded, so a sitting is still
-    // reproducible; about half of them stop at the feed, the rest wander
-    // through one of their own pages the way a person does before getting to
-    // whatever they opened LinkedIn for.
-    const random = seededRandom(createHash('sha256').update(`${seed}#noise`).digest('hex'));
-    if (random() < 0.55) {
-      const noise = NOISE_URLS[Math.floor(random() * NOISE_URLS.length)] ?? FEED_URL;
-      await target.goto(noise, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      await settle(target as HumanPage, `${seed}#noise`);
-      await readPage(target as HumanPage, `${seed}#noise-read`);
-    }
-  } catch (cause) {
-    log(
-      `LinkedIn seat browser could not open the feed before its first action (${cause instanceof Error ? cause.message : String(cause)}). The action itself is unaffected.`
-    );
-  }
+  // Intentionally a no-op. Earlier versions generated extra feed / My Network /
+  // notification traffic before real work in an attempt to make a session look
+  // more natural. Those requests are unrelated to the operator's requested
+  // action and increase account surface area for no correctness benefit. A
+  // production sender should perform only the navigation its actual task needs.
+  void page;
+  void seed;
+  void log;
 }
 
 /**
@@ -5481,8 +5437,8 @@ export async function runDueLinkedInActions(
           workspaceId,
           seatKey,
           kind: 'sitting_start',
-          url: FEED_URL,
-          detail: `Sitting ${sessionIndex} opened a browser and landed on the feed.`
+          url: handle.page.url(),
+          detail: `Sitting ${sessionIndex} opened the authenticated browser for due work.`
         },
         new Date()
       );

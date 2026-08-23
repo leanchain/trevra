@@ -1074,7 +1074,12 @@ async function main() {
       await runVisibleRecovery(config, visibleSeatKey);
       return;
     }
-    await runCompanion(config, { openBrowserAtStart: false, headlessBrowser: true });
+    // LinkedIn background execution uses the same normal headed Chrome the
+    // member can see during recovery. Do not switch the authenticated account
+    // into a headless browser for unattended work: a prior unusual-activity
+    // incident identified that browser-mode change as a restriction risk, and
+    // hiding the browser is not a correctness requirement.
+    await runCompanion(config, { openBrowserAtStart: false, headlessBrowser: false });
     return;
   }
 

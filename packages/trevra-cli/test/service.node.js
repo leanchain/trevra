@@ -25,7 +25,7 @@ import {
   servicePaths
 } from '../lib/service.js';
 
-test('background browser launch is headless while manual mode stays visible', () => {
+test('browser launch args support both headless and visible modes', () => {
   const background = chromeLaunchArgs({
     profileDir: '/tmp/trevra-profile',
     headless: true,
@@ -43,6 +43,18 @@ test('background browser launch is headless while manual mode stays visible', ()
   });
   assert.ok(!visible.includes('--headless'));
   assert.ok(visible.includes('--start-maximized'));
+});
+
+test('installed LinkedIn service selects visible Chrome for relay work', () => {
+  const cli = readFileSync(fileURLToPath(new URL('../bin/trevra.js', import.meta.url)), 'utf8');
+  assert.match(
+    cli,
+    /runCompanion\(config, \{ openBrowserAtStart: false, headlessBrowser: false \}\)/
+  );
+  assert.doesNotMatch(
+    cli,
+    /runCompanion\(config, \{ openBrowserAtStart: false, headlessBrowser: true \}\)/
+  );
 });
 
 test('service paths stay under the user home and never use the project checkout', () => {

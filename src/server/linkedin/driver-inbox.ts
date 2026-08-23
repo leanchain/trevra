@@ -871,32 +871,21 @@ export async function listConversations(
           `Conversation ${index + 1} shows no link to the participant's profile, so it cannot be matched to a campaign target yet.`
         );
       } else {
-        await pace(walk, `profile:${index}`);
-        try {
-          await hoverClick(
-            page,
-            page.locator(INBOX_SELECTORS.threadProfileLink).first(),
-            `${MESSAGING_URL}#profile:${index}`,
-            CLICK_TIMEOUT_MS
-          );
-          onRail = false;
-          await settle(page, `${MESSAGING_URL}#profile-open:${index}`);
-          const profileWall = await detectWall(page);
-          if (profileWall)
-            return fail(
-              profileWall,
-              wallDetail(profileWall, `the profile behind conversation ${index + 1}`)
-            );
-          profileUrl = normalisedProfileUrl(page.url());
-          if (!profileUrl) {
-            degraded.push(
-              `The profile link in conversation ${index + 1} landed on '${page.url()}', which is not a LinkedIn profile URL, so no campaign target was recorded.`
-            );
-          }
-        } catch (cause) {
-          onRail = false;
+        // Resolve the participant from the link already present in the opened
+        // conversation. Do NOT click through to the participant's profile just
+        // to learn an href: that turned one inbox refresh into a burst of profile
+        // visits and was observed immediately before a real LinkedIn checkpoint.
+        const link = page.locator(INBOX_SELECTORS.threadProfileLink).first();
+        const href = link.getAttribute
+          ? await link.getAttribute('href', { timeout: CLICK_TIMEOUT_MS }).catch(() => null)
+          : null;
+        if (href) {
+          const absolute = new URL(href, 'https://www.linkedin.com').toString();
+          profileUrl = normalisedProfileUrl(absolute);
+        }
+        if (!profileUrl) {
           degraded.push(
-            `The profile behind conversation ${index + 1} could not be opened: ${cause instanceof Error ? cause.message : String(cause)}`
+            `Conversation ${index + 1} exposes no readable participant profile URL, so no campaign target was recorded. Trevra does not navigate to the participant's profile merely to resolve it.`
           );
         }
       }

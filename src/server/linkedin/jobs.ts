@@ -958,6 +958,10 @@ export async function runLinkedInSideTasks(
   config: LinkedInLocalWorkerConfig,
   options: LinkedInJobOptions & {
     maxThreads?: number;
+    maxMessages?: number;
+    sinceDays?: number;
+    maxPendingInvites?: number;
+    maxAcceptanceChecks?: number;
     maxWithdrawals?: number;
     maxSources?: number;
     /** The day-shape seam, so a test can assert the cadence without waiting for a Tuesday. */
@@ -1001,10 +1005,21 @@ export async function runLinkedInSideTasks(
   if (!seat) return result;
   const runs = await sideTaskRuns(db, options.workspaceId, seatKey);
   const returnedAt = config.companionBrowser ? availabilityCatchUpPending(runs) : null;
-  const recoveryVerification =
-    Boolean(returnedAt) &&
+  const needsAttention =
     config.companionBrowser &&
     (await companionSeatNeedsAttention(db, options.workspaceId, seatKey));
+  const recoveryVerification = Boolean(returnedAt) && needsAttention;
+  // Once LinkedIn has shown a checkpoint, ordinary maintenance must not keep
+  // reopening that checkpoint on every scheduled visit. A fresh companion
+  // reconnect creates exactly one recovery verification opportunity; otherwise
+  // background mode stays out of the browser until the human has recovered it.
+  if (needsAttention && !recoveryVerification) {
+    return {
+      ...result,
+      skipped:
+        'LinkedIn needs human verification on the paired computer; background browsing is paused until a fresh reconnect.'
+    };
+  }
   if (effectivePosture(seat, now) === 'paused' && !recoveryVerification) return result;
 
   // A NORMAL VISIT follows the deterministic daily rhythm. A COMPANION RETURN
@@ -1177,21 +1192,35 @@ export async function runLinkedInSideTasks(
       'inbox',
       'inbox sync',
       async () => {
-        result.inbox = await syncLinkedInInbox(db, config, shared);
+        result.inbox = await syncLinkedInInbox(db, config, {
+          ...shared,
+          // Background maintenance is intentionally narrow. A user-triggered
+          // inbox sync may ask for more, but a scheduled visit must never turn
+          // into a crawl of the member's entire recent messaging history.
+          maxThreads: options.maxThreads ?? 5,
+          maxMessages: options.maxMessages ?? 20,
+          sinceDays: options.sinceDays ?? 7
+        });
       }
     ],
     [
       'pending_invites',
       'pending-invite sync',
       async () => {
-        result.pendingInvites = await syncLinkedInPendingInvites(db, config, shared);
+        result.pendingInvites = await syncLinkedInPendingInvites(db, config, {
+          ...shared,
+          maxInvites: options.maxPendingInvites ?? 50
+        });
       }
     ],
     [
       'acceptance',
       'acceptance detection',
       async () => {
-        result.acceptance = await detectLinkedInAcceptances(db, config, shared);
+        result.acceptance = await detectLinkedInAcceptances(db, config, {
+          ...shared,
+          maxChecks: options.maxAcceptanceChecks ?? 3
+        });
       }
     ],
     [
@@ -1200,7 +1229,7 @@ export async function runLinkedInSideTasks(
       async () => {
         result.withdrawals = await runLinkedInWithdrawals(db, config, {
           ...shared,
-          ...(options.maxWithdrawals === undefined ? {} : { maxActions: options.maxWithdrawals })
+          maxActions: options.maxWithdrawals ?? 3
         });
       }
     ],
@@ -1208,7 +1237,12 @@ export async function runLinkedInSideTasks(
       'lead_sources',
       'lead sourcing',
       async () => {
-        result.leads = (await runLinkedInLeadSources(db, config, shared)).results;
+        result.leads = (
+          await runLinkedInLeadSources(db, config, {
+            ...shared,
+            maxSources: options.maxSources ?? 1
+          })
+        ).results;
       }
     ]
   ];
