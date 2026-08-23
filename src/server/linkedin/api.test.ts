@@ -869,63 +869,51 @@ describe('lead sourcing routes (030)', () => {
     else process.env[RELAY] = before.relay;
   });
 
-  it('is ON for a self-hosted deployment without anybody setting anything', async () => {
-    // The switch used to be opt-in, so a self-hoster's Find-leads screen refused
-    // with a sentence naming an environment variable they had no reason to know
-    // existed. `TREVRA_DEPLOYMENT_MODE=local` already says this Trevra serves
-    // one operator driving their own account.
+  it('disables browser-based lead harvesting even on self-hosted deployments', async () => {
     delete process.env[SOURCING];
     delete process.env[MODE];
-    const created = await as(sessionA)
+    const refused = await as(sessionA)
       .post('/api/linkedin/lead-sources')
       .send({
         kind: 'search',
         url: 'https://www.linkedin.com/search/results/people/?keywords=revops'
       })
-      .expect(201);
-    expect((created.body as { source: { kind: string } }).source.kind).toBe('search');
+      .expect(409);
+    expect((refused.body as { error: string }).error).toContain('Import a CSV');
 
     const listed = (await as(sessionA).get('/api/linkedin/lead-sources').expect(200)).body as {
       enabled: boolean;
       offReason: string | null;
     };
-    expect(listed.enabled).toBe(true);
-    expect(listed.offReason).toBeNull();
+    expect(listed.enabled).toBe(false);
+    expect(listed.offReason).toContain('Import a CSV');
   });
 
-  it('allows hosted lead sourcing when browser custody is the local companion', async () => {
+  it('does not re-enable browser harvesting just because hosted Companion is available', async () => {
     process.env[SOURCING] = 'true';
     process.env[MODE] = 'hosted';
     process.env[RELAY] = 'ws://trevra:8080';
     await seat(WORKSPACE_A, '2026-01-01');
-    const created = await as(sessionA)
+    const refused = await as(sessionA)
       .post('/api/linkedin/lead-sources')
       .send({
         kind: 'search',
         url: 'https://www.linkedin.com/search/results/people/?keywords=hosted-companion'
       })
-      .expect(201);
-    expect((created.body as { source: { kind: string } }).source.kind).toBe('search');
+      .expect(409);
+    expect((refused.body as { error: string }).error).toContain('Import a CSV');
 
     const listed = (await as(sessionA).get('/api/linkedin/lead-sources').expect(200)).body as {
       enabled: boolean;
       offReason: string | null;
-      sources: Array<{
-        nextRunAt?: string | null;
-        nextRunWindowEndAt?: string | null;
-        waitingFor?: string | null;
-      }>;
+      sources: unknown[];
     };
-    expect(listed.enabled).toBe(true);
-    expect(listed.offReason).toBeNull();
-    expect(listed.sources[0]?.waitingFor).toBe('computer');
-    expect(Date.parse(listed.sources[0]?.nextRunAt ?? '')).toBeGreaterThan(Date.now() - 60_000);
-    expect(Date.parse(listed.sources[0]?.nextRunWindowEndAt ?? '')).toBeGreaterThan(
-      Date.parse(listed.sources[0]?.nextRunAt ?? '')
-    );
+    expect(listed.enabled).toBe(false);
+    expect(listed.offReason).toContain('Import a CSV');
+    expect(listed.sources).toEqual([]);
   });
 
-  it('still refuses hosted lead sourcing when no local companion execution home exists', async () => {
+  it('uses the same disabled-harvesting refusal when no Companion exists', async () => {
     process.env[SOURCING] = 'true';
     process.env[MODE] = 'hosted';
     delete process.env[RELAY];
@@ -936,10 +924,10 @@ describe('lead sourcing routes (030)', () => {
         url: 'https://www.linkedin.com/search/results/people/?keywords=no-companion'
       })
       .expect(409);
-    expect((refused.body as { error: string }).error).toContain('local LinkedIn companion');
+    expect((refused.body as { error: string }).error).toContain('Import a CSV');
   });
 
-  it('refuses every write when the operator switched it off, and names the switch', async () => {
+  it('refuses every browser-harvesting write regardless of the old switch', async () => {
     process.env[SOURCING] = 'false';
     const refused = await as(sessionA)
       .post('/api/linkedin/lead-sources')
@@ -948,7 +936,7 @@ describe('lead sourcing routes (030)', () => {
         url: 'https://www.linkedin.com/search/results/people/?keywords=revops'
       })
       .expect(409);
-    expect((refused.body as { error: string }).error).toContain('TREVRA_LINKEDIN_LEAD_SOURCING');
+    expect((refused.body as { error: string }).error).toContain('Import a CSV');
   });
 
   it('still lists sources when the switch is off, reporting why rather than refusing', async () => {
@@ -961,7 +949,7 @@ describe('lead sourcing routes (030)', () => {
       sources: unknown[];
     };
     expect(listed.enabled).toBe(false);
-    expect(listed.offReason).toContain('TREVRA_LINKEDIN_LEAD_SOURCING=false');
+    expect(listed.offReason).toContain('Import a CSV');
     expect(listed.sources).toEqual([]);
   });
 });
@@ -1238,9 +1226,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     expect(body.maintenance.map((entry) => entry.task)).toEqual([
       'inbox',
       'pending_invites',
-      'acceptance',
-      'withdrawals',
-      'lead_sources'
+      'withdrawals'
     ]);
     expect(body.maintenance.every((entry) => entry.timezone === 'Europe/Zurich')).toBe(true);
     expect(

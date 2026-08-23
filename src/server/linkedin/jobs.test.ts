@@ -707,9 +707,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
     const first = await tick(returnedAt, tickDriver().driver, true);
     expect(first.ran).toHaveLength(MAX_CATCHUP_TASKS_PER_VISIT);
-    expect(new Set(first.ran)).toEqual(
-      new Set(['inbox', 'pending_invites', 'acceptance', 'withdrawals', 'lead_sources'])
-    );
+    expect(new Set(first.ran)).toEqual(new Set(['inbox', 'pending_invites', 'withdrawals']));
 
     const runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
     expect(runs.get(AVAILABILITY_CATCHUP_MARKER)?.getTime()).toBe(returnedAt.getTime());
@@ -741,13 +739,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
       }
     }
 
-    expect([...done].sort()).toEqual([
-      'acceptance',
-      'inbox',
-      'lead_sources',
-      'pending_invites',
-      'withdrawals'
-    ]);
+    expect([...done].sort()).toEqual(['inbox', 'pending_invites', 'withdrawals']);
   });
 
   it('confirms whose account this is ONCE for the visit, not once per job', async () => {
@@ -784,7 +776,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
       WORKSPACE_ID,
       'owner',
       'pending_invites',
-      new Date(VISIT_AT.getTime() - 8 * 3_600_000)
+      new Date(VISIT_AT.getTime() - 13 * 3_600_000)
     );
     const { driver, calls } = tickDriver();
 

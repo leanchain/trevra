@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   SELECTORS,
   normalisedProfileUrl,
@@ -55,11 +54,9 @@ import { hoverClick, readPage, settle } from './human.js';
  * `driver.ts` keeps these three private, so they are restated here rather than
  * exported from there.
  *
- * The same trade `local-worker.ts` made when it copied `seededRandom` out of
- * `pacing.ts`: widening another module's public surface to save three lines is
- * a worse deal than the three lines. They are deliberately identical values --
- * two driver files that time out differently would be a difference an operator
- * reading a ledger could not explain.
+ * They are deliberately identical values -- two driver files that time out
+ * differently would be a difference an operator reading a ledger could not
+ * explain.
  */
 const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
@@ -149,63 +146,26 @@ const CHECKPOINT_PATH = /\/(checkpoint|uas\/login)\//i;
  * ONE ledger action, and a human who waited two minutes between clicking
  * Endorse twice on the same page would be the anomaly, not the cover.
  *
- * 700-2600ms is UNVERIFIED-VENDOR: a judgement call about how fast a person
- * clicks two buttons in one viewport, not a published or reported number, and
- * it is recorded as a judgement rather than dressed up as evidence. It bounds
- * nothing safety-critical -- the ceilings in `engagement.ts` and the gate do
- * that -- so being wrong here costs plausibility, not an account.
+ * The fixed upper bound is conservative UI/load spacing between multiple
+ * clicks inside one explicit action. Safety-critical ceilings remain in
+ * `engagement.ts` and the gate.
  */
 const ENGAGE_GAP_MS = { min: 700, max: 2_600 };
 
-/**
- * mulberry32, seeded from a sha256 of the caller's seed string.
- *
- * The same generator, for the same reason, as `local-worker.ts` and
- * `pacing.ts`: identical inputs must produce identical timing on every machine
- * and every Node version, and `Math.random()` guarantees the opposite. There
- * is no `Math.random()` anywhere in this file and there must never be one --
- * a driver whose pauses cannot be reproduced is a driver whose behaviour
- * cannot be asserted.
- *
- * (Copied rather than imported, exactly as `local-worker.ts` copied it out of
- * `pacing.ts`, because both keep it private and importing `local-worker.ts`
- * from here would close a cycle: the worker is what calls this file.)
- */
-function seededRandom(seed: string): () => number {
-  let state = Number.parseInt(seed.slice(0, 8), 16) >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
-/**
- * Milliseconds to pause before the next click within one action.
- *
- * Randomised here means UNPREDICTABLE TO LINKEDIN, not unreproducible to us --
- * `actionGapSeconds` in `local-worker.ts` says the same thing about the same
- * trade. Exported so a test can assert the determinism rather than hope for it.
- */
-export function engageGapMs(seed: string): number {
-  const digest = createHash('sha256').update(seed).digest('hex');
-  const random = seededRandom(digest);
-  return Math.round(ENGAGE_GAP_MS.min + random() * (ENGAGE_GAP_MS.max - ENGAGE_GAP_MS.min));
+/** Fixed conservative maximum pause between multiple clicks inside one explicit action. */
+export function engageGapMs(_seed: string): number {
+  return ENGAGE_GAP_MS.max;
 }
 
 /**
  * What every engagement routine accepts beyond its target.
  *
  * Both fields exist for the same reason the driver takes a `page` instead of
- * launching one: the caller owns the clock. `sleep` is injected so a test does
- * not really wait, and `seed` is injected so the batch and action ids are what
- * the jitter is derived from -- which is what makes one batch's pauses
- * reproducible from the ledger alone.
+ * launching one: the caller owns the clock. `sleep` is injected so tests do
+ * not really wait; `seed` is retained for call-site compatibility/log labels.
  */
 export interface EngageOptions {
-  /** Seed for the deterministic jitter. Defaults to the target string. */
+  /** Compatibility/replay label. Defaults to the target string. */
   seed?: string;
   /** Defaults to a real timer. */
   sleep?: (ms: number) => Promise<void>;

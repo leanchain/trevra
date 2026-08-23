@@ -562,15 +562,9 @@ describe('listConversations', () => {
     // is opened with one return to the rail between them. Reading the existing
     // participant href adds no navigation of its own.
     expect(first.slept).toHaveLength(2);
-    // Reproducible, which is what a seeded draw buys and Math.random() destroys.
     expect(second.slept).toEqual(first.slept);
-    expect(other.slept).not.toEqual(first.slept);
-    for (const ms of first.slept) {
-      expect(ms).toBeGreaterThanOrEqual(READ_GAP_SECONDS.min * 1000);
-      expect(ms).toBeLessThanOrEqual(READ_GAP_SECONDS.max * 1000);
-    }
-    // The draw has no pattern a rate limiter could key on.
-    expect(new Set(first.slept).size).toBeGreaterThan(1);
+    expect(other.slept).toEqual(first.slept);
+    expect(first.slept).toEqual([READ_GAP_SECONDS.max * 1000, READ_GAP_SECONDS.max * 1000]);
   });
 
   it('skips participant-link resolution when the caller already has the URL', async () => {
@@ -655,10 +649,10 @@ describe('listConversations', () => {
     expect(listing.degraded[0]).toContain('cannot be matched to a campaign target');
   });
 
-  it('defaults to a thirty-day window rather than a count', () => {
+  it('defaults to a thirty-day window and fixed conservative read spacing', () => {
     expect(DEFAULT_SINCE_DAYS).toBe(30);
-    expect(readGapSeconds('a')).not.toBe(readGapSeconds('b'));
-    expect(readGapSeconds('a')).toBe(readGapSeconds('a'));
+    expect(readGapSeconds('a')).toBe(READ_GAP_SECONDS.max);
+    expect(readGapSeconds('b')).toBe(READ_GAP_SECONDS.max);
   });
 
   it('walks EVERY conversation inside the window, with no count of its own', async () => {

@@ -868,33 +868,17 @@ export async function runLinkedInLeadSources(
     env?: NodeJS.ProcessEnv;
   }
 ): Promise<{ blocked: string | null; results: LeadSourceRunResult[] }> {
-  const leadConfig = leadSourcingConfig(options.env ?? process.env);
-  if (!leadSourcingEnabled(leadConfig)) return { blocked: null, results: [] };
-
-  const session = await openLinkedInSession(db, config, options);
-  if (!session.ok) return { blocked: session.blocked, results: [] };
-
-  const results = await runPendingLeadSources(
-    db,
-    options.workspaceId,
-    {
-      page: session.page as unknown as LinkedInScrapePage,
-      config: leadConfig,
-      // Whose session this page is signed into, so the posture that may refuse
-      // a page fetch is that account's and not the owner seat's by default.
-      seatKey: options.seatKey ?? OWNER_SEAT_KEY,
-      ...(options.scraper === undefined ? {} : { scraper: options.scraper }),
-      now: () => options.now ?? new Date(),
-      ...(options.log === undefined ? {} : { log: options.log })
-    },
-    // ONE SOURCE PER VISIT ON THE UNATTENDED PATH. The default is 3, which is
-    // right for an operator who clicked "find leads" and is watching; a visit
-    // is two to five minutes and already reads one to three pages of the
-    // source it picks. Three sources deep would put nine search-page loads in
-    // a window a person spends checking their messages.
-    { maxSources: options.maxSources ?? 1 }
-  );
-  return { blocked: null, results };
+  // Production browser harvesting is disabled. Keep the lower-level lead-source
+  // modules testable and existing results readable, but never open LinkedIn to
+  // collect new people from search/member surfaces.
+  void db;
+  void config;
+  void options;
+  return {
+    blocked:
+      'Browser-based LinkedIn lead sourcing is disabled. Import a CSV, add profiles manually, or use an existing lead list instead.',
+    results: []
+  };
 }
 
 /* ---------------------------------------------------------------------------
@@ -1197,9 +1181,9 @@ export async function runLinkedInSideTasks(
           // Background maintenance is intentionally narrow. A user-triggered
           // inbox sync may ask for more, but a scheduled visit must never turn
           // into a crawl of the member's entire recent messaging history.
-          maxThreads: options.maxThreads ?? 5,
-          maxMessages: options.maxMessages ?? 20,
-          sinceDays: options.sinceDays ?? 7
+          maxThreads: options.maxThreads ?? 3,
+          maxMessages: options.maxMessages ?? 10,
+          sinceDays: options.sinceDays ?? 3
         });
       }
     ],
@@ -1209,7 +1193,7 @@ export async function runLinkedInSideTasks(
       async () => {
         result.pendingInvites = await syncLinkedInPendingInvites(db, config, {
           ...shared,
-          maxInvites: options.maxPendingInvites ?? 50
+          maxInvites: options.maxPendingInvites ?? 25
         });
       }
     ],

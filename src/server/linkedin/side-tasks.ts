@@ -55,16 +55,17 @@ import {
 } from './pacing.js';
 export { VISITS_PER_DAY, VISIT_MINUTES, visitsForDay, type Visit };
 
-/** The five jobs in `runLinkedInSideTasks`, in the order that function runs them. */
-export type SideTaskName = 'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
+/** All supported maintenance jobs. Only the two read-only reconciliation jobs run unattended. */
+export type SideTaskName =
+  'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
 
-export const SIDE_TASK_NAMES: readonly SideTaskName[] = [
-  'inbox',
-  'pending_invites',
-  'acceptance',
-  'withdrawals',
-  'lead_sources'
-];
+/**
+ * Background automation is intentionally narrow and read-only. Acceptance checks open member
+ * profiles, withdrawals mutate LinkedIn state, and lead sourcing harvests
+ * search/profile data; those require an explicit operator action instead of a
+ * scheduled background visit.
+ */
+export const SIDE_TASK_NAMES: readonly SideTaskName[] = ['inbox', 'pending_invites', 'withdrawals'];
 
 /**
  * The jobs that must know WHOSE account is signed in before they run, and the
@@ -81,7 +82,9 @@ export const SIDE_TASK_NAMES: readonly SideTaskName[] = [
  * that runs only those would be a profile load bought for nothing -- which is
  * exactly the class of page load this whole change is about.
  */
-export const SIDE_TASKS_NEEDING_IDENTITY: ReadonlySet<SideTaskName> = new Set<SideTaskName>(['inbox', 'acceptance']);
+export const SIDE_TASKS_NEEDING_IDENTITY: ReadonlySet<SideTaskName> = new Set<SideTaskName>([
+  'inbox'
+]);
 
 /* ---------------------------------------------------------------------------
  * The visit
@@ -102,7 +105,8 @@ export const SIDE_TASKS_NEEDING_IDENTITY: ReadonlySet<SideTaskName> = new Set<Si
  * The availability-return path below may do every stale maintenance category
  * once; neither path replays missed visits or raises send limits.
  */
-export const MAX_TASKS_PER_VISIT = 3;
+// One background maintenance category per visit keeps each browser session narrow.
+export const MAX_TASKS_PER_VISIT = 1;
 export const MAX_CATCHUP_TASKS_PER_VISIT = SIDE_TASK_NAMES.length;
 export const AVAILABILITY_RETURN_MARKER = 'availability_return';
 export const AVAILABILITY_CATCHUP_MARKER = 'availability_catchup';
@@ -123,8 +127,8 @@ export const AVAILABILITY_CATCHUP_MARKER = 'availability_catchup';
  * diligent than any real member.
  */
 export const SIDE_TASK_MIN_HOURS: Record<SideTaskName, number> = {
-  inbox: 0.7,
-  pending_invites: 6,
+  inbox: 2,
+  pending_invites: 12,
   acceptance: 10,
   withdrawals: 20,
   lead_sources: 5
@@ -176,7 +180,11 @@ export const VISIT_MARKER = 'visit';
  * out 09:12-16:40 and whose inbox is polled at 04:00 is two different actors
  * sharing a cookie.
  */
-export function visitAt(seat: SideTaskSeat, now: Date, options: { dayShape?: DayShapeFn } = {}): VisitVerdict {
+export function visitAt(
+  seat: SideTaskSeat,
+  now: Date,
+  options: { dayShape?: DayShapeFn } = {}
+): VisitVerdict {
   const shapeDay = options.dayShape ?? dayShapeFor;
   const window = workWindowOf(seat);
   const local = localDateOf(now, seat.timezone);
@@ -196,13 +204,19 @@ export function visitAt(seat: SideTaskSeat, now: Date, options: { dayShape?: Day
 
   const minuteOfDay = local.hour * 60 + local.minute;
   const visits = visitsForDay(`${seat.workspaceId}:${seat.seatKey}`, local, shape);
-  const visit = visits.find((candidate) => minuteOfDay >= candidate.startMinute && minuteOfDay < candidate.endMinute);
+  const visit = visits.find(
+    (candidate) => minuteOfDay >= candidate.startMinute && minuteOfDay < candidate.endMinute
+  );
   if (!visit) {
     return away(
       `It is ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${seat.timezone}; this seat opens LinkedIn ${visits.length} time(s) today and none of them is now.`
     );
   }
-  return { visit, startedAt: zonedToUtc(local, visit.startMinute * 60, seat.timezone), reason: null };
+  return {
+    visit,
+    startedAt: zonedToUtc(local, visit.startMinute * 60, seat.timezone),
+    reason: null
+  };
 }
 
 /* ---------------------------------------------------------------------------
@@ -246,7 +260,11 @@ export function resetSideTaskRuns(): void {
   localRuns.clear();
 }
 
-export async function sideTaskRuns(db: Db, workspaceId: string, seatKey: string): Promise<SideTaskRuns> {
+export async function sideTaskRuns(
+  db: Db,
+  workspaceId: string,
+  seatKey: string
+): Promise<SideTaskRuns> {
   const runs: SideTaskRuns = new Map();
   // The in-process floor first, so a database that cannot answer still bounds
   // the visit. Anything the column knows overwrites it below.
@@ -256,7 +274,9 @@ export async function sideTaskRuns(db: Db, workspaceId: string, seatKey: string)
   }
   try {
     const rows = await db
-      .prepare('SELECT task,last_run_at FROM linkedin_side_task_runs WHERE workspace_id=? AND seat_key=?')
+      .prepare(
+        'SELECT task,last_run_at FROM linkedin_side_task_runs WHERE workspace_id=? AND seat_key=?'
+      )
       .all<{ task: string; last_run_at: string }>(workspaceId, seatKey);
     for (const row of rows) {
       const at = new Date(String(row.last_run_at));
@@ -269,7 +289,8 @@ export async function sideTaskRuns(db: Db, workspaceId: string, seatKey: string)
   return runs;
 }
 
-export type SideTaskCadenceMarker = SideTaskName
+export type SideTaskCadenceMarker =
+  | SideTaskName
   | typeof VISIT_MARKER
   | typeof AVAILABILITY_RETURN_MARKER
   | typeof AVAILABILITY_CATCHUP_MARKER;
@@ -303,17 +324,27 @@ export async function markSideTaskRun(
  * after its presence lease had expired. The worker consumes this once per seat
  * as a consolidated state catch-up, never as replay of the missed clock ticks.
  */
-export async function markWorkspaceAvailabilityReturn(db: Db, workspaceId: string, at: Date): Promise<void> {
+export async function markWorkspaceAvailabilityReturn(
+  db: Db,
+  workspaceId: string,
+  at: Date
+): Promise<void> {
   try {
-    const seats = await db.prepare('SELECT seat_key FROM linkedin_seats WHERE workspace_id=?')
+    const seats = await db
+      .prepare('SELECT seat_key FROM linkedin_seats WHERE workspace_id=?')
       .all<{ seat_key: string }>(workspaceId);
-    for (const seat of seats) localRuns.set(localKey(workspaceId, seat.seat_key, AVAILABILITY_RETURN_MARKER), at);
+    for (const seat of seats)
+      localRuns.set(localKey(workspaceId, seat.seat_key, AVAILABILITY_RETURN_MARKER), at);
     if (seats.length === 0) return;
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO linkedin_side_task_runs (workspace_id,seat_key,task,last_run_at)
       SELECT workspace_id,seat_key,?,? FROM linkedin_seats WHERE workspace_id=?
       ON CONFLICT (workspace_id,seat_key,task) DO UPDATE SET last_run_at=EXCLUDED.last_run_at
-    `).run(AVAILABILITY_RETURN_MARKER, at.toISOString(), workspaceId);
+    `
+      )
+      .run(AVAILABILITY_RETURN_MARKER, at.toISOString(), workspaceId);
   } catch {
     // Availability recovery is a convenience, never a reason pairing/presence
     // should fail on an un-migrated or shutting-down database.

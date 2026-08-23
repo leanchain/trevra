@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   SELECTORS,
   normalisedProfileUrl,
@@ -29,11 +28,8 @@ import { hoverClick, readPage, settle, typeLike } from './human.js';
  *     checked against ALLOWED_HOSTS before it is trusted.
  *
  * A FEW CONSTANTS ARE COPIED FROM `driver.ts` RATHER THAN IMPORTED, because
- * that module keeps them private. This is the same trade `local-worker.ts`
- * documents where it copies `seededRandom` out of `pacing.ts`: reaching into
- * another module's internals -- or widening its exported surface for a
- * convenience -- is a worse deal than a few lines that are visibly identical.
- * They must stay identical; a reviewer changing one changes both.
+ * that module keeps them private. They must stay identical; a reviewer changing
+ * one changes both.
  *
  * READING IS NOT SENDING, AND ONLY ONE ROUTINE HERE SENDS ANYTHING.
  * `listConversations` and `readThread` write nothing to LinkedIn and consume no
@@ -381,37 +377,9 @@ const MAX_MESSAGES_CEILING = 200;
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
-/**
- * mulberry32, seeded from a hash of the run and the step.
- *
- * The same generator, copied for the same stated reason, as `local-worker.ts`
- * and `pacing.ts`: identical inputs must produce identical timing on every
- * machine and every Node version. `Math.random()` guarantees the opposite and
- * appears nowhere in this subsystem.
- */
-function seededRandom(seed: string): () => number {
-  let state = Number.parseInt(seed.slice(0, 8), 16) >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
-/**
- * Seconds to wait before the next navigation, drawn from READ_GAP_SECONDS.
- *
- * Randomised here means UNPREDICTABLE TO LINKEDIN, not unreproducible to us:
- * the sequence has no pattern a rate limiter could key on, and re-running the
- * same walk produces the same gaps, so a test asserts the delays instead of
- * tolerating them.
- */
-export function readGapSeconds(seed: string): number {
-  const digest = createHash('sha256').update(seed).digest('hex');
-  const random = seededRandom(digest);
-  return READ_GAP_SECONDS.min + random() * (READ_GAP_SECONDS.max - READ_GAP_SECONDS.min);
+/** Fixed conservative maximum spacing between inbox navigations. */
+export function readGapSeconds(_seed: string): number {
+  return READ_GAP_SECONDS.max;
 }
 
 export interface InboxWalkOptions {

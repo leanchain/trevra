@@ -169,7 +169,8 @@ function fakePage(options: FakePageOptions = {}): FakePage {
           }
         });
       }
-      if (selector === SELECTORS.challengeForm) return locator({ count: wall === 'challenge' ? 1 : 0 });
+      if (selector === SELECTORS.challengeForm)
+        return locator({ count: wall === 'challenge' ? 1 : 0 });
       if (selector === SELECTORS.restrictionNotice || selector === SELECTORS.limitWall) {
         return locator({ count: wall === 'limit' ? 1 : 0 });
       }
@@ -182,12 +183,17 @@ function fakePage(options: FakePageOptions = {}): FakePage {
 
 const NOW = new Date('2026-08-04T09:00:00.000Z');
 
-function card(handle: string, sentAt: string | null = 'Sent 3 weeks ago', extra: Partial<FakeCard> = {}): FakeCard {
+function card(
+  handle: string,
+  sentAt: string | null = 'Sent 3 weeks ago',
+  extra: Partial<FakeCard> = {}
+): FakeCard {
   return { href: `/in/${handle}/`, name: handle, sentAt, ...extra };
 }
 
 function expectList(value: PendingInviteList | LinkedInDriverResult): PendingInviteList {
-  if (!isPendingInviteList(value)) throw new Error(`expected a list, got ${value.failureKind}: ${value.detail}`);
+  if (!isPendingInviteList(value))
+    throw new Error(`expected a list, got ${value.failureKind}: ${value.detail}`);
   return value;
 }
 
@@ -223,15 +229,9 @@ describe('parsePendingSince', () => {
 });
 
 describe('pageGapSeconds', () => {
-  it('is deterministic and inside the band', () => {
-    const first = pageGapSeconds('seed:0');
-    expect(pageGapSeconds('seed:0')).toBe(first);
-    expect(first).toBeGreaterThanOrEqual(2);
-    expect(first).toBeLessThanOrEqual(6);
-  });
-
-  it('differs between pages of the same read', () => {
-    expect(pageGapSeconds('seed:0')).not.toBe(pageGapSeconds('seed:1'));
+  it('uses the maximum list-expansion spacing regardless of seed', () => {
+    expect(pageGapSeconds('seed:0')).toBe(6);
+    expect(pageGapSeconds('seed:1')).toBe(6);
   });
 });
 
@@ -241,8 +241,16 @@ describe('listPendingInvites', () => {
     const list = expectList(await listPendingInvites(page, { now: NOW }));
 
     expect(list.invites).toEqual([
-      { profileUrl: 'https://www.linkedin.com/in/maya/', name: 'maya', sentAt: '2026-07-14T09:00:00.000Z' },
-      { profileUrl: 'https://www.linkedin.com/in/sam/', name: 'sam', sentAt: '2026-08-02T09:00:00.000Z' }
+      {
+        profileUrl: 'https://www.linkedin.com/in/maya/',
+        name: 'maya',
+        sentAt: '2026-07-14T09:00:00.000Z'
+      },
+      {
+        profileUrl: 'https://www.linkedin.com/in/sam/',
+        name: 'sam',
+        sentAt: '2026-08-02T09:00:00.000Z'
+      }
     ]);
     expect(list.truncated).toBe(false);
     expect(list.degraded).toEqual([]);
@@ -259,7 +267,9 @@ describe('listPendingInvites', () => {
     // "You have no pending invites" and "we could not see your pending invites"
     // lead to opposite decisions, so they must never collapse into one answer.
     const { page } = fakePage({ cards: [], emptyState: false, strayProfileLinks: true });
-    expect(expectFailure(await listPendingInvites(page, { now: NOW })).failureKind).toBe('selector_drift');
+    expect(expectFailure(await listPendingInvites(page, { now: NOW })).failureKind).toBe(
+      'selector_drift'
+    );
   });
 
   /**
@@ -279,7 +289,10 @@ describe('listPendingInvites', () => {
   });
 
   it('reads everything the last expansion loaded', async () => {
-    const { page, clicks } = fakePage({ cards: [card('a')], morePages: [[card('b')], [card('c')]] });
+    const { page, clicks } = fakePage({
+      cards: [card('a')],
+      morePages: [[card('b')], [card('c')]]
+    });
     const list = expectList(await listPendingInvites(page, { now: NOW, seed: 'fixed' }));
 
     expect(list.invites.map((invite) => invite.profileUrl)).toEqual([
@@ -311,7 +324,9 @@ describe('listPendingInvites', () => {
   });
 
   it('bounds the number of expansions', async () => {
-    const morePages = Array.from({ length: MAX_LIST_PAGES + 5 }, (_unused, index) => [card(`x${index}`)]);
+    const morePages = Array.from({ length: MAX_LIST_PAGES + 5 }, (_unused, index) => [
+      card(`x${index}`)
+    ]);
     const { page, clicks } = fakePage({ cards: [card('a')], morePages });
     const list = expectList(await listPendingInvites(page, { now: NOW }));
 
@@ -336,24 +351,32 @@ describe('listPendingInvites', () => {
   });
 
   it('drops a card whose href points off LinkedIn', async () => {
-    const { page } = fakePage({ cards: [{ href: 'https://evil.example/in/maya/', name: 'x', sentAt: '1d' }] });
+    const { page } = fakePage({
+      cards: [{ href: 'https://evil.example/in/maya/', name: 'x', sentAt: '1d' }]
+    });
     const list = expectList(await listPendingInvites(page, { now: NOW }));
     expect(list.invites).toEqual([]);
   });
 
   it('reports a challenge on the sent-invitations page and reads nothing', async () => {
     const { page } = fakePage({ cards: [card('maya')], wall: 'challenge' });
-    expect(expectFailure(await listPendingInvites(page, { now: NOW })).failureKind).toBe('challenge');
+    expect(expectFailure(await listPendingInvites(page, { now: NOW })).failureKind).toBe(
+      'challenge'
+    );
   });
 
   it('reports a restriction notice as a limit wall', async () => {
     const { page } = fakePage({ cards: [card('maya')], wall: 'limit' });
-    expect(expectFailure(await listPendingInvites(page, { now: NOW })).failureKind).toBe('limit_wall');
+    expect(expectFailure(await listPendingInvites(page, { now: NOW })).failureKind).toBe(
+      'limit_wall'
+    );
   });
 
   it('reports a failed navigation as drift, because nothing was clicked', async () => {
     const { page } = fakePage({ navFails: true });
-    expect(expectFailure(await listPendingInvites(page, { now: NOW })).failureKind).toBe('selector_drift');
+    expect(expectFailure(await listPendingInvites(page, { now: NOW })).failureKind).toBe(
+      'selector_drift'
+    );
   });
 });
 
@@ -366,7 +389,11 @@ describe('withdrawInvite', () => {
     });
     const result = await withdrawInvite(page, 'https://www.linkedin.com/in/sam/');
 
-    expect(result).toEqual({ ok: true, externalRef: 'https://www.linkedin.com/in/sam/', failureKind: null });
+    expect(result).toEqual({
+      ok: true,
+      externalRef: 'https://www.linkedin.com/in/sam/',
+      failureKind: null
+    });
     expect(clicks).toEqual(['withdraw:/in/sam/', 'confirm']);
   });
 
@@ -400,7 +427,10 @@ describe('withdrawInvite', () => {
   });
 
   it('expands the list to find an invite further down it', async () => {
-    const { page, clicks } = fakePage({ cards: [card('a')], morePages: [[card('b')], [card('target')]] });
+    const { page, clicks } = fakePage({
+      cards: [card('a')],
+      morePages: [[card('b')], [card('target')]]
+    });
     const result = await withdrawInvite(page, 'target');
 
     expect(result.ok).toBe(true);

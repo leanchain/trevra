@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   SELECTORS,
   normalisedProfileUrl,
@@ -49,10 +48,8 @@ import { hoverClick, readPage, settle } from './human.js';
  * absent -- the caller cannot opt out of that check, because it is not a
  * parameter.
  *
- * NO `Math.random()`. The pauses while paging the list are drawn from a
- * generator seeded by the caller's seed and the page index, the same
- * convention `local-worker.ts` and `pacing.ts` use, for the same reason:
- * unpredictable to LinkedIn, reproducible for us, assertable in a test.
+ * List expansion uses a fixed conservative pause. Timing exists to bound load,
+ * not to disguise the automation mechanism.
  */
 
 /* ---------------------------------------------------------------------------
@@ -153,7 +150,9 @@ export interface LinkedInWithdrawDriver {
 }
 
 /** Narrow a list read. A read carries no `failureKind`; a failure always does. */
-export function isPendingInviteList(value: PendingInviteList | LinkedInDriverResult): value is PendingInviteList {
+export function isPendingInviteList(
+  value: PendingInviteList | LinkedInDriverResult
+): value is PendingInviteList {
   return !('failureKind' in value);
 }
 
@@ -247,36 +246,8 @@ export const MAX_PENDING_INVITES = 500;
  */
 const PAGE_GAP_SECONDS = { min: 2, max: 6 };
 
-/* ---------------------------------------------------------------------------
- * Deterministic jitter -- the local-worker.ts convention
- * ------------------------------------------------------------------------ */
-
-/**
- * mulberry32, seeded from a hash of the caller's seed and the page index.
- *
- * The same generator as `pacing.ts` and `local-worker.ts`, copied for the
- * reason `local-worker.ts` states: both of those keep it private, and reaching
- * into another module's internals to save six lines is a worse trade than the
- * six lines. Importing `local-worker.ts` from a driver would be worse still --
- * it would drag the worker's filesystem and secrets dependencies into the one
- * layer that must keep compiling with Playwright absent.
- */
-function seededRandom(seed: string): () => number {
-  let state = Number.parseInt(seed.slice(0, 8), 16) >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
-/** Seconds to wait before expanding the list again. Seeded, so it is assertable. */
-export function pageGapSeconds(seed: string): number {
-  const digest = createHash('sha256').update(seed).digest('hex');
-  const random = seededRandom(digest);
-  return PAGE_GAP_SECONDS.min + random() * (PAGE_GAP_SECONDS.max - PAGE_GAP_SECONDS.min);
+export function pageGapSeconds(_seed: string): number {
+  return PAGE_GAP_SECONDS.max;
 }
 
 /* ---------------------------------------------------------------------------
@@ -393,7 +364,11 @@ async function cardProfileUrl(card: LinkedInListLocator): Promise<string | null>
  * The pause happens BEFORE the click, seeded by the caller's seed and the page
  * index, so the same read produces the same rhythm on every machine.
  */
-async function expandList(page: LinkedInListPage, pageIndex: number, seed: string): Promise<boolean> {
+async function expandList(
+  page: LinkedInListPage,
+  pageIndex: number,
+  seed: string
+): Promise<boolean> {
   const more = page.locator(WITHDRAW_SELECTORS.showMoreButton);
   try {
     if ((await more.count()) === 0) return false;
@@ -535,9 +510,16 @@ export async function listPendingInvites(
       // A card LinkedIn rendered twice across an expansion is one invite.
       if (seen.has(profileUrl)) continue;
       seen.add(profileUrl);
-      const sentAt = parsePendingSince(await textOf(card, WITHDRAW_SELECTORS.invitationSentAt), now);
+      const sentAt = parsePendingSince(
+        await textOf(card, WITHDRAW_SELECTORS.invitationSentAt),
+        now
+      );
       if (sentAt === null) undated += 1;
-      invites.push({ profileUrl, name: await textOf(card, WITHDRAW_SELECTORS.invitationName), sentAt });
+      invites.push({
+        profileUrl,
+        name: await textOf(card, WITHDRAW_SELECTORS.invitationName),
+        sentAt
+      });
     }
 
     if (invites.length >= maxInvites) {
@@ -584,7 +566,10 @@ export async function listPendingInvites(
  * nothing to do, definitely" -- and the caller must not read it as "the invite
  * was withdrawn".
  */
-export async function withdrawInvite(page: LinkedInListPage, profileUrl: string): Promise<LinkedInDriverResult> {
+export async function withdrawInvite(
+  page: LinkedInListPage,
+  profileUrl: string
+): Promise<LinkedInDriverResult> {
   const raw = profileUrl.trim();
   const url = /^https?:\/\//i.test(raw) ? normalisedProfileUrl(raw) : profileUrlFor(raw);
   if (!url) {
@@ -698,4 +683,7 @@ export async function withdrawInvite(page: LinkedInListPage, profileUrl: string)
 }
 
 /** The real driver. `withdraw.ts` takes this behind an interface so tests need no browser. */
-export const playwrightWithdrawDriver: LinkedInWithdrawDriver = { listPendingInvites, withdrawInvite };
+export const playwrightWithdrawDriver: LinkedInWithdrawDriver = {
+  listPendingInvites,
+  withdrawInvite
+};

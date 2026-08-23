@@ -289,9 +289,6 @@ import {
   createLeadSource,
   dailyLeadAllowance,
   getLeadSource,
-  leadSourcingConfig,
-  leadSourcingEnabled,
-  leadSourcingOffReason,
   listLeadSources,
   listLeads,
   setDailyLeadCap,
@@ -5561,52 +5558,15 @@ export function createApp(db: Db) {
     linkedinRoute(async (req, res) => {
       const filters = linkedinLeadListSchema.parse(req.query);
       const workspaceId = req.auth!.workspaceId;
-      const config = leadSourcingConfig();
       const sources = await listLeadSources(db, workspaceId, filters.limit, filters.seatKey);
-      const pending = sources
-        .filter((source) => source.status === 'pending')
-        .sort((left, right) => left.requestedAt.localeCompare(right.requestedAt));
-      const schedule = new Map<string, SideTaskScheduleView>();
-      const now = new Date();
-      const waitingFor =
-        pending.length > 0
-          ? await linkedinQueueWaitReason(db, workspaceId, filters.seatKey, now)
-          : null;
 
-      if (pending.length > 0 && leadSourcingEnabled(config)) {
-        const opportunities = await sideTaskSchedule(
-          db,
-          workspaceId,
-          'lead_sources',
-          now,
-          pending.length,
-          filters.seatKey
-        );
-        pending.forEach((source, index) => {
-          const opportunity = opportunities[index];
-          if (opportunity) schedule.set(source.id, opportunity);
-        });
-      }
-
+      // Historical sources/results remain readable, but no new browser harvest
+      // is scheduled or exposed as enabled. Pending legacy rows deliberately
+      // carry no next-run/waiting state because they will not execute.
       res.json({
-        enabled: leadSourcingEnabled(config),
-        offReason: leadSourcingEnabled(config) ? null : leadSourcingOffReason(config),
-        sources: sources.map((source) => {
-          const next = schedule.get(source.id);
-          if (source.status !== 'pending') return source;
-          return {
-            ...source,
-            ...(next
-              ? {
-                  nextRunAt: next.startAt.toISOString(),
-                  nextRunWindowEndAt: next.endAt.toISOString(),
-                  nextRunTimezone: next.timezone,
-                  nextRunSeatLabel: next.seatLabel
-                }
-              : {}),
-            waitingFor
-          };
-        })
+        enabled: false,
+        offReason: DISABLED_LINKEDIN_LEAD_SOURCING_REASON,
+        sources
       });
     })
   );
@@ -7566,17 +7526,17 @@ function linkedinWorkerConfigOrRefuse(): LinkedInLocalWorkerConfig {
 }
 
 /**
- * Lead sourcing's own gate, and the 409 that names WHICH kind of off.
- *
- * Two different refusals wearing one status code: hosted is a decision the
- * deployment made and no environment variable can undo it, so the sentence must
- * not send an operator hunting for a switch; anything else has one, and the
- * sentence names it. `leadSourcingOffReason` holds both, and this is the only
- * place a route decides between them.
+ * Production gate for browser-based LinkedIn harvesting. Existing rows remain
+ * readable, but creating a new browser walk is always refused.
  */
+const DISABLED_LINKEDIN_LEAD_SOURCING_REASON =
+  'Browser-based LinkedIn lead sourcing is disabled. Import a CSV, add profiles manually, or use an existing lead list instead.';
+
 function assertLeadSourcingOn(): void {
-  const config = leadSourcingConfig();
-  if (!leadSourcingEnabled(config)) throw new LinkedInApiError(leadSourcingOffReason(config), 409);
+  // Browser-based LinkedIn harvesting is not exposed as a production action.
+  // Existing harvested rows remain readable/importable, but creating a new
+  // browser walk is refused at the HTTP boundary.
+  throw new LinkedInApiError(DISABLED_LINKEDIN_LEAD_SOURCING_REASON, 409);
 }
 
 type SideTaskScheduleView = {

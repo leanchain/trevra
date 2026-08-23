@@ -147,11 +147,6 @@ afterEach(async () => {
 
 describe('the gate', () => {
   it('is ON by default for a self-hosted or local deployment', () => {
-    // It used to be opt-in, on the argument that harvesting is a different
-    // decision from sending. The DEPLOYMENT already made that decision:
-    // `TREVRA_DEPLOYMENT_MODE=local` says this Trevra serves one operator
-    // driving their own account, and every other capability that follows from
-    // that defaults on for them.
     expect(leadSourcingEnabled(leadSourcingConfig({}))).toBe(true);
     expect(leadSourcingEnabled(leadSourcingConfig({ TREVRA_DEPLOYMENT_MODE: 'local' }))).toBe(true);
     expect(leadSourcingEnabled(leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_SOURCING: 'true' }))).toBe(
@@ -159,11 +154,10 @@ describe('the gate', () => {
     );
   });
 
-  it('is switched off only by an explicit false', () => {
+  it('is switched off by an explicit false', () => {
     const off = leadSourcingConfig({ TREVRA_LINKEDIN_LEAD_SOURCING: 'false' });
     expect(off.optIn).toBe(false);
     expect(leadSourcingEnabled(off)).toBe(false);
-    // And the sentence names the setting that did it, so nobody hunts.
     expect(leadSourcingOffReason(off)).toContain('TREVRA_LINKEDIN_LEAD_SOURCING=false');
   });
 

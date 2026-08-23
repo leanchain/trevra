@@ -131,16 +131,7 @@ export interface LinkedInLocator {
    * submit control rather than as a failure.
    */
   press?(key: string, options?: { timeout?: number }): Promise<void>;
-  /**
-   * OPTIONAL, and absent on every fake here for the same reason `press` is.
-   *
-   * `hover` walks the pointer to the control before it is clicked, and
-   * `pressSequentially` puts text in a field one keystroke at a time. Both are
-   * BEHAVIOUR, never correctness -- see `human.ts` for why a click with no
-   * preceding pointer movement and a note that materialises in one `input`
-   * event are two of the loudest automation signals a page can emit. A locator
-   * without them does exactly what this file did before they existed.
-   */
+  /** Optional Playwright capabilities retained for driver compatibility. */
   hover?(options?: { timeout?: number }): Promise<void>;
   pressSequentially?(text: string, options?: { delay?: number; timeout?: number }): Promise<void>;
   textContent(options?: { timeout?: number }): Promise<string | null>;

@@ -8,7 +8,6 @@ import {
   browserProviderSettings,
   openSeatBrowser,
   type BrowserStorageState,
-  type ProviderBrowserContext,
   type ProviderDriver
 } from '../browser/provider.js';
 import { readLinkedInCredentials } from '../secrets/linkedin.js';
@@ -47,7 +46,7 @@ import {
   type LinkedInThreadSummary
 } from './driver-inbox.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
-import { readPage, setHumanSessionSalt, settle, type HumanPage } from './human.js';
+import { readPage, settle, type HumanPage } from './human.js';
 import {
   pruneSeatEvents,
   recordSeatEvent,
@@ -817,18 +816,14 @@ function seededRandom(seed: string): () => number {
 }
 
 /**
- * Seconds to wait before the next action, drawn from ACTION_GAP_SECONDS.
+ * Conservative fixed maximum gap between ledger actions.
  *
- * The plan asks for "randomised 30-120s gaps" (1.4), and randomised here means
- * UNPREDICTABLE TO LINKEDIN, not unreproducible to us. A seeded draw is both:
- * the sequence has no pattern a rate-limiter could key on, and re-running the
- * same batch produces the same gaps, so this is assertable rather than merely
- * hoped for.
+ * Trevra uses the maximum configured spacing instead of shaping a randomized
+ * rhythm. The purpose is load/rate control, not making automation harder to
+ * identify.
  */
-export function actionGapSeconds(seed: string): number {
-  const digest = createHash('sha256').update(seed).digest('hex');
-  const random = seededRandom(digest);
-  return ACTION_GAP_SECONDS.min + random() * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min);
+export function actionGapSeconds(_seed: string): number {
+  return ACTION_GAP_SECONDS.max;
 }
 
 /**
@@ -852,10 +847,8 @@ export function actionGapSeconds(seed: string): number {
  * must not throw, and it is the right one: a row nobody can perform should
  * stop the pass and wait for a human, not be quietly retried.
  *
- * `seed` is the batch-scoped seed (`${batchId}:${action.id}`), threaded through
- * to the routines that pause BETWEEN CLICKS inside one action. Same discipline
- * as `actionGapSeconds`: randomised means unpredictable to LinkedIn, never
- * unreproducible to us, and there is no `Math.random()` on this path.
+ * `seed` is retained for driver compatibility and deterministic replay labels;
+ * it is not used to disguise interaction timing.
  */
 /**
  * Open the page this lead was found on, so the driver can click their card.
@@ -2411,17 +2404,16 @@ export async function stopLinkedInBatches(
   return result.changes;
 }
 
-/** One LinkedIn account with work waiting for it, and what its browser should look like. */
+/** One LinkedIn account with work waiting for it and its scheduling timezone. */
 export interface DueSeat {
   workspaceId: string;
   seatKey: string;
   /**
    * The seat's own IANA timezone, or null when no seat row exists yet.
    *
-   * Carried out of the discovery query rather than fetched per seat because it
-   * is what the browser context advertises (see {@link seatContextFingerprint}):
-   * a Zurich account whose browser claims to be in Chicago is a fingerprint
-   * inconsistency we would be creating for ourselves.
+   * Carried out of the discovery query rather than fetched per seat. New remote
+   * contexts may apply this explicit timezone; user agent, locale and viewport
+   * remain the browser/provider's native values.
    */
   timezone: string | null;
 }
@@ -3600,228 +3592,37 @@ function logOncePerSeat(
 }
 
 // ---------------------------------------------------------------------------
-// Per-seat browser identity: stable, non-default, and derived, never drawn
+// Browser context preferences
 // ---------------------------------------------------------------------------
 
 /**
- * What one seat's browser context claims to be.
+ * Preferences for a newly-created remote browser context.
  *
- * THE DEFAULTS ARE THE PROBLEM THIS SOLVES. Playwright's own defaults are a
- * `HeadlessChrome/<version>` user agent, the host's locale and the host's
- * timezone. The first is a literal announcement of automation; the other two
- * make every seat this machine drives look like the same person, which is the
- * shape of an agency farm rather than of several humans.
- *
- * DERIVED, NEVER DRAWN. `Math.random()` would give each seat a NEW identity on
- * every launch -- a browser whose user agent, locale and timezone change
- * between sessions is a far stronger signal than any single wrong value, and
- * it is unreproducible for us too. Everything here is a pure function of
- * (workspaceId, seatKey), which is the same determinism rule the pacing gaps
- * already follow.
+ * Trevra does not fabricate a per-seat browser identity. User agent, locale and
+ * viewport are left to the actual browser/provider. The only optional override
+ * is the seat's configured timezone, because it is an explicit operator setting
+ * also used by scheduling.
  */
 export interface SeatContextFingerprint {
-  userAgent: string;
-  locale: string;
-  timezoneId: string;
-  /** The window this seat's headless browser reports. Never Playwright's 800x600. */
-  viewport: { width: number; height: number };
+  userAgent: string | null;
+  locale: string | null;
+  timezoneId: string | null;
+  viewport: { width: number; height: number } | null;
 }
 
-/**
- * The user agent, on the platform this machine ACTUALLY RUNS.
- *
- * ONE TEMPLATE, LINUX, AND NOT A LIST OF PLATFORMS. This used to draw a
- * per-seat string from a list that included Windows and macOS, and that was a
- * self-inflicted wound: Playwright's `userAgent` option rewrites the UA STRING
- * AND NOTHING ELSE. `Sec-CH-UA-Platform`, `Sec-CH-UA-Arch`,
- * `navigator.userAgentData.platform` and `navigator.platform` all kept saying
- * Linux, so every single request carried a client contradicting itself --
- * a far louder signal than "another Linux Chrome" could ever be. Two seats on
- * one machine SHOULD look like two profiles in one browser on one machine,
- * because that is what they are; they are told apart by cookie jar, locale,
- * timezone and (when configured) exit IP, none of which lie about the host.
- *
- * The major version is a fallback only. `alignClientHints` replaces this with
- * the launched binary's own version as soon as the context is open, so the UA
- * cannot drift from the Chromium that is actually rendering the page -- the
- * skew this file used to ship with was UA 138/139 against a 151 binary.
- */
-const FALLBACK_CHROME_MAJOR = 151;
-
-function linuxChromeUserAgent(major: number): string {
-  return `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
-}
-
-/**
- * Real desktop window sizes, seeded per seat.
- *
- * Playwright's headless default is 1280x720 for every context it has ever
- * opened, which is both a known automation default and identical across every
- * seat on the machine. These are ordinary laptop and monitor sizes; the seat
- * keeps one forever, because a window that changes size between sessions is
- * the same instability the user agent is not allowed to have.
- */
-const SEAT_VIEWPORTS: ReadonlyArray<{ width: number; height: number }> = [
-  { width: 1512, height: 856 },
-  { width: 1440, height: 900 },
-  { width: 1536, height: 864 },
-  { width: 1680, height: 1050 },
-  { width: 1920, height: 1080 }
-];
-
-/**
- * Locale/timezone PAIRS, never two independent draws.
- *
- * A context claiming `de-CH` from `America/Chicago` is more suspicious than
- * either value alone, because no real browser is configured that way by
- * accident. Pairing them means the derived identity is at least internally
- * consistent even when we have no seat row to read a real timezone from.
- */
-const SEAT_BROWSER_PROFILES: ReadonlyArray<{ locale: string; timezoneId: string }> = [
-  { locale: 'en-US', timezoneId: 'America/New_York' },
-  { locale: 'en-US', timezoneId: 'America/Chicago' },
-  { locale: 'en-US', timezoneId: 'America/Los_Angeles' },
-  { locale: 'en-GB', timezoneId: 'Europe/London' },
-  { locale: 'de-DE', timezoneId: 'Europe/Berlin' },
-  { locale: 'de-CH', timezoneId: 'Europe/Zurich' },
-  { locale: 'en-CA', timezoneId: 'America/Toronto' },
-  { locale: 'en-AU', timezoneId: 'Australia/Sydney' }
-];
-
-/** A stable index into a list, from a seed. The same seed always picks the same entry. */
-function seededIndex(seed: string, offset: number, length: number): number {
-  const digest = createHash('sha256').update(seed).digest('hex');
-  return Number.parseInt(digest.slice(offset, offset + 8), 16) % length;
-}
-
-/**
- * The identity this seat's browser context advertises, every time it opens.
- *
- * `timezone` is the SEAT'S OWN IANA name when we have one, and it wins: the
- * seat row already carries the timezone the operator's plans are spread
- * across, so using it makes the browser agree with the account's actual
- * working hours instead of contradicting them. The locale follows the
- * timezone where a pair exists for it, so the two stay consistent. Only when
- * no seat row exists yet -- a queue whose seat has not been detected -- does
- * the timezone fall back to the derived pair.
- */
 export function seatContextFingerprint(
-  workspaceId: string,
-  seatKey: string,
+  _workspaceId: string,
+  _seatKey: string,
   timezone?: string | null,
-  chromeMajor: number = FALLBACK_CHROME_MAJOR
+  _chromeMajor?: number
 ): SeatContextFingerprint {
-  const seed = `linkedin-context:${workspaceId}:${seatKey}`;
-  const derived = SEAT_BROWSER_PROFILES[seededIndex(seed, 0, SEAT_BROWSER_PROFILES.length)];
-  const userAgent = linuxChromeUserAgent(chromeMajor);
-  const viewport = SEAT_VIEWPORTS[seededIndex(seed, 16, SEAT_VIEWPORTS.length)];
-  const seatTimezone = timezone?.trim();
-  if (!seatTimezone)
-    return { userAgent, locale: derived.locale, timezoneId: derived.timezoneId, viewport };
-  const paired = SEAT_BROWSER_PROFILES.find((profile) => profile.timezoneId === seatTimezone);
   return {
-    userAgent,
-    locale: paired?.locale ?? derived.locale,
-    timezoneId: seatTimezone,
-    viewport
+    userAgent: null,
+    locale: null,
+    timezoneId: timezone?.trim() || null,
+    viewport: null
   };
 }
-
-/**
- * Make the Client Hints agree with the user agent, using the browser's own
- * version -- the one thing Playwright's context options cannot do.
- *
- * WHY THIS EXISTS AT ALL. `userAgent` on a context rewrites exactly one string.
- * A page reads at least five other places for the same fact:
- * `Sec-CH-UA`, `Sec-CH-UA-Platform`, `Sec-CH-UA-Full-Version-List` and
- * `Sec-CH-UA-Arch` on every request, and `navigator.userAgentData` plus
- * `navigator.platform` from script. `Emulation.setUserAgentOverride` with a
- * `userAgentMetadata` block is the only call that sets all of them at once and
- * keeps them consistent, which is why it is worth reaching past Playwright's
- * API for.
- *
- * THE VERSION IS READ, NEVER GUESSED. `Browser.getVersion` returns the binary's
- * real UA; the only edit made to it is `HeadlessChrome` -> `Chrome`, which is
- * the one token that has to go and the one thing about it that is not true of a
- * person's browser. Everything downstream -- brand list, full version list,
- * `Sec-CH-UA` -- is derived from that same number, so there is no second source
- * to drift out of step.
- *
- * THE SESSION IS NOT DETACHED. Chromium drops emulation overrides when the last
- * client for a target goes away, so detaching here would quietly undo the whole
- * function. It lives as long as the context does and closes with it.
- *
- * NEVER THROWS AND NEVER BLOCKS A LAUNCH. A context with no `newCDPSession` (a
- * test fake) and a CDP call that fails both land in the same place: the seat
- * keeps the launch-time user agent, which is at least internally consistent
- * because it already names the real platform.
- */
-async function alignClientHints(
-  context: ProviderBrowserContext,
-  page: unknown,
-  fingerprint: SeatContextFingerprint,
-  log: (message: string) => void
-): Promise<void> {
-  if (typeof context.newCDPSession !== 'function') return;
-  try {
-    const cdp = await context.newCDPSession(page);
-    const version = await cdp.send('Browser.getVersion');
-    const reported = typeof version.userAgent === 'string' ? version.userAgent : '';
-    const full = /Chrome\/([\d.]+)/.exec(reported)?.[1];
-    if (!full) return;
-    const major = full.split('.')[0];
-    const language = fingerprint.locale;
-    await cdp.send('Emulation.setUserAgentOverride', {
-      // `HeadlessChrome` is the whole reason an override is still needed once
-      // the browser is the full Chromium build rather than the headless shell.
-      userAgent: reported.replace('HeadlessChrome', 'Chrome'),
-      // NO q-VALUES HERE. Chromium appends its own `;q=` weights to whatever
-      // this string ends with, so writing them out produced the malformed
-      // `de-CH,de;q=0.9;q=0.9` on the wire -- a header no browser emits and a
-      // free anomaly. The bare list is what a real de-CH Chrome starts from.
-      acceptLanguage: `${language},${language.split('-')[0]}`,
-      platform: 'Linux x86_64',
-      userAgentMetadata: {
-        // The GREASE entry is part of what a real Chrome sends; a brand list
-        // without one is as identifying as a wrong version.
-        brands: [
-          { brand: 'Not;A=Brand', version: '99' },
-          { brand: 'Chromium', version: major },
-          { brand: 'Google Chrome', version: major }
-        ],
-        fullVersionList: [
-          { brand: 'Not;A=Brand', version: '99.0.0.0' },
-          { brand: 'Chromium', version: full },
-          { brand: 'Google Chrome', version: full }
-        ],
-        fullVersion: full,
-        platform: 'Linux',
-        platformVersion: '6.8.0',
-        architecture: 'x86',
-        model: '',
-        mobile: false,
-        bitness: '64',
-        wow64: false
-      }
-    });
-    // SCROLLBARS BACK ON, AND THIS IS NOT WHAT `ignoreDefaultArgs` DID.
-    //
-    // Dropping `--hide-scrollbars` from the command line was not enough: the
-    // driver hides them over CDP as well, and a probe of the launched browser
-    // still had `innerWidth === documentElement.clientWidth`, which is the
-    // one-line check for it. Only this call actually gives the page the ~15px
-    // gutter every desktop Chrome has.
-    await cdp.send('Emulation.setScrollbarsHidden', { hidden: false });
-  } catch (cause) {
-    log(
-      `LinkedIn seat browser kept its launch-time user agent: the client-hint override failed (${cause instanceof Error ? cause.message : String(cause)}).`
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Per-seat outbound proxy. Absent by default; NEVER silently skipped.
-// ---------------------------------------------------------------------------
 
 /** Playwright's proxy shape, declared here so this file still compiles without playwright. */
 export interface SeatProxy {
@@ -4075,44 +3876,12 @@ function reportUnready(
   if (!shouldLogOnce(`unready:${scope}:${summary}`, new Date())) return;
   log(`LinkedIn local worker stays off here: ${summary}`);
 }
-
 /**
- * PATCHRIGHT FIRST, STOCK PLAYWRIGHT SECOND.
- *
- * They are the same API -- Patchright is Playwright with the automation tells
- * patched out at the driver level -- so this is a swap of the import and
- * nothing else. What it buys is the one class of signal no launch option can
- * reach:
- *
- *   - Playwright calls `Runtime.enable` to get an execution-context id. That
- *     makes Chromium emit `Runtime.consoleAPICalled`, and because V8 only
- *     formats `Error.stack` on first access, a page detects an attached CDP
- *     client in five lines. It is the technique DataDome published and says
- *     every major anti-bot vendor now runs. Patchright uses isolated worlds
- *     instead and never enables the domain.
- *   - Stock Playwright injects `window.__pwInitScripts` and
- *     `window.__playwright__binding__` into every page. Patchright does not.
- *   - It also drops `--enable-automation` and friends from the default args,
- *     which is belt and braces with the `ignoreDefaultArgs` in `openBrowser`.
- *
- * THE FALLBACK IS DELIBERATE AND IS NOT A SILENT DOWNGRADE. Patchright pins its
- * own Chromium revision; an install that has playwright's browsers but not
- * Patchright's should keep working, because a seat that cannot open a browser
- * at all is worse than one that opens a more detectable browser. Which one was
- * loaded is logged once, so "why is this account getting challenged" has an
- * answer that does not require reading this file.
- *
- * The specifiers are typed as `string` rather than written as literals so that
- * neither `tsc` nor the Vite marketing build tries to resolve a package that is
- * deliberately optional. A HARD dependency would add ~400MB to the Oracle image
- * and break the Cloudflare build (plan 4.4) -- for a feature that is off on
- * every deployment except a self-hoster who asked for it.
- *
- * ABSENCE IS NEVER FATAL. This returns null; it does not throw. A worker
- * process that crashed because an optional browser was missing would take the
- * automation cycle, the playbook engine and the schedule sweep down with it.
+ * Use stock Playwright for browser control. Trevra does not select a patched
+ * driver to suppress automation signals; safety comes from conservative scope,
+ * rate limits and stopping on LinkedIn challenges/limits.
  */
-const DRIVER_SPECIFIERS: readonly string[] = ['patchright', 'playwright'];
+const DRIVER_SPECIFIERS: readonly string[] = ['playwright'];
 /**
  * Which driver was loaded, said once per SCOPE rather than once per process.
  *
@@ -4138,11 +3907,7 @@ export async function loadLinkedInPlaywright(
       if (!loadedDriverLogged.has(scope)) {
         if (loadedDriverLogged.size > MAX_LOG_KEYS) loadedDriverLogged.clear();
         loadedDriverLogged.add(scope);
-        log(
-          specifier === 'patchright'
-            ? 'LinkedIn seats are driven by patchright (the patched Playwright: no Runtime.enable, no __pwInitScripts).'
-            : 'LinkedIn seats are driven by stock playwright: patchright is not installed, so this browser answers an attached-CDP probe. Run npm i patchright && npx patchright install chromium.'
-        );
+        log('LinkedIn seats are driven by stock Playwright.');
       }
       return driver;
     } catch (cause) {
@@ -4292,8 +4057,8 @@ async function openRemoteSeatHandle(input: {
       fingerprint: input.fingerprint,
       proxy: input.proxy,
       storageState,
-      args: ['--disable-blink-features=AutomationControlled'],
-      ignoreDefaultArgs: ['--enable-automation', '--hide-scrollbars'],
+      args: [],
+      ignoreDefaultArgs: [],
       channels: BROWSER_CHANNELS
     },
     input.log
@@ -4314,12 +4079,8 @@ async function openRemoteSeatHandle(input: {
 
   const session = opened.session;
   try {
-    // BEFORE ANY NAVIGATION, exactly as the local path does it: the context
-    // opens on `about:blank`, so the first request LinkedIn sees already
-    // carries a user agent and a `Sec-CH-UA*` set that agree with each other.
-    await alignClientHints(session.context, session.page, input.fingerprint, input.log);
-    setHumanSessionSalt(`${input.handleKey}:${new Date().toISOString().slice(0, 13)}`);
-    await warmUpSession(session.page, input.handleKey, input.log);
+    // Use the browser as it actually exists on the paired computer/provider.
+    // Do not rewrite UA/client hints or add synthetic pre-navigation activity.
     browserUseSeq += 1;
     const handle: BrowserHandle = {
       page: session.page as LinkedInPage,

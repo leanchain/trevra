@@ -118,14 +118,7 @@ export function leadSourcingConfig(env: NodeJS.ProcessEnv = process.env): LeadSo
   };
 }
 
-/**
- * May this deployment harvest leads? THE ONE PLACE THAT ANSWERS IT.
- *
- * Browser custody is the boundary. Hosted sourcing is allowed through the
- * workspace member's paired companion because the page is opened by that
- * member's local Chrome/network. Trevra-operated cloud browsers do not source
- * leads. Local/self-hosted remains opt-out.
- */
+/** May this deployment harvest leads? Kept for low-level/internal capability tests. */
 export function leadSourcingEnabled(
   config: Pick<LeadSourcingConfig, 'optIn' | 'hosted' | 'companionBrowser'>
 ): boolean {

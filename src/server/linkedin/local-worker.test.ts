@@ -1338,10 +1338,9 @@ describe('the kill switch', () => {
 });
 
 describe('inter-action pacing', () => {
-  it('draws the same gap for the same seed, every time and on every machine', () => {
-    const first = actionGapSeconds('lbatch_fixed:lact_1');
-    expect(actionGapSeconds('lbatch_fixed:lact_1')).toBe(first);
-    expect(actionGapSeconds('lbatch_fixed:lact_2')).not.toBe(first);
+  it('uses the same conservative maximum gap for every action', () => {
+    expect(actionGapSeconds('lbatch_fixed:lact_1')).toBe(ACTION_GAP_SECONDS.max);
+    expect(actionGapSeconds('lbatch_fixed:lact_2')).toBe(ACTION_GAP_SECONDS.max);
   });
 
   it('keeps every gap inside the reported 30-120s band', () => {
@@ -2239,34 +2238,21 @@ describe('per-seat profile directories and browser identity', () => {
     expect(traversal).not.toContain('etc/passwd');
   });
 
-  it('derives a stable, non-default identity per seat, with no Math.random anywhere', () => {
-    const first = seatContextFingerprint('ws_a', 'owner');
-    const again = seatContextFingerprint('ws_a', 'owner');
-    const other = seatContextFingerprint('ws_a', 'sales');
-
-    // STABLE. A browser whose user agent, locale and timezone change between
-    // sessions is a far stronger signal than any one wrong value.
-    expect(again).toEqual(first);
-    // DISTINCT. Two accounts from one machine must not be one fingerprint.
-    expect(`${other.userAgent}|${other.locale}|${other.timezoneId}`).not.toBe(
-      `${first.userAgent}|${first.locale}|${first.timezoneId}`
-    );
-    // NON-DEFAULT. Playwright's own default announces the automation outright.
-    for (const seat of [first, other]) {
-      expect(seat.userAgent).not.toContain('HeadlessChrome');
-      expect(seat.userAgent).toMatch(/^Mozilla\/5\.0 .*Chrome\/\d+/);
-      expect(seat.locale).toMatch(/^[a-z]{2}-[A-Z]{2}$/);
-      expect(() => new Intl.DateTimeFormat('en-US', { timeZone: seat.timezoneId })).not.toThrow();
-    }
+  it('does not fabricate a per-seat browser fingerprint', () => {
+    const owner = seatContextFingerprint('ws_a', 'owner');
+    const sales = seatContextFingerprint('ws_a', 'sales');
+    expect(owner).toEqual({ userAgent: null, locale: null, timezoneId: null, viewport: null });
+    expect(sales).toEqual(owner);
   });
 
-  it("uses the seat's own timezone when there is one, so the browser agrees with the plan", () => {
+  it("applies only the seat's explicit timezone preference to a new remote context", () => {
     const zurich = seatContextFingerprint('ws_a', 'sales', 'Europe/Zurich');
-    expect(zurich.timezoneId).toBe('Europe/Zurich');
-    expect(zurich.locale).toBe('de-CH');
-    // The user agent is a fact about the seat, not about where it is.
-    expect(zurich.userAgent).toBe(seatContextFingerprint('ws_a', 'sales').userAgent);
-    // A timezone with no paired locale still wins for the timezone itself.
+    expect(zurich).toEqual({
+      userAgent: null,
+      locale: null,
+      timezoneId: 'Europe/Zurich',
+      viewport: null
+    });
     expect(seatContextFingerprint('ws_a', 'sales', 'Asia/Tokyo').timezoneId).toBe('Asia/Tokyo');
   });
 });

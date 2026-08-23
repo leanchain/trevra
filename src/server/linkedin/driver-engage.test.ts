@@ -498,19 +498,9 @@ describe('endorseSkills', () => {
   });
 });
 
-describe('the jitter', () => {
-  // `Math.random()` would make the pauses unreproducible, which means
-  // unassertable. Randomised here means unpredictable to LinkedIn, not to us.
-  it('is a pure function of its seed', () => {
-    expect(engageGapMs('a')).toBe(engageGapMs('a'));
-    expect(engageGapMs('a')).not.toBe(engageGapMs('b'));
-  });
-
-  it('stays inside a human-scale range for clicks in one viewport', () => {
-    for (let index = 0; index < 500; index += 1) {
-      const gap = engageGapMs(`seed-${index}`);
-      expect(gap).toBeGreaterThanOrEqual(700);
-      expect(gap).toBeLessThanOrEqual(2_600);
-    }
+describe('intra-action spacing', () => {
+  it('uses one conservative maximum pause regardless of seed', () => {
+    expect(engageGapMs('a')).toBe(2_600);
+    expect(engageGapMs('b')).toBe(2_600);
   });
 });

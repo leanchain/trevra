@@ -324,10 +324,10 @@ export interface SeatBrowserRequest {
   /** Legacy/local compatibility field. External providers ignore this path. */
   profileDir: string;
   fingerprint: {
-    userAgent: string;
-    locale: string;
-    timezoneId: string;
-    viewport: { width: number; height: number };
+    userAgent: string | null;
+    locale: string | null;
+    timezoneId: string | null;
+    viewport: { width: number; height: number } | null;
   };
   /** Null means "this seat has no proxy configured", which the remote provider refuses. */
   proxy: ProviderProxy | null;
@@ -428,10 +428,14 @@ async function openLocalSeatBrowser(
     headless: request.headless,
     channel,
     ignoreDefaultArgs: request.ignoreDefaultArgs,
-    ...(request.headless ? { viewport: request.fingerprint.viewport } : { viewport: null }),
-    userAgent: request.fingerprint.userAgent,
-    locale: request.fingerprint.locale,
-    timezoneId: request.fingerprint.timezoneId,
+    ...(request.headless && request.fingerprint.viewport
+      ? { viewport: request.fingerprint.viewport }
+      : request.headless
+        ? {}
+        : { viewport: null }),
+    ...(request.fingerprint.userAgent ? { userAgent: request.fingerprint.userAgent } : {}),
+    ...(request.fingerprint.locale ? { locale: request.fingerprint.locale } : {}),
+    ...(request.fingerprint.timezoneId ? { timezoneId: request.fingerprint.timezoneId } : {}),
     ...(request.proxy ? { proxy: request.proxy } : {}),
     args: request.args
   });
@@ -556,10 +560,10 @@ async function openRemoteSeatBrowser(
     const context =
       existingContext ??
       (await browser.newContext({
-        viewport: request.fingerprint.viewport,
-        userAgent: request.fingerprint.userAgent,
-        locale: request.fingerprint.locale,
-        timezoneId: request.fingerprint.timezoneId,
+        ...(request.fingerprint.viewport ? { viewport: request.fingerprint.viewport } : {}),
+        ...(request.fingerprint.userAgent ? { userAgent: request.fingerprint.userAgent } : {}),
+        ...(request.fingerprint.locale ? { locale: request.fingerprint.locale } : {}),
+        ...(request.fingerprint.timezoneId ? { timezoneId: request.fingerprint.timezoneId } : {}),
         ...(remote.connect === 'playwright' && request.proxy ? { proxy: request.proxy } : {}),
         ...(request.storageState && remote.sessionPersistence !== 'browser'
           ? { storageState: request.storageState }

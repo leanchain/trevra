@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   SELECTORS,
   normalisedProfileUrl,
@@ -604,40 +603,9 @@ export function canonicalProfileUrl(raw: string): string | null {
  * Pacing. A page fetch is an action.
  * ------------------------------------------------------------------------ */
 
-/**
- * mulberry32, seeded from a hash of the source and the step.
- *
- * The third copy of this generator in the subsystem, and copied for the reason
- * `local-worker.ts` records against the second: the alternative is a driver
- * that imports the worker, which would drag `node:fs`, the secrets vault and
- * the Playwright loader into every module that wants to read a search page.
- * Six lines is the cheaper side of that trade.
- */
-function seededRandom(seed: string): () => number {
-  let state = Number.parseInt(seed.slice(0, 8), 16) >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
-/**
- * Seconds to wait before the next FETCH, drawn from ACTION_GAP_SECONDS.
- *
- * The same 30-120s band the worker paces invites with (plan §1.4), applied to
- * page loads, because from LinkedIn's side a burst of ten search pages and a
- * burst of ten profile views are the same automated burst. Randomised here
- * means UNPREDICTABLE TO LINKEDIN, not unreproducible to us: identical inputs
- * give identical gaps on every machine and Node version, so the pacing is
- * assertable rather than merely hoped for.
- */
-export function scrapeGapSeconds(seed: string): number {
-  const digest = createHash('sha256').update(seed).digest('hex');
-  const random = seededRandom(digest);
-  return ACTION_GAP_SECONDS.min + random() * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min);
+/** Fixed conservative maximum spacing between explicit LinkedIn list/search fetches. */
+export function scrapeGapSeconds(_seed: string): number {
+  return ACTION_GAP_SECONDS.max;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
@@ -984,7 +952,7 @@ function bounded(value: number | undefined, fallback: number, hardMax: number): 
 /**
  * Read one bounded LinkedIn page whose meaningful rows are member profile links.
  * Used only for explicitly validated Recruiter/group/event/company audience URLs.
- * Infinite-scroll surfaces deliberately stop after one human-like page read; a later source run can be requested again.
+ * Infinite-scroll surfaces deliberately stop after one bounded page read; a later internal source run can be requested again.
  */
 export async function scrapeProfileList(
   page: LinkedInScrapePage,
