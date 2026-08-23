@@ -1,41 +1,14 @@
 /**
- * Background maintenance is bounded by the operator-configured work window and
- * per-task cadence. Trevra does not invent additional short visits to imitate
- * a person's browsing schedule.
+ * LinkedIn background maintenance policy.
  *
- * THE DEFECT, STATED PLAINLY. `runLinkedInSideTasks` is called once per worker
- * tick (`AUTOMATION_INTERVAL_MS`, 60s by default) and ran all five of its jobs
- * unconditionally. None of them asked when it last ran. With an empty queue,
- * an empty inbox and nothing scheduled, one connected seat produced six
- * LinkedIn navigations per tick -- about 8,600 page loads a day, ~2,900 of
- * them on `/mynetwork/invite-connect/connections/`, the surface LinkedIn most
- * associates with prospecting -- spread evenly across all twenty-four hours.
- * See migration 071 for the per-tick breakdown.
+ * An idle seat must not generate LinkedIn traffic. Inbox sync, pending-invite
+ * reconciliation, acceptance detection and lead sourcing are operator-triggered
+ * only. The worker may run a withdrawal in the background only after an
+ * operator/workflow has already queued that specific withdrawal in Trevra.
  *
- * THE MODEL IS A VISIT, NOT AN INTERVAL, and that distinction is the whole
- * file. A per-task interval -- "read the inbox every 30 minutes" -- is still a
- * polling loop; it just polls more slowly, and it produces a perfectly flat
- * access graph that no human has ever generated. What a person does is:
- *
- *   - open LinkedIn 2-5 times on a working day, at no fixed hour;
- *   - stay 2-5 minutes;
- *   - glance at the feed or notifications, look at messages, maybe one other
- *     thing;
- *   - close it and not come back for hours.
- *
- * So the browser is allowed out 2-5 times a day, the visits are drawn inside
- * the seat's own working window with a guaranteed gap between them, and each
- * visit may do AT MOST TWO of the five jobs -- because three minutes is not
- * enough time to walk an inbox, reconcile a sent-invite list, open profiles,
- * drain a withdrawal queue and harvest a lead source, and an account that
- * appears to do all five in one burst is not a person.
- *
- * Between visits the tab is closed. `scripts/linkedin-side-task-load.ts`
- * replays a week of ticks through these functions and counts what comes out.
- *
- * NOTHING HERE THROWS. Every caller is a worker tick on its way somewhere
- * else; an unreadable cadence row means "eligible", because the visit schedule
- * is the real bound and the safety gate is elsewhere.
+ * The configured work window and cadence data still bound that queued executor.
+ * They do not create browser work by themselves. If there is no eligible queued
+ * withdrawal, `runLinkedInSideTasks` returns before opening a browser.
  */
 
 import type { Db } from '../db.js';
@@ -56,76 +29,37 @@ import {
 } from './pacing.js';
 export { VISITS_PER_DAY, VISIT_MINUTES, visitsForDay, type Visit };
 
-/** All supported maintenance jobs. Only the two read-only reconciliation jobs run unattended. */
+/** All supported maintenance jobs, including operator-triggered reads. */
 export type SideTaskName =
   'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
 
 /**
- * Background automation is intentionally narrow and read-only. Acceptance checks open member
- * profiles, withdrawals mutate LinkedIn state, and lead sourcing harvests
- * search/profile data; those require an explicit operator action instead of a
- * scheduled background visit.
+ * The unattended scheduler performs no account polling. The only background
+ * maintenance category is draining a withdrawal row that an operator/workflow
+ * already queued.
  */
-export const SIDE_TASK_NAMES: readonly SideTaskName[] = ['inbox', 'pending_invites', 'withdrawals'];
-
-/**
- * The jobs that must know WHOSE account is signed in before they run, and the
- * only reason a visit ever loads `/in/me/`.
- *
- * `inbox` files another member's conversations against this seat, and
- * `acceptance` reads a connection DEGREE -- which is a property of the
- * relationship with whoever is signed in, not of the profile. Filing either
- * from the wrong session is the defect `confirmSeatAccount` exists to prevent.
- *
- * THE OTHER THREE NEVER NEEDED IT AND STILL DO NOT. The pending-invite list,
- * the withdrawal queue and a lead source read the account's OWN surfaces or
- * act on rows this workspace already owns. Confirming identity for a visit
- * that runs only those would be a profile load bought for nothing -- which is
- * exactly the class of page load this whole change is about.
- */
-export const SIDE_TASKS_NEEDING_IDENTITY: ReadonlySet<SideTaskName> = new Set<SideTaskName>([
-  'inbox'
-]);
+export const SIDE_TASK_NAMES: readonly SideTaskName[] = ['withdrawals'];
 
 /* ---------------------------------------------------------------------------
- * The visit
+ * Execution-window compatibility
  *
- * `visitsForDay` LIVES IN `pacing.ts`, not here, and that is not a filing
- * decision. The planner has to place its sends inside the same visits this
- * module reads inside -- that is what "one presence" means -- and `pacing.ts`
- * is what `guard.ts`, `planPacing` and this module all already depend on.
- * Putting the schedule there keeps the dependency in one direction; putting it
- * here would make the planner import the inbox reader.
+ * The historical "visit" API is retained because the UI/scheduler already use
+ * these types. It now represents the operator-configured autonomous execution
+ * window; it is not a generated browsing-presence model.
  * ------------------------------------------------------------------------ */
 
-/**
- * The most maintenance jobs one normal visit may do.
- *
- * THREE is still a bounded sitting, but it gives a laptop that is available
- * only once or twice a day a realistic chance to keep the account current.
- * The availability-return path below may do every stale maintenance category
- * once; neither path replays missed visits or raises send limits.
- */
-// One background maintenance category per visit keeps each browser session narrow.
+/** At most one explicitly queued maintenance action is handled per pass. */
 export const MAX_TASKS_PER_VISIT = 1;
 export const MAX_CATCHUP_TASKS_PER_VISIT = MAX_TASKS_PER_VISIT;
 export const AVAILABILITY_RETURN_MARKER = 'availability_return';
 export const AVAILABILITY_CATCHUP_MARKER = 'availability_catchup';
 
 /**
- * The least time that may pass before a job is worth doing again, in hours.
+ * Minimum cadence floors in hours.
  *
- * NOT A SCHEDULE -- A FLOOR. Nothing runs because its floor elapsed; a visit
- * has to happen first. A normal visit takes at most three stale jobs; an
- * availability-return visit may take each stale category once.
- * The floor only stops a job being repeated in the next visit when there is
- * obviously nothing new to see.
- *
- * `inbox` is 0.7h so that consecutive visits -- which `visitsForDay`
- * guarantees are at least 40% of a slot apart -- each get to look at messages,
- * because looking at messages is what people open LinkedIn for. The rest are
- * housekeeping: reconciling a sent-invite list twice a day is already more
- * diligent than any real member.
+ * Inbox, pending-invite, acceptance and lead-source values apply only when an
+ * explicit operator-triggered caller asks the scheduling helpers about them.
+ * The unattended scheduler considers only `withdrawals`.
  */
 export const SIDE_TASK_MIN_HOURS: Record<SideTaskName, number> = {
   inbox: 2,

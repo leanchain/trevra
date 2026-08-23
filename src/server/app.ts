@@ -241,6 +241,7 @@ import {
 } from './linkedin/hosted-execution.js';
 import { companionReleasePackage } from './linkedin/companion-release.js';
 import {
+  companionSeatNeedsAttention,
   companionWorkspaceReady,
   createCompanionPairing,
   exchangeCompanionPairing,
@@ -3045,6 +3046,7 @@ export function createApp(db: Db) {
 
       const maintenance = seat
         ? await (async () => {
+            if (!(await hasQueuedLinkedInWithdrawal(db, workspaceId, seat.seatKey))) return [];
             const runs = await sideTaskRuns(db, workspaceId, seat.seatKey);
             return SIDE_TASK_NAMES.map((task) => {
               const [next] = nextSideTaskOpportunities(seat, runs, task, now, 1);
@@ -3061,7 +3063,6 @@ export function createApp(db: Db) {
       const backgroundRun = seat
         ? await nextLinkedInBackgroundRun(db, workspaceId, seat.seatKey, now)
         : null;
-
       res.json({
         seat: seat ?? null,
         auth: {
@@ -7594,10 +7595,24 @@ async function linkedinQueueWaitReason(
   return null;
 }
 
+async function hasQueuedLinkedInWithdrawal(
+  db: Db,
+  workspaceId: string,
+  seatKey: string
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS queued FROM linkedin_withdrawals
+       WHERE workspace_id=? AND seat_key=? AND status='queued' LIMIT 1`
+    )
+    .get<{ queued: number }>(workspaceId, seatKey);
+  return Boolean(row);
+}
+
 /**
- * Future deterministic visit windows for one recurring LinkedIn side task.
- * Past visits are never returned, so sleeping through a window advances the ETA
- * rather than creating catch-up traffic on reconnect.
+ * Future deterministic windows for actual LinkedIn background browser work.
+ * Idle seats return no maintenance window; sleeping through a window never
+ * creates replay traffic on reconnect.
  */
 async function nextLinkedInBackgroundRun(
   db: Db,
@@ -7615,24 +7630,30 @@ async function nextLinkedInBackgroundRun(
     source: 'maintenance' | 'actions' | 'catchup';
   }> = [];
 
-  // A companion return is eligible immediately once both presence gates are
-  // back. Represent it as NOW rather than pretending the next deterministic
-  // visit is the next thing the worker will do.
-  if (availabilityCatchUpPending(runs)) {
+  // A companion return creates browser work only when it is the one explicit
+  // recovery verification for a seat that still needs human attention. An
+  // ordinary reconnect with no queued work returns before the browser opens.
+  if (
+    availabilityCatchUpPending(runs) &&
+    (await companionSeatNeedsAttention(db, workspaceId, seatKey))
+  ) {
     candidates.push({ startAt: now, endAt: now, source: 'catchup' });
   }
 
-  // A read-only visit is real work only when at least one side task is due in
-  // that visit. Take the earliest of the five task schedules rather than
-  // labelling a bare visit window as a fetch that might never open a browser.
-  for (const task of SIDE_TASK_NAMES) {
-    const [next] = nextSideTaskOpportunities(seat, runs, task, now, 1);
-    if (next) candidates.push({ startAt: next.startAt, endAt: next.endAt, source: 'maintenance' });
+  // Background maintenance exists only to drain an explicitly queued
+  // withdrawal. With no such row, an idle seat has no maintenance browser run
+  // to advertise or execute.
+  if (await hasQueuedLinkedInWithdrawal(db, workspaceId, seatKey)) {
+    for (const task of SIDE_TASK_NAMES) {
+      const [next] = nextSideTaskOpportunities(seat, runs, task, now, 1);
+      if (next)
+        candidates.push({ startAt: next.startAt, endAt: next.endAt, source: 'maintenance' });
+    }
   }
 
-  // Campaign/automated actions can make an earlier sitting than the next
-  // maintenance read. Manual work is intentionally excluded: it is the person
-  // asking Trevra to act now, not a background run.
+  // Campaign/automated actions are reported when they actually exist. Manual
+  // work is intentionally excluded because it is user-triggered rather than a
+  // background run.
   const planned = await db
     .prepare(
       `

@@ -59,7 +59,6 @@ import { OWNER_SEAT_KEY, effectivePosture, getSeat } from './seats.js';
 import {
   AVAILABILITY_CATCHUP_MARKER,
   MAX_CATCHUP_TASKS_PER_VISIT,
-  SIDE_TASKS_NEEDING_IDENTITY,
   VISIT_MARKER,
   availabilityCatchUpPending,
   dueSideTasks,
@@ -1047,10 +1046,11 @@ export async function runLinkedInSideTasks(
     };
   }
 
-  // Select at most one maintenance category for either a normal work-window
-  // pass or a reconnect catch-up. Withdrawals are eligible only when a row was
-  // explicitly queued by an operator/workflow; background maintenance does not
-  // scan LinkedIn for stale invitations to create new withdrawal work.
+  // Unattended maintenance never polls LinkedIn for account state. The only
+  // scheduled category is `withdrawals`, and even that is eligible only when a
+  // row was explicitly queued by an operator/workflow; the worker does not
+  // discover stale invitations, read the inbox, reconcile pending invites,
+  // detect acceptances or source leads on its own.
   const due = new Set(
     dueSideTasks(seat, runs, now, { limit: catchUp ? MAX_CATCHUP_TASKS_PER_VISIT : undefined })
   );
@@ -1124,90 +1124,19 @@ export async function runLinkedInSideTasks(
       skipped: 'The LinkedIn session was verified healthy after companion recovery.'
     };
   }
-
-  // AND NOT AT ALL WHEN NOTHING IN THIS PASS NEEDS IT. Only the inbox walk and
-  // acceptance detection file data whose meaning depends on who is signed in;
-  // a pass that is just the withdrawal sweep would otherwise buy a profile load
-  // to answer a question it never asks. Hoisting the check to the pass made
-  // this possible AND made it necessary -- confirming unconditionally here
-  // would have given `/in/me/` to three jobs that never loaded it before.
-  const needsIdentity = [...due].some((task) => SIDE_TASKS_NEEDING_IDENTITY.has(task));
-  if (needsIdentity) {
-    const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
-    if (wrongAccount) {
-      await recordSeatEvent(
-        db,
-        {
-          workspaceId: options.workspaceId,
-          seatKey,
-          kind: 'background_run',
-          detail: encodeBackgroundRunDetail({
-            startedAt: startedAt.toISOString(),
-            finishedAt: now.toISOString(),
-            tasks: [...due],
-            status: 'blocked',
-            failedTasks: [],
-            reason: wrongAccount
-          })
-        },
-        now
-      );
-      return { ...result, skipped: wrongAccount };
-    }
-  }
-
-  const shared: LinkedInJobOptions & {
-    maxThreads?: number;
-    maxWithdrawals?: number;
-    maxSources?: number;
-  } = {
+  // Unattended maintenance has no account-polling branches at all. This is
+  // defense in depth on top of `SIDE_TASK_NAMES=['withdrawals']`: changing a
+  // scheduler list cannot accidentally re-enable inbox reads, pending-invite
+  // reconciliation, acceptance profile checks or lead sourcing here.
+  const shared: LinkedInJobOptions = {
     ...options,
     seatKey,
     now,
     page: session.page,
-    driver: session.driver,
-    // ONLY WHEN IT ACTUALLY WAS. A pass that skipped the check must not tell a
-    // job the check passed -- if a future job starts filing member data, it
-    // confirms for itself rather than inheriting a confirmation nobody made.
-    accountConfirmed: needsIdentity
+    driver: session.driver
   };
 
   const jobs: Array<[SideTaskName, string, () => Promise<void>]> = [
-    [
-      'inbox',
-      'inbox sync',
-      async () => {
-        result.inbox = await syncLinkedInInbox(db, config, {
-          ...shared,
-          // Background maintenance is intentionally narrow. A user-triggered
-          // inbox sync may ask for more, but a scheduled visit must never turn
-          // into a crawl of the member's entire recent messaging history.
-          maxThreads: options.maxThreads ?? 3,
-          maxMessages: options.maxMessages ?? 10,
-          sinceDays: options.sinceDays ?? 3
-        });
-      }
-    ],
-    [
-      'pending_invites',
-      'pending-invite sync',
-      async () => {
-        result.pendingInvites = await syncLinkedInPendingInvites(db, config, {
-          ...shared,
-          maxInvites: options.maxPendingInvites ?? 25
-        });
-      }
-    ],
-    [
-      'acceptance',
-      'acceptance detection',
-      async () => {
-        result.acceptance = await detectLinkedInAcceptances(db, config, {
-          ...shared,
-          maxChecks: options.maxAcceptanceChecks ?? 3
-        });
-      }
-    ],
     [
       'withdrawals',
       'withdrawal queue',
@@ -1217,18 +1146,6 @@ export async function runLinkedInSideTasks(
           maxActions: options.maxWithdrawals ?? 1,
           sweep: false
         });
-      }
-    ],
-    [
-      'lead_sources',
-      'lead sourcing',
-      async () => {
-        result.leads = (
-          await runLinkedInLeadSources(db, config, {
-            ...shared,
-            maxSources: options.maxSources ?? 1
-          })
-        ).results;
       }
     ]
   ];
@@ -1245,11 +1162,10 @@ export async function runLinkedInSideTasks(
         `LinkedIn ${name} failed for ${options.workspaceId}: ${cause instanceof Error ? cause.message : String(cause)}`
       );
     }
-    // STAMPED WHATEVER HAPPENED, including a failure. A job that could not read
-    // the inbox does not get to retry sixty seconds later: whatever stopped it
-    // -- a challenge, a limit wall, a selector that moved -- is not a thing
-    // another page load in a minute will fix, and hammering it is the shape
-    // that got the account looked at in the first place.
+    // STAMPED WHATEVER HAPPENED, including a failure. A queued withdrawal that
+    // could not execute does not retry on every worker minute; whatever stopped
+    // it -- a challenge, limit wall, selector drift or another refusal -- needs
+    // a later bounded opportunity rather than repeated browser traffic.
     //
     // STAMPED WITH THE PASS'S OWN CLOCK, not `new Date()`. Every other decision
     // in this function reads `now`, and a stamp from a different clock is how a

@@ -1220,26 +1220,15 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     expect(body.warmupWeek).toBe(1);
     expect(body.today.invite).toBe(1);
     expect(body.execution).toEqual({ ready: false, waitingFor: 'worker' });
-    expect(body.backgroundRun).not.toBeNull();
-    expect(body.backgroundRun?.timezone).toBe('Europe/Zurich');
-    expect(Date.parse(body.backgroundRun?.endAt ?? '')).toBeGreaterThan(Date.now() - 60_000);
-    expect(body.maintenance.map((entry) => entry.task)).toEqual([
-      'inbox',
-      'pending_invites',
-      'withdrawals'
-    ]);
-    expect(body.maintenance.every((entry) => entry.timezone === 'Europe/Zurich')).toBe(true);
-    expect(
-      body.maintenance.every(
-        (entry) => entry.nextRunAt === null || Date.parse(entry.nextRunAt) > Date.now() - 60_000
-      )
-    ).toBe(true);
+    expect(body.backgroundRun).toBeNull();
+    expect(body.maintenance).toEqual([]);
+    expect(body.execution).toEqual({ ready: false, waitingFor: 'worker' });
     // The two clocks the setup screen reads instead of asking for a date.
     expect(body.seat?.activatedAt).toBe(activatedAt.toISOString());
     expect(body.seat?.detectedAt).toBeNull();
   });
 
-  it('shows the next background run and merges send sittings with read-only visit history', async () => {
+  it('shows historical runs without inventing a future background visit for an idle seat', async () => {
     const now = new Date();
     await upsertSeat(
       db,
@@ -1299,10 +1288,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
         status: string;
       }>;
     };
-    expect(body.nextRun).not.toBeNull();
-    expect(body.nextRun?.seatKey).toBe('owner');
-    expect(body.nextRun?.seatLabel).toBe('Pankaj (founder)');
-    expect(Date.parse(body.nextRun?.endAt ?? '')).toBeGreaterThan(now.getTime());
+    expect(body.nextRun).toBeNull();
     expect(body.runs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1364,14 +1350,14 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
       nextRun: { seatKey: string } | null;
       runs: Array<{ seatKey: string; executedCount: number }>;
     };
-    expect(body.nextRun?.seatKey).toBe('second');
+    expect(body.nextRun).toBeNull();
     expect(body.runs.length).toBeGreaterThan(0);
     expect(body.runs.every((run) => run.seatKey === 'second')).toBe(true);
     expect(body.runs.some((run) => run.executedCount === 3)).toBe(true);
     expect(body.runs.some((run) => run.executedCount === 1)).toBe(false);
   });
 
-  it('reports an availability return as a catch-up ready now instead of a later normal window', async () => {
+  it('does not advertise a companion-return catch-up when no recovery check or queued work exists', async () => {
     await upsertSeat(
       db,
       WORKSPACE_A,
@@ -1384,9 +1370,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
     const body = (await as(sessionA).get('/api/linkedin/activity?limit=20').expect(200)).body as {
       nextRun: { source: string; startAt: string; endAt: string } | null;
     };
-    expect(body.nextRun?.source).toBe('catchup');
-    expect(body.nextRun?.endAt).toBe(body.nextRun?.startAt);
-    expect(Math.abs(Date.parse(body.nextRun?.startAt ?? '') - Date.now())).toBeLessThan(10_000);
+    expect(body.nextRun).toBeNull();
   });
   it('queues detection for Companion when the paired computer is configured but offline', async () => {
     const saved = {

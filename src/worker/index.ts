@@ -192,27 +192,14 @@ async function linkedinCycle(): Promise<void> {
       concurrency: seatConcurrency,
       ...(allowSeat ? { allowSeat } : {})
     });
-    // THE SEND QUEUE FIRST, THE REST AFTER, and the order is the point: the
-    // invite/DM/reply/engagement queue is the only work with a paced SLOT
-    // attached, so it must not sit behind an inbox walk that can take minutes.
-    // Everything below is periodic maintenance -- reading what came back,
-    // reconciling LinkedIn's own pending-invite list, draining the withdrawal
-    // queue, walking a lead source -- and none of it has a deadline.
+    // THE SEND QUEUE FIRST. Ordinary background account polling is disabled:
+    // inbox sync, pending-invite reconciliation, acceptance detection and lead
+    // sourcing only run from explicit operator actions. `runLinkedInSideTasks`
+    // remains here solely to drain an already-queued withdrawal action; when
+    // no such row exists it returns before opening a browser.
     //
-    // Keyed on the SEAT table rather than on due actions: a workspace with an
-    // empty send queue still has an inbox to read and a backlog to reconcile,
-    // which is exactly the state this work exists to get it out of.
-    // `runLinkedInSideTasks` catches each job on its own and opens no browser
-    // where it cannot, so a workspace this process may not serve costs a
-    // readiness probe and nothing else.
-    // PER SEAT, not per workspace: each connected LinkedIn account has its own
-    // inbox to read, its own pending-invite list to reconcile and its own
-    // withdrawal queue, and none of them are the owner account's.
-    //
-    // BOUNDED AND ROTATED. `linkedinSeatRefs` (every seat on the deployment,
-    // serially, every tick) was replaced by this worker's own shard, fifty at a
-    // time, continuing where the last tick stopped. A short page means the end
-    // of the shard, so the cursor goes back to the start.
+    // PER SEAT and bounded/rotated across the shard so an explicitly queued
+    // withdrawal on one account cannot starve another tenant's worker pass.
     const seats = await seatRefsForShard(db, {
       shard: linkedinShard,
       limit: SIDE_TASK_SEATS_PER_TICK,
@@ -220,9 +207,6 @@ async function linkedinCycle(): Promise<void> {
     });
     seatCursor = seats.length < SIDE_TASK_SEATS_PER_TICK ? null : (seats[seats.length - 1] ?? null);
     await runBounded(seats, seatConcurrency, async (seat) => {
-      // THE SAME AUTHORISATION GATE AS THE SEND QUEUE. Reading a member's inbox
-      // and reconciling their pending invites is acting on their account too;
-      // gating only the sends would have been a distinction nobody consented to.
       if (allowSeat && !(await allowSeat(seat))) return;
       await runLinkedInSideTasks(db, runtime.linkedinLocalWorker, {
         workspaceId: seat.workspaceId,

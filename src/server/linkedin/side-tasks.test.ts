@@ -150,8 +150,8 @@ describe('dueSideTasks', () => {
     expect(dueSideTasks(SEAT, new Map(), NOW)).toHaveLength(MAX_TASKS_PER_VISIT);
   });
 
-  it('keeps profile checks and harvesting out; withdrawals are only an explicit queued-work executor', () => {
-    expect(SIDE_TASK_NAMES).toEqual(['inbox', 'pending_invites', 'withdrawals']);
+  it('keeps all account polling out; withdrawals are only an explicit queued-work executor', () => {
+    expect(SIDE_TASK_NAMES).toEqual(['withdrawals']);
     const runs: SideTaskRuns = new Map([
       ['inbox', NOW],
       ['pending_invites', NOW],
@@ -205,14 +205,23 @@ describe('dueSideTasks', () => {
     expect(next?.startAt.getTime()).toBeGreaterThan(firstStart.getTime());
   });
 
-  it('never replays a background inbox visit the laptop already slept through', () => {
+  it('advertises no background schedule for operator-only account polling', () => {
     const now = new Date('2026-08-04T19:00:00.000Z');
-    const [opportunity] = nextSideTaskOpportunities(SEAT, new Map(), 'inbox', now, 1, {
-      dayShape: FLAT_DAY_SHAPE
-    });
-    expect(opportunity).toBeDefined();
-    expect(opportunity!.startAt.getTime()).toBeGreaterThan(now.getTime());
-    expect(opportunity!.startAt.toISOString().slice(0, 10)).toBe('2026-08-05');
+    expect(
+      nextSideTaskOpportunities(SEAT, new Map(), 'inbox', now, 1, {
+        dayShape: FLAT_DAY_SHAPE
+      })
+    ).toEqual([]);
+    expect(
+      nextSideTaskOpportunities(SEAT, new Map(), 'pending_invites', now, 1, {
+        dayShape: FLAT_DAY_SHAPE
+      })
+    ).toEqual([]);
+    expect(
+      nextSideTaskOpportunities(SEAT, new Map(), 'lead_sources', now, 1, {
+        dayShape: FLAT_DAY_SHAPE
+      })
+    ).toEqual([]);
   });
 
   it('treats a backwards clock as "just ran" rather than making everything eligible', () => {

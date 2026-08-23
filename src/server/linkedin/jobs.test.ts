@@ -630,11 +630,11 @@ describe('how often the side-task tick touches LinkedIn', () => {
     );
   }
 
-  it('holds one pass per visit even when the cadence table is unavailable', async () => {
+  it('opens no browser for an idle seat even when the cadence table is unavailable', async () => {
     await connectedSeat();
     // Simulate the exact mid-deploy failure without dropping a table shared by
-    // other Vitest files. Both cadence calls swallow their own DB error and the
-    // in-process floor must still make one visit one pass.
+    // other Vitest files. An unavailable cadence table must not turn an idle
+    // account into a browser visit.
     const realPrepare = db.prepare.bind(db);
     const unavailable = new Proxy(db, {
       get(target, property, receiver) {
@@ -654,25 +654,40 @@ describe('how often the side-task tick touches LinkedIn', () => {
       }
     }) as Db;
 
-    const first = await tick(VISIT_AT, tickDriver().driver, false, unavailable);
-    expect(first.ran).toHaveLength(MAX_TASKS_PER_VISIT);
+    const firstDriver = tickDriver();
+    const first = await tick(VISIT_AT, firstDriver.driver, false, unavailable);
+    expect(first.ran).toEqual([]);
+    expect(first.skipped).toContain('nothing has gone stale');
+    expect(firstDriver.calls).toEqual([]);
 
+    const secondDriver = tickDriver();
     const second = await tick(
       new Date(VISIT_AT.getTime() + 60_000),
-      tickDriver().driver,
+      secondDriver.driver,
       false,
       unavailable
     );
     expect(second.ran).toEqual([]);
-    expect(second.skipped).toContain('already happened');
+    expect(second.skipped).toContain('nothing has gone stale');
+    expect(secondDriver.calls).toEqual([]);
   });
 
-  it('does at most the bounded normal visit budget, and nothing on the ticks in between', async () => {
+  it('does zero background account polling throughout an ordinary work window', async () => {
     await connectedSeat();
+    const probe = tickDriver();
 
-    const first = await tick(VISIT_AT, tickDriver().driver);
-    expect(first.skipped).toBeNull();
-    expect(first.ran).toHaveLength(MAX_TASKS_PER_VISIT);
+    const first = await tick(VISIT_AT, probe.driver);
+    const second = await tick(new Date(VISIT_AT.getTime() + 60_000), probe.driver);
+    const between = await tick(new Date(VISIT_AT.getTime() + 30 * 60_000), probe.driver);
+
+    expect(first.ran).toEqual([]);
+    expect(second.ran).toEqual([]);
+    expect(between.ran).toEqual([]);
+    expect(first.skipped).toContain('nothing has gone stale');
+    expect(second.skipped).toContain('nothing has gone stale');
+    expect(between.skipped).toContain('nothing has gone stale');
+    expect(probe.calls).toEqual([]);
+
     const event = await db
       .prepare(
         `
@@ -682,49 +697,32 @@ describe('how often the side-task tick touches LinkedIn', () => {
     `
       )
       .get<{ detail: string | null }>(WORKSPACE_ID);
-    const detail = parseBackgroundRunDetail(event?.detail ?? null);
-    expect(detail?.tasks).toEqual(first.ran);
-    expect(detail?.status).toBe('completed');
-
-    // The next worker tick, sixty seconds later and STILL INSIDE THE SAME
-    // VISIT. This is where the cap silently became "two per minute": the two
-    // jobs just stamped are no longer stale, so the next two would be picked,
-    // warmed up for and identity-checked all over again.
-    const second = await tick(new Date(VISIT_AT.getTime() + 60_000), tickDriver().driver);
-    expect(second.ran).toEqual([]);
-    expect(second.skipped).toContain('already happened');
-
-    // Later in the same configured work window, the pass marker prevents a
-    // second background visit for the day.
-    const between = await tick(new Date(VISIT_AT.getTime() + 30 * 60_000), tickDriver().driver);
-    expect(between.ran).toEqual([]);
-    expect(between.skipped).toContain('already happened');
+    expect(event).toBeUndefined();
   });
 
-  it('does one richer catch-up when a companion returns outside the normal visit schedule', async () => {
+  it('does not turn a companion return into an account-polling catch-up', async () => {
     await connectedSeat();
     const returnedAt = new Date(VISIT_AT.getTime() + 30 * 60_000);
     await markSideTaskRun(db, WORKSPACE_ID, 'owner', AVAILABILITY_RETURN_MARKER, returnedAt);
+    const probe = tickDriver();
 
-    const first = await tick(returnedAt, tickDriver().driver, true);
-    expect(first.ran).toHaveLength(MAX_CATCHUP_TASKS_PER_VISIT);
-    expect(first.ran).toHaveLength(1);
-    expect(['inbox', 'pending_invites']).toContain(first.ran[0]);
+    const first = await tick(returnedAt, probe.driver, true);
+    expect(first.ran).toEqual([]);
+    expect(first.skipped).toContain('nothing has gone stale');
+    expect(probe.calls).toEqual([]);
 
     const runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
     expect(runs.get(AVAILABILITY_CATCHUP_MARKER)?.getTime()).toBe(returnedAt.getTime());
 
-    const second = await tick(new Date(returnedAt.getTime() + 60_000), tickDriver().driver, true);
+    const second = await tick(new Date(returnedAt.getTime() + 60_000), probe.driver, true);
     expect(second.ran).toEqual([]);
-    expect(second.skipped).toContain('already happened');
+    expect(second.skipped).toContain('nothing has gone stale');
+    expect(probe.calls).toEqual([]);
   });
 
-  it('picks up the rest of the list on the following visits, so nothing is starved', async () => {
+  it('does not start polling on later working days just because time passed', async () => {
     await connectedSeat();
-
-    // TWO DAYS, because two or three visits of at most two jobs each cannot
-    // cover five jobs in one. That is the trade the cap buys: no visit does
-    // more than a person would, and the list still drains.
+    const probe = tickDriver();
     const done = new Set<string>();
     for (const day of [4, 5, 6]) {
       const visits = visitsForDay(
@@ -736,43 +734,30 @@ describe('how often the side-task tick touches LinkedIn', () => {
         const at = new Date(
           Date.UTC(2026, 7, day, Math.floor(visit.startMinute / 60), visit.startMinute % 60)
         );
-        const result = await tick(at, tickDriver().driver);
+        const result = await tick(at, probe.driver);
         for (const task of result.ran) done.add(task);
+        expect(result.ran).toEqual([]);
       }
     }
 
-    expect([...done].sort()).toEqual(['inbox', 'pending_invites']);
+    expect([...done]).toEqual([]);
+    expect(probe.calls).toEqual([]);
   });
 
-  it('confirms whose account this is ONCE for the visit, not once per job', async () => {
+  it('does not load /in/me/ or request connection counts for idle background work', async () => {
     await connectedSeat();
-    const { driver, calls } = tickDriver();
+    const { driver, calls, readOptions } = tickDriver();
 
-    await tick(VISIT_AT, driver);
+    const result = await tick(VISIT_AT, driver);
 
-    // Two jobs confirm identity independently, and each confirmation is a
-    // profile load. They cannot disagree: same browser, same page, seconds
-    // apart.
-    expect(calls.filter((call) => call === 'readSeat').length).toBeLessThanOrEqual(1);
+    expect(result.ran).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(calls.filter((call) => call === 'readSeat')).toEqual([]);
+    expect(readOptions).toEqual([]);
   });
 
-  it('never asks for the connection count, which is a second page load for a number nobody reads', async () => {
+  it('leaves stale pending-invite reconciliation operator-triggered', async () => {
     await connectedSeat();
-    const { driver, readOptions } = tickDriver();
-
-    await tick(VISIT_AT, driver);
-
-    for (const options of readOptions) expect(options).toEqual({ skipConnections: true });
-  });
-
-  it("loads no profile for a visit that reads nobody else's data", async () => {
-    await connectedSeat();
-    // Everything is freshly run except the pending-invite sync, which reads
-    // this account's OWN sent list and has never needed to know who is signed
-    // in. Hoisting the identity check to the visit would have handed it one.
-    for (const task of ['inbox', 'acceptance', 'withdrawals', 'lead_sources'] as const) {
-      await markSideTaskRun(db, WORKSPACE_ID, 'owner', task, VISIT_AT);
-    }
     await markSideTaskRun(
       db,
       WORKSPACE_ID,
@@ -784,7 +769,9 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
     const result = await tick(VISIT_AT, driver);
 
-    expect(result.ran).toEqual(['pending_invites']);
+    expect(result.ran).toEqual([]);
+    expect(result.pendingInvites).toBeNull();
+    expect(result.skipped).toContain('nothing has gone stale');
     expect(calls).toEqual([]);
   });
 
