@@ -32,7 +32,6 @@ import {
   detectLinkedInSeat,
   dueSeatsForWorker,
   heartbeatSeatLease,
-  humanCadencePage,
   latestSeatDetectRequest,
   linkedInBrowserReadiness,
   linkedInHeadlessReadiness,
@@ -2429,106 +2428,6 @@ describe('per-seat outbound proxy', () => {
 });
 
 /**
- * Human-cadence credential typing.
- *
- * `locator.fill()` sets an input's value in one operation: twenty characters
- * in the same millisecond, no keydown/keyup pairs, no inter-key timing at all.
- * On the one form where LinkedIn is looking hardest, that is the cheapest
- * possible tell.
- */
-describe('human-cadence typing on the sign-in form', () => {
-  function fakeField(options: { canPress?: boolean } = {}) {
-    const filled: string[] = [];
-    const pressed: string[] = [];
-    const locator: LinkedInLocator = {
-      count: async () => 1,
-      first: () => locator,
-      click: async () => {},
-      textContent: async () => null,
-      fill: async (text) => {
-        filled.push(text);
-      },
-      ...(options.canPress === false
-        ? {}
-        : {
-            press: async (key: string) => {
-              pressed.push(key);
-            }
-          })
-    };
-    return { locator, filled, pressed };
-  }
-
-  function fakePage(field: LinkedInLocator) {
-    const waits: number[] = [];
-    const wrapped: LinkedInPage = {
-      goto: async () => undefined,
-      url: () => 'https://www.linkedin.com/login',
-      locator: () => field,
-      waitForTimeout: async (ms) => {
-        waits.push(ms);
-      }
-    };
-    return { page: wrapped, waits };
-  }
-
-  it('types character by character with a pause between each, instead of one fill', async () => {
-    const field = fakeField();
-    const { page: fake, waits } = fakePage(field.locator);
-
-    await humanCadencePage(fake, 'seed').locator('input').first().fill('a@b.co');
-
-    // The field is cleared once, and then every character is a real keypress.
-    expect(field.filled).toEqual(['']);
-    expect(field.pressed).toEqual(['a', '@', 'b', '.', 'c', 'o']);
-    expect(waits).toHaveLength(6);
-    for (const ms of waits) {
-      expect(ms).toBeGreaterThanOrEqual(45);
-      expect(ms).toBeLessThanOrEqual(165);
-    }
-  });
-
-  it('paces the same seat identically every time, and two seats differently', async () => {
-    async function type(seed: string): Promise<number[]> {
-      const field = fakeField();
-      const { page: fake, waits } = fakePage(field.locator);
-      await humanCadencePage(fake, seed).locator('input').fill('correct horse');
-      return waits;
-    }
-
-    const first = await type('linkedin-login:ws_a:owner');
-    expect(await type('linkedin-login:ws_a:owner')).toEqual(first);
-    // Not merely different values -- a different SEQUENCE, so two accounts on
-    // one machine do not share a typing rhythm either.
-    expect(await type('linkedin-login:ws_a:sales')).not.toEqual(first);
-  });
-
-  it('stays transparent for a page that cannot press keys, and never invents the method', async () => {
-    const field = fakeField({ canPress: false });
-    const { page: fake, waits } = fakePage(field.locator);
-    const wrapped = humanCadencePage(fake, 'seed').locator('input');
-
-    await wrapped.fill('typed-in-one-go');
-
-    // `driver.ts` reads `typeof field.press` to decide whether the form can be
-    // submitted with Enter. Inventing it here would have it press Enter on a
-    // page that cannot.
-    expect(wrapped.press).toBeUndefined();
-    expect(field.filled).toEqual(['typed-in-one-go']);
-    expect(waits).toEqual([]);
-  });
-
-  it('leaves an empty fill alone -- that is a clear, not typing', async () => {
-    const field = fakeField();
-    const { page: fake, waits } = fakePage(field.locator);
-    await humanCadencePage(fake, 'seed').locator('input').fill('');
-    expect(field.filled).toEqual(['']);
-    expect(field.pressed).toEqual([]);
-    expect(waits).toEqual([]);
-  });
-});
-
-/**
  * The database half: discovery, claiming and cooldown, all per seat.
  *
  * Postgres-backed because every one of these was a SQL bug -- an
@@ -4130,91 +4029,48 @@ describe('workerShard', () => {
   });
 });
 
-/**
- * SITTINGS. A seat that is available to act from the minute its window opens
- * until the minute it closes has no shape to its day, and nobody uses LinkedIn
- * like that. The budget and the break are what give it one.
- */
-describe('the session rhythm', () => {
-  it('draws a sitting of 3-8 actions, deterministically', () => {
+/** Fixed autonomous batch bounds: conservative and auditable, not human-shaped. */
+describe('the autonomous batch policy', () => {
+  it('uses a fixed five-action batch cap', () => {
     for (let index = 0; index < 24; index += 1) {
-      const budget = sessionActionBudget(`ws:owner:session:${index}`);
-      expect(budget).toBeGreaterThanOrEqual(3);
-      expect(budget).toBeLessThanOrEqual(8);
-      expect(Number.isInteger(budget)).toBe(true);
+      expect(sessionActionBudget(`ws:owner:session:${index}`)).toBe(5);
     }
-    expect(sessionActionBudget('same')).toBe(sessionActionBudget('same'));
-    const drawn = new Set(
-      Array.from({ length: 24 }, (_, index) => sessionActionBudget(`s${index}`))
-    );
-    expect(drawn.size).toBeGreaterThan(1);
+    expect(sessionActionBudget('same')).toBe(5);
   });
 
-  it('draws a break of 25-90 minutes, deterministically', () => {
+  it('uses a fixed thirty-minute cooldown between autonomous batches', () => {
     for (let index = 0; index < 24; index += 1) {
-      const away = sessionBreakMs(`ws:owner:session:${index}`);
-      expect(away).toBeGreaterThanOrEqual(25 * 60_000);
-      expect(away).toBeLessThanOrEqual(90 * 60_000);
+      expect(sessionBreakMs(`ws:owner:session:${index}`)).toBe(30 * 60_000);
     }
-    expect(sessionBreakMs('same')).toBe(sessionBreakMs('same'));
-    const drawn = new Set(Array.from({ length: 24 }, (_, index) => sessionBreakMs(`s${index}`)));
-    expect(drawn.size).toBeGreaterThan(1);
-  });
-
-  it('gives consecutive sittings different lengths', () => {
-    const lengths = Array.from({ length: 6 }, (_, index) =>
-      sessionActionBudget(`ws_x:owner:session:${index + 1}`)
-    );
-    expect(new Set(lengths).size).toBeGreaterThan(1);
+    expect(sessionBreakMs('same')).toBe(30 * 60_000);
   });
 });
 
-/**
- * ARRIVING FROM THE PAGE THE LEAD WAS FOUND ON.
- *
- * The last cold `page.goto` on the action path. A campaign works from a stored
- * list, so the browser sat on the feed and typed profile URLs -- one cold
- * document load of a stranger's profile per action, with no referer and
- * nothing in front of it. Now the sitting opens the source page once and
- * clicks each card from there.
- */
-describe('reaching a target from its source page', () => {
-  const SOURCE = 'https://www.linkedin.com/search/results/people/?keywords=founder';
-
-  function navigatingPage(): { page: LinkedInPage; navigations: string[] } {
-    const navigations: string[] = [];
-    let current = 'https://www.linkedin.com/feed/';
-    return {
-      navigations,
-      page: {
-        goto: async (url: string) => {
-          navigations.push(url);
-          current = url;
-          return null;
-        },
-        url: () => current,
-        locator: () => ({
-          count: async () => 0,
-          first() {
-            return this;
-          },
-          click: async () => {},
-          fill: async () => {},
-          textContent: async () => null
-        }),
-        waitForTimeout: async () => {}
-      } as unknown as LinkedInPage
-    };
-  }
-
-  it('opens the source page before the action, and only once for the sitting', async () => {
+/** A stored source URL is metadata only; execution never visits it. */
+describe('source-page metadata', () => {
+  it('does not navigate to a stored source page before executing the requested action', async () => {
     const harness = fakeStore([
-      action({ id: 'lact_src_1', targetRef: 'https://www.linkedin.com/in/one/' }),
-      action({ id: 'lact_src_2', targetRef: 'https://www.linkedin.com/in/two/' })
+      action({ id: 'lact_src_1', targetRef: 'https://www.linkedin.com/in/one/' })
     ]);
-    harness.store.sourcePageFor = async () => SOURCE;
     const { driver, calls } = fakeDriver();
-    const { page, navigations } = navigatingPage();
+    const navigations: string[] = [];
+    const page = {
+      goto: async (url: string) => {
+        navigations.push(url);
+        return null;
+      },
+      url: () => 'https://www.linkedin.com/feed/',
+      locator: () => ({
+        count: async () => 0,
+        first() {
+          return this;
+        },
+        click: async () => {},
+        fill: async () => {},
+        textContent: async () => null
+      }),
+      waitForTimeout: async () => {}
+    } as unknown as LinkedInPage;
 
     const result = await runLinkedInLocalBatch(harness.store, {
       driver,
@@ -4224,50 +4080,11 @@ describe('reaching a target from its source page', () => {
       evaluate: async () => verdict()
     });
 
-    expect(result.executed).toBe(2);
-    expect(calls).toHaveLength(2);
-    // Loaded for the first action; the second is already there, so the whole
-    // sitting costs ONE list load instead of two cold profile loads.
-    expect(navigations).toEqual([SOURCE]);
-  });
-
-  it('says nothing and changes nothing when the lead has no known source', async () => {
-    const harness = fakeStore([
-      action({ id: 'lact_src_3', targetRef: 'https://www.linkedin.com/in/unsourced/' })
-    ]);
-    harness.store.sourcePageFor = async () => null;
-    const { driver, calls } = fakeDriver();
-    const { page, navigations } = navigatingPage();
-
-    await runLinkedInLocalBatch(harness.store, {
-      driver,
-      page,
-      sleep: noSleep,
-      log: () => {},
-      evaluate: async () => verdict()
-    });
-
+    expect(result.executed).toBe(1);
     expect(calls).toHaveLength(1);
     expect(navigations).toEqual([]);
-  });
-
-  it('never navigates off LinkedIn, whatever the source row says', async () => {
-    const harness = fakeStore([
-      action({ id: 'lact_src_4', targetRef: 'https://www.linkedin.com/in/offsite/' })
-    ]);
-    harness.store.sourcePageFor = async () => 'https://example.test/leads.csv';
-    const { driver, calls } = fakeDriver();
-    const { page, navigations } = navigatingPage();
-
-    await runLinkedInLocalBatch(harness.store, {
-      driver,
-      page,
-      sleep: noSleep,
-      log: () => {},
-      evaluate: async () => verdict()
-    });
-
-    expect(calls).toHaveLength(1);
-    expect(navigations).toEqual([]);
+    expect(harness.sent).toContain('lact_src_1');
+    expect(harness.released).toEqual([]);
+    expect(harness.held).toEqual([]);
   });
 });

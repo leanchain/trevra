@@ -7,7 +7,7 @@ import {
   type LinkedInLocator,
   type LinkedInPage
 } from './driver.js';
-import { hoverClick, readPage, settle } from './human.js';
+import { hoverClick, settle } from './human.js';
 
 /**
  * The Playwright routines for LinkedIn's sent-invitations manager.
@@ -305,7 +305,6 @@ async function openSentInvites(page: LinkedInListPage): Promise<LinkedInDriverRe
   try {
     await page.goto(SENT_INVITES_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     await settle(page, `${SENT_INVITES_URL}#open`);
-    await readPage(page, `${SENT_INVITES_URL}#read`);
   } catch (cause) {
     // Navigation failed, so nothing was read and nothing was clicked.
     return fail(
@@ -361,8 +360,7 @@ async function cardProfileUrl(card: LinkedInListLocator): Promise<string | null>
 /**
  * Expand the list once. True when it grew, false when there is nothing more.
  *
- * The pause happens BEFORE the click, seeded by the caller's seed and the page
- * index, so the same read produces the same rhythm on every machine.
+ * The fixed pause happens before the click as a simple request-rate bound.
  */
 async function expandList(
   page: LinkedInListPage,

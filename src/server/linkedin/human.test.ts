@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   hoverClick,
-  readPage,
   setHumanSessionSalt,
   settle,
   settleMs,
@@ -10,26 +9,14 @@ import {
   type HumanPage
 } from './human.js';
 
-function fake(options: { mouse?: boolean; hover?: boolean; typing?: boolean } = {}) {
+function fake(options: { hover?: boolean; typing?: boolean } = {}) {
   const waits: number[] = [];
-  const wheels: number[] = [];
   const typed: string[] = [];
   const filled: string[] = [];
   const events: string[] = [];
 
   const page: HumanPage = {
-    waitForTimeout: async (ms: number) => void waits.push(ms),
-    ...(options.mouse
-      ? {
-          mouse: {
-            move: async () => void events.push('move'),
-            wheel: async (_dx: number, dy: number) => {
-              wheels.push(dy);
-              events.push('wheel');
-            }
-          }
-        }
-      : {})
+    waitForTimeout: async (ms: number) => void waits.push(ms)
   };
 
   const locator: HumanLocator = {
@@ -49,7 +36,7 @@ function fake(options: { mouse?: boolean; hover?: boolean; typing?: boolean } = 
       : {})
   };
 
-  return { page, locator, waits, wheels, typed, filled, events };
+  return { page, locator, waits, typed, filled, events };
 }
 
 describe('LinkedIn interaction helpers', () => {
@@ -78,28 +65,5 @@ describe('LinkedIn interaction helpers', () => {
     expect(typed).toEqual([]);
     expect(events).toEqual(['fill']);
     expect(waits).toEqual([]);
-  });
-
-  it('performs only one functional lazy-load scroll when a mouse exists', async () => {
-    const { page, wheels, events, waits } = fake({ mouse: true });
-    await readPage(page, 'ignored-seed');
-    expect(wheels).toEqual([700]);
-    expect(events).toEqual(['wheel']);
-    expect(waits).toEqual([250]);
-  });
-
-  it('does nothing when lazy-load scrolling is unavailable', async () => {
-    const { page, waits, events } = fake();
-    await readPage(page, 'ignored-seed');
-    expect(waits).toEqual([]);
-    expect(events).toEqual([]);
-  });
-
-  it('does not fail the caller when the optional lazy-load scroll fails', async () => {
-    const { page } = fake({ mouse: true });
-    page.mouse!.wheel = async () => {
-      throw new Error('detached');
-    };
-    await expect(readPage(page, 'ignored-seed')).resolves.toBeUndefined();
   });
 });

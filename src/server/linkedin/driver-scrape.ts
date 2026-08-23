@@ -7,7 +7,7 @@ import {
   type LinkedInLocator,
   type LinkedInPage
 } from './driver.js';
-import { hoverClick, readPage, settleMs } from './human.js';
+import { hoverClick, settleMs } from './human.js';
 import { splitAndScrubName } from './lead-import.js';
 import { ACTION_GAP_SECONDS } from './limits.js';
 
@@ -85,20 +85,6 @@ export interface LinkedInScrapeLocator extends LinkedInLocator {
 /** `LinkedInPage` whose `locator()` hands back the extended shape above. */
 export interface LinkedInScrapePage extends LinkedInPage {
   locator(selector: string): LinkedInScrapeLocator;
-  /**
-   * OPTIONAL, and absent on every test fake in this repo.
-   *
-   * A results page that is read without ever being scrolled is the single
-   * clearest "not a person" signal a list walk emits: LinkedIn's search surface
-   * instruments scroll and pointer events, lazy-loads rows below the fold, and
-   * a client that harvests twenty-five cards with zero wheel events has told it
-   * everything it needs to know. See {@link browseList}. A page object without
-   * a mouse simply skips that -- it is behaviour, never correctness.
-   */
-  mouse?: {
-    move(x: number, y: number, options?: { steps?: number }): Promise<void>;
-    wheel(deltaX: number, deltaY: number): Promise<void>;
-  };
 }
 
 /* ---------------------------------------------------------------------------
@@ -294,21 +280,10 @@ const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
 
 /**
- * The pause after a page load, and the scroll that a read looks like.
- *
- * BOTH MOVED TO `human.ts` and are re-exported under their original names so
- * the call sites below read the same. They started here -- a constant 1,500ms
- * settle and no scroll at all was what a search walk emitted -- and then every
- * other driver turned out to need exactly the same two things: LinkedIn does
- * not score a search page differently from a profile page, and a client that
- * loads either one on a timer and never moves a pointer over it has said the
- * same thing about itself on both.
- *
- * `settleMs` stays exported because the scrape tests assert its determinism
- * directly, and that is worth keeping assertable.
+ * The fixed UI-settle helper is re-exported so scrape tests and callers can
+ * assert the same deterministic render wait used by the other drivers.
  */
 export { settleMs };
-export const browseList = readPage;
 
 function fail(
   failureKind: LinkedInFailureKind,
@@ -972,7 +947,6 @@ export async function scrapeProfileList(
   try {
     await page.goto(parsed.toString(), { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     await page.waitForTimeout(settleMs(`${opts.seed ?? listUrl}:settle`));
-    await browseList(page, `${opts.seed ?? listUrl}:scroll`);
   } catch (cause) {
     return fail(
       'selector_drift',
@@ -1173,7 +1147,6 @@ async function walkResultList(
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
       await page.waitForTimeout(settleMs(`${seed}:settle:${pageNumber}`));
-      await browseList(page, `${seed}:scroll:${pageNumber}`);
     } catch (cause) {
       harvest.degraded.push(
         `Page ${pageNumber} of ${surface.label} could not be opened (${cause instanceof Error ? cause.message : String(cause)}), so the walk stopped there with what it already had.`
@@ -1431,7 +1404,6 @@ async function openPost(
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     await page.waitForTimeout(settleMs(`${url}:post`));
-    await browseList(page, `${url}:post:scroll`);
   } catch (cause) {
     return fail(
       'selector_drift',
@@ -1565,7 +1537,6 @@ export async function scrapeContentSearch(
         timeout: NAV_TIMEOUT_MS
       });
       await page.waitForTimeout(settleMs(`${seed}:content:${pageNumber}`));
-      await browseList(page, `${seed}:content:scroll:${pageNumber}`);
     } catch (cause) {
       harvest.degraded.push(
         `Page ${pageNumber} of this content search could not be opened (${cause instanceof Error ? cause.message : String(cause)}), so the walk stopped there with what it already had.`

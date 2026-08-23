@@ -60,24 +60,22 @@ function minutesOpen(seat: SideTaskSeat, date: string): number[] {
 }
 
 describe('visitsForDay', () => {
-  it('opens LinkedIn between two and five times', () => {
+  it('uses exactly one operator-configured execution window per working day', () => {
     for (let day = 1; day <= 28; day += 1) {
       const visits = visitsForDay('ws:owner', { year: 2026, month: 9, day }, WINDOW);
-      expect(visits.length).toBeGreaterThanOrEqual(VISITS_PER_DAY.min);
-      expect(visits.length).toBeLessThanOrEqual(VISITS_PER_DAY.max);
+      expect(visits).toHaveLength(1);
+      expect(visits.length).toBe(VISITS_PER_DAY.max);
     }
   });
 
-  it('keeps every visit to a few minutes, inside the working window', () => {
+  it('matches the configured working window exactly', () => {
     for (let day = 1; day <= 28; day += 1) {
-      for (const visit of visitsForDay('ws:owner', { year: 2026, month: 9, day }, WINDOW)) {
-        const minutes = visit.endMinute - visit.startMinute;
-        expect(minutes).toBeGreaterThanOrEqual(VISIT_MINUTES.min - 1);
-        expect(minutes).toBeLessThanOrEqual(VISIT_MINUTES.max);
-        expect(visit.startMinute).toBeGreaterThanOrEqual(WINDOW.startMinute);
-        expect(visit.endMinute).toBeLessThanOrEqual(WINDOW.endMinute);
-      }
+      const [visit] = visitsForDay('ws:owner', { year: 2026, month: 9, day }, WINDOW);
+      expect(visit.startMinute).toBe(WINDOW.startMinute);
+      expect(visit.endMinute).toBe(WINDOW.endMinute);
+      expect(visit.endMinute - visit.startMinute).toBe(WINDOW.endMinute - WINDOW.startMinute);
     }
+    expect(VISIT_MINUTES).toEqual({ min: 0, max: 0 });
   });
 
   it('spreads them out -- a clump after a long silence is worse than a flat line', () => {
@@ -98,26 +96,25 @@ describe('visitsForDay', () => {
     );
   });
 
-  it('gives two seats different days, so two accounts never open in lockstep', () => {
-    expect(visitsForDay('ws:owner', TUESDAY, WINDOW)).not.toEqual(
+  it('does not alter the operator window by seat identity', () => {
+    expect(visitsForDay('ws:owner', TUESDAY, WINDOW)).toEqual(
       visitsForDay('ws:sales', TUESDAY, WINDOW)
     );
   });
 
-  it('gives one seat a different shape tomorrow', () => {
-    expect(visitsForDay('ws:owner', TUESDAY, WINDOW)).not.toEqual(
+  it('does not alter the operator window by calendar date', () => {
+    expect(visitsForDay('ws:owner', TUESDAY, WINDOW)).toEqual(
       visitsForDay('ws:owner', { ...TUESDAY, day: 5 }, WINDOW)
     );
   });
 });
 
 describe('visitAt', () => {
-  it('is open for only a handful of minutes on a working day', () => {
+  it('is eligible throughout the configured working window', () => {
     const open = minutesOpen(SEAT, '2026-08-04');
-    expect(open.length).toBeGreaterThan(0);
-    // Five visits of five minutes is the ceiling; anything more is a session
-    // that never ends, which is the shape this replaced.
-    expect(open.length).toBeLessThanOrEqual(VISITS_PER_DAY.max * VISIT_MINUTES.max);
+    expect(open.length).toBe(SEAT.workEndMinute - SEAT.workStartMinute);
+    expect(open[0]).toBe(SEAT.workStartMinute);
+    expect(open.at(-1)).toBe(SEAT.workEndMinute - 1);
   });
 
   it('is never open at 03:00', () => {
@@ -153,7 +150,7 @@ describe('dueSideTasks', () => {
     expect(dueSideTasks(SEAT, new Map(), NOW)).toHaveLength(MAX_TASKS_PER_VISIT);
   });
 
-  it('keeps profile checks, withdrawals and harvesting out of unattended selection', () => {
+  it('keeps profile checks and harvesting out; withdrawals are only an explicit queued-work executor', () => {
     expect(SIDE_TASK_NAMES).toEqual(['inbox', 'pending_invites', 'withdrawals']);
     const runs: SideTaskRuns = new Map([
       ['inbox', NOW],

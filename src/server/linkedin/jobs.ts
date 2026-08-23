@@ -41,7 +41,6 @@ import {
 import {
   openLinkedInSession,
   stopLinkedInBatches,
-  warmUpSession,
   type LinkedInLocalWorkerConfig
 } from './local-worker.js';
 import {
@@ -784,19 +783,22 @@ export async function runLinkedInWithdrawals(
     withdrawDriver?: LinkedInWithdrawDriver;
     maxActions?: number;
     sleep?: (ms: number) => Promise<void>;
+    /** False for unattended execution: drain only rows explicitly queued by an operator/workflow. */
+    sweep?: boolean;
   } & WithdrawalCandidateOptions
 ): Promise<WithdrawalJobResult> {
   const now = options.now ?? new Date();
   const seat = seatOf(options.workspaceId, options.seatKey);
   const log = options.log ?? (() => {});
 
-  const swept = await sweepStaleInvitesRespectingWorkflows(db, seat, now, {
-    ...(options.olderThanDays === undefined ? {} : { olderThanDays: options.olderThanDays }),
-    ...(options.limit === undefined ? {} : { limit: options.limit })
-  });
+  const swept =
+    options.sweep === false
+      ? { candidates: [], queued: 0, duplicates: 0 }
+      : await sweepStaleInvitesRespectingWorkflows(db, seat, now, {
+          ...(options.olderThanDays === undefined ? {} : { olderThanDays: options.olderThanDays }),
+          ...(options.limit === undefined ? {} : { limit: options.limit })
+        });
 
-  // The sweep already ran and its numbers are real whether or not a browser
-  // opens: those rows are queued, and the next pass drains them.
   const sweepCounts = {
     candidates: swept.candidates.length,
     queued: swept.queued,
@@ -1045,12 +1047,22 @@ export async function runLinkedInSideTasks(
     };
   }
 
-  // Normal visits may do three stale maintenance jobs. A return after real
-  // absence may do all five categories ONCE so an occasionally-online laptop
-  // can get current without manufacturing the missed visits as a burst.
+  // Select at most one maintenance category for either a normal work-window
+  // pass or a reconnect catch-up. Withdrawals are eligible only when a row was
+  // explicitly queued by an operator/workflow; background maintenance does not
+  // scan LinkedIn for stale invitations to create new withdrawal work.
   const due = new Set(
     dueSideTasks(seat, runs, now, { limit: catchUp ? MAX_CATCHUP_TASKS_PER_VISIT : undefined })
   );
+  if (due.has('withdrawals')) {
+    const queuedWithdrawal = await db
+      .prepare(
+        `SELECT 1 AS queued FROM linkedin_withdrawals
+         WHERE workspace_id=? AND seat_key=? AND status='queued' LIMIT 1`
+      )
+      .get<{ queued: number }>(options.workspaceId, seatKey);
+    if (!queuedWithdrawal) due.delete('withdrawals');
+  }
   if (due.size === 0 && !recoveryVerification) {
     if (catchUp)
       await markSideTaskRun(db, options.workspaceId, seatKey, AVAILABILITY_CATCHUP_MARKER, now);
@@ -1112,17 +1124,6 @@ export async function runLinkedInSideTasks(
       skipped: 'The LinkedIn session was verified healthy after companion recovery.'
     };
   }
-
-  // A VISIT STARTS ON THE FEED, because that is where a person lands when they
-  // open LinkedIn -- not on `/mynetwork/invitation-manager/sent/`. Same helper
-  // the sending sittings use, so a read visit and a send visit begin the same
-  // way; it also wanders to notifications or My Network about half the time.
-  // Decoration, never correctness: a page that cannot navigate drops it.
-  await warmUpSession(
-    session.page,
-    `${options.workspaceId}:${seatKey}:${catchUp ? 'return' : `visit${visitIndex}`}:${now.toISOString().slice(0, 10)}`,
-    log
-  );
 
   // AND NOT AT ALL WHEN NOTHING IN THIS PASS NEEDS IT. Only the inbox walk and
   // acceptance detection file data whose meaning depends on who is signed in;
@@ -1213,7 +1214,8 @@ export async function runLinkedInSideTasks(
       async () => {
         result.withdrawals = await runLinkedInWithdrawals(db, config, {
           ...shared,
-          maxActions: options.maxWithdrawals ?? 3
+          maxActions: options.maxWithdrawals ?? 1,
+          sweep: false
         });
       }
     ],
@@ -1327,11 +1329,10 @@ async function leaveLinkedIn(page: LinkedInPage, log: (message: string) => void)
 /** Beyond this, a due post is stale enough that firing it late is worse than not firing it at all. */
 const POST_GRACE_MS = 6 * 3_600_000;
 /**
- * ONE ACTUAL PUBLISH per tick, deliberately. Typing a 3000-character post at
- * human speed takes the driver 5-9 minutes, and this loop runs SERIALLY inside
- * the same per-workspace tick as the paced invite/DM queue -- five posts back
- * to back would hold that queue for the better part of half an hour. A
- * workspace with several posts due at once drains them one tick at a time.
+ * ONE ACTUAL PUBLISH per tick, deliberately. Publishing can include navigation,
+ * media upload and confirmation, and this loop runs serially inside the same
+ * per-workspace tick as the paced invite/DM queue. A workspace with several
+ * posts due at once drains them one tick at a time.
  *
  * It counts PUBLISH ATTEMPTS, not claims: a post marked 'missed' or a seat
  * whose session will not open costs one UPDATE and no typing at all, so

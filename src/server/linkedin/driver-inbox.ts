@@ -5,7 +5,7 @@ import {
   type LinkedInFailureKind,
   type LinkedInPage
 } from './driver.js';
-import { hoverClick, readPage, settle, typeLike } from './human.js';
+import { hoverClick, settle, typeLike } from './human.js';
 
 /**
  * The Playwright routines for the unified inbox: walk the conversation list,
@@ -401,14 +401,7 @@ export interface InboxWalkOptions {
    * the window is never opened, and a message older than it is never filed.
    */
   sinceDays?: number;
-  /**
-   * The jitter seed. Callers pass something per-run (a batch id) so two runs do
-   * not share a delay pattern.
-   *
-   * The default is a CONSTANT on purpose: an omitted seed produces a
-   * reproducible walk rather than a secretly random one, so the omission shows
-   * up in a test as a fixed sequence instead of hiding as noise.
-   */
+  /** Compatibility label used in logs/tests; navigation spacing is fixed. */
   seed?: string;
   /** Defaults to a real timer. Injected so a test can assert the gaps. */
   sleep?: (ms: number) => Promise<void>;
@@ -416,11 +409,11 @@ export interface InboxWalkOptions {
   now?: () => Date;
   /**
    * Whether this conversation still needs its participant's profile URL
-   * resolved, which costs one extra navigation each.
+   * resolved from the link already rendered in the opened thread.
    *
    * The caller knows and the driver cannot: a thread whose `profile_url` is
-   * already stored never needs the hop again. Defaults to "yes, every one",
-   * because a linkage that silently does not happen is worse than a slow walk.
+   * already stored does not need the DOM attribute read again. No participant
+   * profile navigation is performed for this lookup.
    */
   needsProfileUrl?: (threadUrn: string) => boolean;
 }
@@ -487,9 +480,6 @@ async function openUrl(
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     await settle(page, `${url}#open`);
-    // The conversation rail lazy-loads and instruments scroll like every other
-    // LinkedIn surface. Reading it is both cover and correctness.
-    await readPage(page, `${url}#read`);
   } catch (cause) {
     // Navigation failed, so nothing was read and nothing was clicked.
     return fail(
@@ -684,19 +674,17 @@ function sameName(left: string, right: string): boolean {
  * TWO PASSES, AND THE ORDER MATTERS. Pass one reads every row's text with ZERO
  * navigation, because the rail re-orders the moment a new message arrives and
  * reading nine rows across nine page loads would pair one conversation's
- * snippet with another's name. Pass two opens each row for the two facts the
- * rail does not publish as text -- the conversation id, which only appears in
- * the URL, and the participant's profile URL, which requires opening their
- * profile because this driver cannot read an href.
+ * snippet with another's name. Pass two opens each selected conversation for
+ * its id and reads the participant profile href from that thread's existing
+ * DOM when the caller still needs it. It never opens the participant profile.
  *
  * The pairing is then VERIFIED rather than assumed: the name in the opened
  * thread is compared with the name in the row that was clicked, and a mismatch
  * drops that entry with a note instead of filing one person's reply under
  * another person's name.
  *
- * BOUNDED AND JITTERED. `maxThreads` caps the run whatever the inbox holds, and
- * every navigation waits out a seeded gap (READ_GAP_SECONDS) so a walk is not a
- * burst of identical page loads.
+ * BOUNDED AND RATE-LIMITED. `maxThreads` caps the run whatever the inbox holds,
+ * and every navigation after the first waits the same conservative fixed gap.
  */
 export async function listConversations(
   page: LinkedInPage,

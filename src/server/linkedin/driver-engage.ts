@@ -7,7 +7,7 @@ import {
   type LinkedInFailureKind,
   type LinkedInPage
 } from './driver.js';
-import { hoverClick, readPage, settle } from './human.js';
+import { hoverClick, settle } from './human.js';
 
 /**
  * The three ENGAGEMENT routines: follow a profile, like their most recent
@@ -150,11 +150,9 @@ const CHECKPOINT_PATH = /\/(checkpoint|uas\/login)\//i;
  * clicks inside one explicit action. Safety-critical ceilings remain in
  * `engagement.ts` and the gate.
  */
-const ENGAGE_GAP_MS = { min: 700, max: 2_600 };
-
-/** Fixed conservative maximum pause between multiple clicks inside one explicit action. */
+/** Compatibility helper kept for callers/tests; engagement adds no synthetic pre-click delay. */
 export function engageGapMs(_seed: string): number {
-  return ENGAGE_GAP_MS.max;
+  return 0;
 }
 
 /**
@@ -185,10 +183,8 @@ export interface EndorseOptions extends EngageOptions {
   limit?: number;
 }
 
-const DEFAULT_ENDORSE_LIMIT = 3;
-const MAX_ENDORSE_LIMIT = 10;
-
-const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
+const DEFAULT_ENDORSE_LIMIT = 1;
+const MAX_ENDORSE_LIMIT = 1;
 
 function fail(failureKind: LinkedInFailureKind, detail: string): LinkedInDriverResult {
   return { ok: false, failureKind, detail };
@@ -247,10 +243,6 @@ async function openAt(page: LinkedInPage, url: string): Promise<LinkedInDriverRe
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     await settle(page, `${url}#open`);
-    // Follows, likes and endorsements all land here first, and all three are
-    // "a person was looking at this page and reacted to it". Reading it before
-    // reacting is what makes that true. Decoration only: never throws.
-    await readPage(page, `${url}#read`);
   } catch (cause) {
     // Navigation failed, so no action was taken. Definite, and reported as
     // drift rather than `unknown`: nothing was clicked.
@@ -569,7 +561,7 @@ export async function likeRecentPost(
   const profile = canonicalProfileFor(target);
   if (!profile) return unopenable(target, 'activity feed');
   const feed = `${profile}recent-activity/all/`;
-  const sleep = opts.sleep ?? defaultSleep;
+  void opts;
 
   const blocked = await openAt(page, feed);
   if (blocked) return blocked;
@@ -596,10 +588,6 @@ export async function likeRecentPost(
       `${ENGAGE_SELECTORS.firstPostLike} did not match on ${feed}. Nothing was clicked.`
     );
   }
-
-  // A person reads a post before reacting to it. Seeded, so this batch's
-  // pauses are reproducible from the ledger.
-  await sleep(engageGapMs(opts.seed ?? target));
 
   // EVERYTHING BELOW THIS LINE IS POST-CLICK.
   try {
@@ -672,7 +660,6 @@ export async function endorseSkills(
   const profile = canonicalProfileFor(target);
   if (!profile) return unopenable(target, 'skills page');
   const skillsUrl = `${profile}details/skills/`;
-  const sleep = opts.sleep ?? defaultSleep;
   const limit = Math.min(
     MAX_ENDORSE_LIMIT,
     Math.max(1, Math.trunc(opts.limit ?? DEFAULT_ENDORSE_LIMIT))
@@ -700,8 +687,6 @@ export async function endorseSkills(
     const buttons = page.locator(ENGAGE_SELECTORS.endorseButton);
     const before = await buttons.count();
     if (before === 0) break;
-
-    if (index > 0) await sleep(engageGapMs(`${opts.seed ?? target}:${index}`));
 
     // EVERYTHING BELOW THIS LINE IS POST-CLICK, for this iteration.
     try {

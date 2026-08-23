@@ -75,7 +75,7 @@ import {
   type LinkedInThreadListing,
   type LinkedInThreadTranscript
 } from './driver-inbox.js';
-import { hoverClick, readPage, settle, typeLike } from './human.js';
+import { hoverClick, settle, typeLike } from './human.js';
 
 /** The seven outcomes a routine may report. Ordered as in plan 4.5. */
 export type LinkedInFailureKind =
@@ -132,8 +132,6 @@ export interface LinkedInLocator {
    */
   press?(key: string, options?: { timeout?: number }): Promise<void>;
   /** Optional Playwright capabilities retained for driver compatibility. */
-  hover?(options?: { timeout?: number }): Promise<void>;
-  pressSequentially?(text: string, options?: { delay?: number; timeout?: number }): Promise<void>;
   textContent(options?: { timeout?: number }): Promise<string | null>;
   /**
    * OPTIONAL, for the one read where LAYOUT IS CONTENT: a message body.
@@ -158,18 +156,9 @@ export interface LinkedInPage {
   locator(selector: string): LinkedInLocator;
   waitForTimeout(ms: number): Promise<void>;
   /**
-   * OPTIONAL. Real Playwright has both; no fake in this repo does.
-   *
-   * `mouse` is what makes a page that was READ look different from a page that
-   * was HARVESTED (`readPage`), and `keyboard` is only ever used to put a line
-   * break in a composer with `Shift+Enter` instead of an Enter that would send
-   * the message half-written. Absent either one, the driver behaves exactly as
-   * it did before.
+   * OPTIONAL. Used only to put a line break in a composer with `Shift+Enter`
+   * instead of an Enter that could submit a half-written message.
    */
-  mouse?: {
-    move(x: number, y: number, options?: { steps?: number }): Promise<void>;
-    wheel(deltaX: number, deltaY: number): Promise<void>;
-  };
   keyboard?: {
     press(key: string, options?: { delay?: number }): Promise<void>;
   };
@@ -335,7 +324,7 @@ export interface LinkedInDriver {
     body: string,
     options?: { seed?: string }
   ): Promise<LinkedInDriverResult>;
-  /** `seed` is the batch-scoped seed for the deterministic in-action click jitter. */
+  /** `seed` is retained for driver-call compatibility; it does not alter interaction timing. */
   likeRecentPost(
     page: LinkedInPage,
     target: string,
@@ -715,11 +704,6 @@ async function openProfile(
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     }
     await settle(page, `${url}#open`);
-    // A profile that is opened and acted on inside two seconds, with no pointer
-    // movement and no scroll in between, is the exact shape the 2026-08-14
-    // investigation found LinkedIn scoring. Read it first, the way the person
-    // about to click Connect would read it. Decoration only: never throws.
-    await readPage(page, `${url}#read`);
   } catch (cause) {
     // Navigation failed, so no action was taken. Definite, and reported as
     // drift rather than `unknown`: nothing was clicked.
@@ -1648,11 +1632,9 @@ export async function isLoggedIn(page: LinkedInPage): Promise<boolean> {
   // a steady drip against exactly the counter LinkedIn cites when it says an
   // account has been "accessing an unusually large amount of profile data".
   //
-  // The doc comment above always claimed this only read the current page. Now
-  // it does: the browser opens on the feed (`warmUpSession` in
-  // `local-worker.ts`), so the common case is answered with NO navigation at
-  // all, and the fallback loads the FEED rather than a profile -- the page a
-  // person who just opened LinkedIn would be looking at.
+  // The common case is answered from the page already open in the persistent
+  // browser with no navigation at all. If a second opinion is required, the
+  // fallback loads the feed rather than another member profile.
   const current = page.url();
   if (onLinkedIn(current)) {
     if (CHECKPOINT_PATH.test(current)) return false;

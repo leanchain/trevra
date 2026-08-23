@@ -258,15 +258,10 @@ export const ACCEPTANCE_THROTTLE_FACTOR = 0.5;
 export const BUSINESS_HOURS = { start: 8, end: 18 };
 
 /**
- * Minimum and maximum seconds between two consecutive actions. REPORTED (1.4):
- * "randomised 30-120s gaps, never a 2-hour block".
- *
- * Both halves are used, for different jobs: `min` is the hard floor the
- * scheduler will never place two slots closer than, and `max` is the headroom
- * reserved around each grid point so jitter can never eat that floor. In
- * practice the even spread across the business-hours window produces gaps far
- * larger than either -- which is the "never a block" half of the same
- * sentence.
+ * Conservative action-spacing policy. The current planner/worker use the
+ * maximum value as a fixed floor between autonomous external actions. `min`
+ * remains for compatibility with older reports and configuration surfaces; it
+ * is not used to generate randomized timing.
  */
 export const ACTION_GAP_SECONDS = { min: 30, max: 120 };
 
@@ -279,16 +274,10 @@ export const ACTION_GAP_SECONDS = { min: 30, max: 120 };
 export const WEEKEND_FACTOR = 0.0;
 
 /**
- * Days LinkedIn's enforcement scan clusters on, as JS weekday numbers
- * (0=Sunday). REPORTED (1.3): "disconnections cluster on Tuesdays and
- * Wednesdays".
- *
- * The rule is narrow on purpose -- these days are not skipped, they are
- * capped: a day's maximum is never scheduled on one. Skipping two of five
- * working days would itself create the weekly sawtooth this engine exists to
- * avoid.
+ * No weekday receives special treatment based on presumed enforcement timing.
+ * Generic work windows and rolling limits apply uniformly instead.
  */
-export const ENFORCEMENT_SCAN_WEEKDAYS: readonly number[] = [2, 3];
+export const ENFORCEMENT_SCAN_WEEKDAYS: readonly number[] = [];
 
 /**
  * InMails per calendar month, per Sales Navigator seat. HARD FACT (1.1):

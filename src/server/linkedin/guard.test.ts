@@ -475,11 +475,11 @@ describe('timing', () => {
     expect(check(early, 'business-hours').detail).toContain('between 10:00 and 14:00');
   });
 
-  it('names Tuesday and Wednesday as enforcement-scan days without blocking them', async () => {
+  it('treats Tuesdays and Wednesdays like ordinary configured weekdays', async () => {
     await seat('2026-01-01');
     const verdict = await guard({ plannedFor: '2026-08-11T10:00:00.000Z' });
     expect(check(verdict, 'weekend').passed).toBe(true);
-    expect(check(verdict, 'weekend').detail).toContain('enforcement-scan day');
+    expect(check(verdict, 'weekend').detail).not.toContain('enforcement-scan day');
   });
 
   it('fails both timing checks on an unparseable instant rather than throwing', async () => {
@@ -1379,7 +1379,7 @@ describe('the day shape binds at the gate, not only in the plan', () => {
       }
     );
     expect(check(verdict, 'business-hours').passed).toBe(false);
-    expect(check(verdict, 'business-hours').detail).toContain('not working that day');
+    expect(check(verdict, 'business-hours').detail).toContain('policy marks that day closed');
     expect(verdict.allowed).toBe(false);
   });
 

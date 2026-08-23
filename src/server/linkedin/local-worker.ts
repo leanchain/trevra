@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, hostname } from 'node:os';
@@ -35,7 +34,6 @@ import {
   type LinkedInDriver,
   type LinkedInDriverResult,
   type LinkedInFailureKind,
-  type LinkedInLocator,
   type LinkedInPage,
   type LinkedInAttachment
 } from './driver.js';
@@ -46,7 +44,6 @@ import {
   type LinkedInThreadSummary
 } from './driver-inbox.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
-import { readPage, settle, type HumanPage } from './human.js';
 import {
   pruneSeatEvents,
   recordSeatEvent,
@@ -54,7 +51,8 @@ import {
   setSeatRestingUntil
 } from './seat-events.js';
 import { ACTION_GAP_SECONDS, type PacedKind } from './limits.js';
-import { dayShapeFor, localDateOf, visitsForDay, workWindowOf, zonedToUtc } from './pacing.js';
+import { localDateOf, weekdayOf, workWindowOf } from './pacing.js';
+
 import { clearInboxForSeat, syncThreadMessages, syncThreads } from './inbox.js';
 import { campaignSnapshotSteps } from './managed-campaigns.js';
 import { delayMilliseconds } from './workflows.js';
@@ -519,23 +517,6 @@ export interface LocalWorkerStore {
   /** Nothing was sent: put the action back in the queue, recording why. */
   releaseClaim(actionId: string, failureKind: LinkedInFailureKind | null): Promise<void>;
   /**
-   * The LinkedIn page this target was FOUND on, when Trevra knows it.
-   *
-   * WHY A QUEUE NEEDS TO KNOW WHERE A LEAD CAME FROM. Every action used to
-   * reach its target by typing the profile URL into the address bar: a cold
-   * document load of `/in/<stranger>/` with no view before it, no referer and
-   * nothing that led to it. That is not how a member reaches a profile and it
-   * is exactly how a script working from a list of URLs does. Handed the
-   * source page, the worker opens it once, reads it, and clicks the person's
-   * card -- which is one page load for a whole sitting instead of one cold
-   * load per action, and every action after the first is a client-side route.
-   *
-   * OPTIONAL, and null is the normal answer for a target nobody sourced
-   * (a manual add, an import, a reply). The caller falls back to the address
-   * bar, which is what it always did.
-   */
-  sourcePageFor?(targetRef: string): Promise<string | null>;
-  /**
    * Does this seat hold an invite to this target that was never accepted?
    *
    * Asked for ONE question and it is a narrow one: a profile with no Message
@@ -666,53 +647,26 @@ const DEFAULT_MAX_ACTIONS = 25;
 const NEW_DM_THREAD_LOOKUP_DEPTH = 5;
 
 /**
- * HOW LONG ONE SITTING LASTS, AND HOW LONG THE SEAT IS AWAY AFTERWARDS.
- *
- * `DEFAULT_MAX_ACTIONS` bounds a tick. It does not describe a person. A seat
- * that is available to act at a 30-120s gap from the moment its window opens
- * until the moment it closes -- and does that every working day -- has no
- * SHAPE to its day: no lunch, no meetings, no afternoon where it did something
- * else. Nobody uses LinkedIn like that. People use it in sittings: they open
- * it, do a handful of things, close the tab, and come back later.
- *
- * So a session is 3-8 actions, and then the seat is away for 25-90 minutes and
- * ITS BROWSER IS CLOSED. Closing matters as much as waiting -- a Chromium that
- * stays open on the feed all day, with a session that never ends, is its own
- * signal, and re-opening it is what makes the next sitting start on the feed
- * again like a person arriving.
- *
- * Seeded per seat and per session index, so consecutive sittings differ from
- * each other and from the next seat's, and none of it is `Math.random()`.
- *
- * lc-debt: in-process Maps, so a worker restart forgets an in-flight break and
- * the seat may start its next sitting early; the same trade `challengedSeats`
- * already makes. Upgrade path: a `resting_until` column on `linkedin_seats`.
+ * Fixed autonomous batch bounds. At most five external actions are attempted
+ * in one batch, followed by a fixed thirty-minute cooldown when the batch sent
+ * or was refused work. These are explicit rate controls, not generated browsing
+ * patterns.
  */
-const SESSION_ACTIONS = { min: 3, max: 8 } as const;
-const SESSION_BREAK_MS = { min: 25 * 60_000, max: 90 * 60_000 } as const;
+const SESSION_ACTIONS = { min: 5, max: 5 } as const;
+const SESSION_BREAK_MS = { min: 30 * 60_000, max: 30 * 60_000 } as const;
 /** seat handle key -> epoch ms this seat may next open a browser. */
 const seatBreaks = new Map<string, number>();
-/** seat handle key -> how many sittings this process has served it. */
-const seatSessions = new Map<string, number>();
-
-export function sessionActionBudget(seed: string): number {
-  const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
-  return (
-    SESSION_ACTIONS.min + Math.floor(random() * (SESSION_ACTIONS.max - SESSION_ACTIONS.min + 1))
-  );
+export function sessionActionBudget(_seed: string): number {
+  return SESSION_ACTIONS.max;
 }
 
-export function sessionBreakMs(seed: string): number {
-  const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
-  return Math.round(
-    SESSION_BREAK_MS.min + random() * (SESSION_BREAK_MS.max - SESSION_BREAK_MS.min)
-  );
+export function sessionBreakMs(_seed: string): number {
+  return SESSION_BREAK_MS.max;
 }
 
-/** Forget every in-flight sitting. Tests only; a worker never wants this. */
+/** Forget the in-process autonomous cooldown state. Tests only. */
 export function resetLinkedInSessionRhythm(): void {
   seatBreaks.clear();
-  seatSessions.clear();
 }
 
 /**
@@ -724,7 +678,7 @@ export function resetLinkedInSessionRhythm(): void {
  * sitting rather than once per action.
  */
 /**
- * Is work a PERSON asked for sitting due for this seat right now?
+ * Is user-initiated or inbound-reply work due for this seat right now?
  *
  * The one thing that may open a browser during a break, and both halves of it
  * are facts the ledger holds rather than claims a caller makes:
@@ -762,58 +716,30 @@ export async function dueManualWork(
   }
 }
 
-async function visitEndsAt(
+/**
+ * Whether autonomous LinkedIn work may open the seat's browser at this instant.
+ * This is checked before the lease/browser/sign-in path so an overdue queue
+ * cannot generate background LinkedIn traffic outside the operator's configured
+ * working days and hours. Manual actions and replies to inbound messages are
+ * handled separately by `dueManualWork`.
+ */
+export async function autonomousWindowOpen(
   db: Db,
   workspaceId: string,
   seatKey: string,
   now: Date
-): Promise<Date | null> {
-  try {
-    const seat = await getSeat(db, workspaceId, seatKey);
-    if (!seat) return null;
-    const window = workWindowOf(seat);
-    const local = localDateOf(now, seat.timezone);
-    const shape = dayShapeFor(`${workspaceId}:${seatKey}`, local, window);
-    if (shape.resting) return null;
-    const minuteOfDay = local.hour * 60 + local.minute;
-    // WITHOUT `actions`, so this is the BASE visit: the same schedule the
-    // reading side sees. The planner's stretched end is not knowable here
-    // without recomputing the day's ceiling, and erring short only means the
-    // next sitting starts at the next visit rather than later in this one.
-    const visit = visitsForDay(`${workspaceId}:${seatKey}`, local, shape).find(
-      (candidate) => minuteOfDay >= candidate.startMinute && minuteOfDay < candidate.endMinute
-    );
-    if (!visit) return null;
-    return zonedToUtc(local, visit.endMinute * 60, seat.timezone);
-  } catch {
-    // A seat that cannot be read falls back to the drawn break, which is what
-    // this did before visits existed.
-    return null;
-  }
+): Promise<boolean> {
+  const seat = await getSeat(db, workspaceId, seatKey);
+  if (!seat) return false;
+  const window = workWindowOf(seat);
+  const local = localDateOf(now, seat.timezone);
+  const weekday = weekdayOf(local);
+  if (!window.days.includes(weekday)) return false;
+  const minute = local.hour * 60 + local.minute;
+  return minute >= window.startMinute && minute < window.endMinute;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
-
-/**
- * mulberry32, seeded from a hash of the batch and action ids.
- *
- * Deliberately the same generator as `pacing.ts` uses for slot jitter, for the
- * same reason: the requirement is that identical inputs produce identical
- * timing on every machine and every Node version, and `Math.random()`
- * guarantees the opposite. (It is copied rather than imported because
- * `pacing.ts` keeps it private, and reaching into another module's internals
- * to save six lines is a worse trade than the six lines.)
- */
-function seededRandom(seed: string): () => number {
-  let state = Number.parseInt(seed.slice(0, 8), 16) >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
 
 /**
  * Conservative fixed maximum gap between ledger actions.
@@ -850,47 +776,6 @@ export function actionGapSeconds(_seed: string): number {
  * `seed` is retained for driver compatibility and deterministic replay labels;
  * it is not used to disguise interaction timing.
  */
-/**
- * Open the page this lead was found on, so the driver can click their card.
- *
- * THE LAST COLD LOAD. `driver.ts` `followLinkTo` already prefers a link on the
- * page it is already on; the missing half was ever BEING on such a page. A
- * campaign works from a stored list, so the browser sat on the feed and typed
- * profile URLs. Now the first action of a sitting opens the search or list page
- * the lead came from and reads it, and every action after that is already
- * there -- so the whole sitting costs one list load and N client-side routes,
- * which is both fewer page loads than before and the shape a person makes.
- *
- * ONLY LINKEDIN, ONLY ONCE, NEVER FATAL. The URL is checked against the same
- * host set the driver enforces, the navigation is skipped when the browser is
- * already there, and every failure is swallowed: the driver navigates by URL
- * afterwards exactly as it did before this existed.
- */
-/** The same host set `driver.ts` enforces. Nothing else is ever navigated to. */
-const LINKEDIN_HOSTS = new Set(['linkedin.com', 'www.linkedin.com']);
-
-async function arriveFromSource(
-  store: LocalWorkerStore,
-  page: LinkedInPage,
-  targetRef: string,
-  seed: string
-): Promise<void> {
-  if (typeof store.sourcePageFor !== 'function') return;
-  try {
-    const via = await store.sourcePageFor(targetRef);
-    if (!via) return;
-    const parsed = new URL(via);
-    if (parsed.protocol !== 'https:' || !LINKEDIN_HOSTS.has(parsed.hostname.toLowerCase())) return;
-    if (page.url() === via) return;
-    await page.goto(via, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    await settle(page, `${seed}#source`);
-    await readPage(page, `${seed}#source-read`);
-  } catch {
-    // A source page that will not open says nothing about the profile behind
-    // it, and the action is not about the source page.
-  }
-}
-
 async function execute(
   deps: LocalBatchDeps,
   action: DueLinkedInAction,
@@ -1287,13 +1172,6 @@ export async function runLinkedInLocalBatch(
     // the deadline is refreshed here, where it is provably still ours, rather
     // than only at claim time.
     await store.heartbeat(batchId, action.id, at);
-
-    // ARRIVE THE WAY A PERSON WOULD, when we know where this lead came from.
-    // No-op when the source is unknown, when the browser is already on that
-    // page (the normal case after the first action of a sitting), or when
-    // anything at all goes wrong -- the driver's own navigation is unchanged
-    // and still runs.
-    await arriveFromSource(store, deps.page, action.targetRef, `${batchId}:${action.id}`);
 
     // A reply/pause/branch can land after the SQL claim, during the action gap,
     // during safety evaluation, or even while the source page is being opened.
@@ -2172,32 +2050,7 @@ export function postgresLocalWorkerStore(
         .run(failureKind, actionId, workspaceId);
     },
 
-    /**
-     * The page this profile was harvested from, if this workspace harvested it.
-     *
-     * Newest source wins: a lead re-found by a later search is most likely to
-     * still be on that page, and a card that is no longer there costs nothing
-     * -- `followLinkTo` finds no link and the driver loads the profile the old
-     * way. Scoped to the workspace, like every other read on this store.
-     */
-    async sourcePageFor(targetRef) {
-      const trimmed = targetRef.trim();
-      if (!trimmed) return null;
-      const row = await db
-        .prepare(
-          `SELECT s.url AS url
-             FROM linkedin_leads l
-             JOIN linkedin_lead_sources s ON s.id = l.source_id AND s.workspace_id = l.workspace_id
-            WHERE l.workspace_id = ? AND l.profile_url = ?
-            ORDER BY l.created_at DESC
-            LIMIT 1`
-        )
-        .get<{ url: string | null }>(workspaceId, trimmed);
-      return row?.url ?? null;
-    },
-
     async settleSent(actionId, externalRef, now, metadata) {
-      // `recorded_at` is what every rolling window counts, so it is written
       // here and nowhere else: the moment the action actually happened.
       //
       // The lease is dropped with it. A settled row is not in flight, and a
@@ -3963,25 +3816,6 @@ export async function loadLinkedInPlaywright(
 const BROWSER_CHANNELS: readonly string[] = ['chrome', 'chromium'];
 
 /**
- * Compatibility hook retained for callers that used to perform a synthetic
- * pre-task browsing sequence. It deliberately performs no navigation now.
- */
-export async function warmUpSession(
-  page: unknown,
-  seed: string,
-  log: (message: string) => void
-): Promise<void> {
-  // Intentionally a no-op. Earlier versions generated extra feed / My Network /
-  // notification traffic before real work in an attempt to make a session look
-  // more natural. Those requests are unrelated to the operator's requested
-  // action and increase account surface area for no correctness benefit. A
-  // production sender should perform only the navigation its actual task needs.
-  void page;
-  void seed;
-  void log;
-}
-
-/**
  * The remote half of {@link openBrowser}: a cloud browser, one context per
  * seat, with that seat's session restored into it.
  *
@@ -4317,78 +4151,6 @@ function browserOpenFailedMessage(workspaceId: string, seatKey: string): string 
   return describeBrowserOpenFailure(cause);
 }
 
-/** The band a keystroke gap is drawn from. Slow enough to be human, fast enough to finish. */
-const TYPING_GAP_MS = { min: 45, max: 165 } as const;
-
-/**
- * The same page, but anything typed into it is typed at a human's speed.
- *
- * WHY THIS IS A WRAPPER AND NOT AN EDIT TO `driver.ts`. The sign-in form's
- * selectors, its four outcomes and its "nothing was typed" guarantees are
- * `driver.ts`'s subject and belong there. HOW FAST the characters go in is a
- * posture decision this worker makes about a seat -- it is the same category
- * of decision as the 30-120s inter-action gap and the per-seat fingerprint,
- * both of which already live here. Wrapping the page keeps the two concerns in
- * the two files that own them, and it means the cadence applies to every field
- * the login flow types (the email, the password and the 2FA code) without
- * `driver.ts` having to be told about any of them.
- *
- * WHAT IT ACTUALLY FIXES. `locator.fill()` sets the input's value in one
- * operation and dispatches a single input event: twenty characters arrive in
- * the same millisecond, with no keydown/keyup pairs and no inter-key timing at
- * all. That is not what a person does, it is trivially observable from the
- * page, and the sign-in form is the single surface where LinkedIn is looking
- * hardest. Here the field is cleared and then each character is pressed, with a
- * seeded pause in between.
- *
- * NO `Math.random()`, the same hard rule as everywhere else in this file: the
- * gaps come from a generator seeded by the seat, so a sign-in is reproducible
- * and a test can assert the cadence rather than tolerate it.
- *
- * NEITHER CREDENTIAL IS TOUCHED BEYOND BEING SPLIT INTO CHARACTERS. Nothing
- * here logs, stores, or returns any part of the text it types.
- */
-export function humanCadencePage(page: LinkedInPage, seed: string): LinkedInPage {
-  const random = seededRandom(createHash('sha256').update(seed).digest('hex'));
-  const gap = (): number =>
-    Math.round(TYPING_GAP_MS.min + random() * (TYPING_GAP_MS.max - TYPING_GAP_MS.min));
-
-  const wrapLocator = (locator: LinkedInLocator): LinkedInLocator => {
-    const wrapped: LinkedInLocator = {
-      count: () => locator.count(),
-      first: () => wrapLocator(locator.first()),
-      click: (options) => locator.click(options),
-      textContent: (options) => locator.textContent(options),
-      fill: async (text, options) => {
-        // An empty fill is a CLEAR, not typing, and there is nothing to pace.
-        // A locator with no `press` is a test fake or a page object that cannot
-        // send keys; `driver.ts` already treats that as "cannot press a key",
-        // so falling back to the plain fill keeps this wrapper transparent
-        // rather than turning a missing capability into a sign-in failure.
-        if (!text || typeof locator.press !== 'function') return locator.fill(text, options);
-        await locator.fill('', options);
-        for (const character of [...text]) {
-          await locator.press(character, options);
-          await page.waitForTimeout(gap());
-        }
-      }
-    };
-    // Preserved exactly as found: `driver.ts` reads `typeof field.press` to
-    // decide whether the form can be submitted with Enter, and inventing the
-    // method here would have it press Enter on a page that cannot.
-    if (typeof locator.press === 'function')
-      wrapped.press = (key, options) => locator.press!(key, options);
-    return wrapped;
-  };
-
-  return {
-    goto: (url, options) => page.goto(url, options),
-    url: () => page.url(),
-    waitForTimeout: (ms) => page.waitForTimeout(ms),
-    locator: (selector) => wrapLocator(page.locator(selector))
-  };
-}
-
 /**
  * How long a `challenge` result holds off the next login attempt, keyed the
  * same way {@link browsers} is.
@@ -4579,19 +4341,11 @@ export async function loginLinkedInSeat(
     };
   }
 
-  const result = await driver.loginWithCredentials(
-    // HUMAN CADENCE ON THE ONE FORM THAT MATTERS. The wrapper is applied here
-    // and nowhere else: this is the only call in the codebase that types a
-    // credential, and every other page interaction is a click on a control the
-    // driver just found. Seeded by the seat, so the same account types at the
-    // same speed on every machine.
-    humanCadencePage(page, `linkedin-login:${options.workspaceId}:${seatKey}`),
-    {
-      email: credentials.email,
-      password: credentials.password,
-      otp: options.otp
-    }
-  );
+  const result = await driver.loginWithCredentials(page, {
+    email: credentials.email,
+    password: credentials.password,
+    otp: options.otp
+  });
 
   if ('needsOtp' in result) {
     // No interactive OTP channel exists on this call path for a companion
@@ -5069,9 +4823,37 @@ export async function runDueLinkedInActions(
       return;
     }
 
-    // BETWEEN SITTINGS, NOTHING OPENS. Checked here, next to the posture, and
-    // for the same reason it is checked here: a seat that is resting must not
-    // pay a Chromium launch and a LinkedIn navigation to find that out.
+    // AUTONOMOUS WORK OUTSIDE THE CONFIGURED WINDOW OPENS NO BROWSER. The
+    // per-action guard still checks the same rule immediately before execution;
+    // this earlier check prevents an overdue queue from creating LinkedIn page
+    // loads merely to discover that the action is not currently eligible.
+    let manualDue: boolean | null = null;
+    const manualWorkDue = async (): Promise<boolean> => {
+      if (manualDue === null) manualDue = await dueManualWork(db, workspaceId, seatKey, now);
+      return manualDue;
+    };
+    const windowOpen = await autonomousWindowOpen(db, workspaceId, seatKey, now);
+    if (!windowOpen && !(await manualWorkDue())) {
+      const reason = 'is outside its configured autonomous LinkedIn working window';
+      logOncePerSeat(say, 'working-window', workspaceId, seatKey, reason, now);
+      results.push({
+        batchId: null,
+        workspaceId,
+        seatKey,
+        executed: 0,
+        blocked: 0,
+        failed: 0,
+        branchSkipped: 0,
+        branchPending: 0,
+        halted: true,
+        haltReason: reason
+      });
+      return;
+    }
+
+    // BETWEEN AUTONOMOUS BATCHES, NOTHING OPENS. Checked here, next to the
+    // posture and working window, so rate-control cooldowns do not themselves
+    // generate browser traffic.
     const handleKey = seatHandleKey(workspaceId, seatKey);
     // BOTH THE MAP AND THE COLUMN. The Map is this process's memory of a break
     // it set itself; the column (migration 061) is what survives a restart and
@@ -5090,10 +4872,9 @@ export async function runDueLinkedInActions(
     //
     // Asked ONLY of a resting seat and answered by one indexed count, so the
     // ordinary tick pays nothing for it.
-    const answerWaiting =
-      restingUntil > now.getTime() && (await dueManualWork(db, workspaceId, seatKey, now));
+    const answerWaiting = restingUntil > now.getTime() && (await manualWorkDue());
     if (restingUntil > now.getTime() && !answerWaiting) {
-      const reason = `is between sittings until ${new Date(restingUntil).toISOString()}`;
+      const reason = `is in its autonomous batch cooldown until ${new Date(restingUntil).toISOString()}`;
       logOncePerSeat(say, 'session-break', workspaceId, seatKey, reason, now);
       results.push({
         batchId: null,
@@ -5109,9 +4890,7 @@ export async function runDueLinkedInActions(
       });
       return;
     }
-    const sessionIndex = (seatSessions.get(handleKey) ?? 0) + 1;
-    seatSessions.set(handleKey, sessionIndex);
-    const sessionSeed = `${handleKey}:session:${sessionIndex}`;
+    const sessionSeed = handleKey;
     let restAfterBatch = false;
 
     // A legacy local path or an external provider name. External homes are
@@ -5199,7 +4978,7 @@ export async function runDueLinkedInActions(
           seatKey,
           kind: 'sitting_start',
           url: handle.page.url(),
-          detail: `Sitting ${sessionIndex} opened the authenticated browser for due work.`
+          detail: 'An autonomous batch opened the authenticated browser for due work.'
         },
         new Date()
       );
@@ -5210,7 +4989,7 @@ export async function runDueLinkedInActions(
       const result = await runLinkedInLocalBatch(store, {
         driver,
         page: handle.page,
-        // ONE SITTING, not "everything that is due". See SESSION_ACTIONS.
+        // One fixed bounded batch, not everything that is due.
         maxActions: sessionActionBudget(sessionSeed),
         // The gate is called as a FUNCTION, not through the `gtm.linkedin-guard`
         // skill: `excludeActionId` is deliberately absent from the skill's
@@ -5296,21 +5075,9 @@ export async function runDueLinkedInActions(
       // pattern than the actions it was refusing to send, and every reason the
       // gate refuses for is one that needs HOURS to change, not a minute.
       if (result.executed > 0 || result.blocked > 0) {
-        // AWAY UNTIL THE END OF THIS VISIT, WHICH IS THE SAME VISIT THE READS
-        // USE. The break used to be an independent 25-90 minute draw, so an
-        // account had two rhythms: `planPacing` now places every send inside a
-        // visit, and a break that ignored those visits could end mid-way
-        // through the next one or run straight past it. Resting to the end of
-        // the current visit means the next opening of LinkedIn is the next
-        // thing that happens -- one presence, not two.
-        //
-        // The drawn break is the FALLBACK, for a seat with no row, no window
-        // or a window too short to hold a visit. It is also what this did
-        // before, so the degraded path is the old behaviour rather than a new
-        // one.
-        const until =
-          (await visitEndsAt(db, workspaceId, seatKey, new Date()))?.getTime() ??
-          Date.now() + sessionBreakMs(sessionSeed);
+        // A fixed cooldown prevents an overdue queue from reopening the browser
+        // continuously. This is rate control, not generated browsing behavior.
+        const until = Date.now() + sessionBreakMs(sessionSeed);
         seatBreaks.set(handleKey, until);
         await setSeatRestingUntil(db, workspaceId, seatKey, new Date(until));
         await recordSeatEvent(
@@ -5319,15 +5086,15 @@ export async function runDueLinkedInActions(
             workspaceId,
             seatKey,
             kind: 'sitting_end',
-            detail: `${result.executed} action(s) sent, ${result.blocked} refused by the gate, ${result.failed} failed. Away until ${new Date(until).toISOString()}.`
+            detail: `${result.executed} action(s) sent, ${result.blocked} refused by the gate, ${result.failed} failed. Autonomous batch cooldown until ${new Date(until).toISOString()}.`
           },
           new Date()
         );
         restAfterBatch = true;
         say(
           result.executed > 0
-            ? `finished a sitting of ${result.executed} action(s); away until ${new Date(until).toISOString()}`
-            : `had ${result.blocked} action(s) refused by the gate and nothing to send; away until ${new Date(until).toISOString()}`
+            ? `finished an autonomous batch of ${result.executed} action(s); cooldown until ${new Date(until).toISOString()}`
+            : `had ${result.blocked} action(s) refused by the gate and nothing to send; cooldown until ${new Date(until).toISOString()}`
         );
       }
     } catch (cause) {
@@ -5350,8 +5117,8 @@ export async function runDueLinkedInActions(
         // An unreleased lease expires on its own. Failing here would turn a
         // bookkeeping problem into a lost batch result.
       }
-      // `restAfterBatch` closes it too: a sitting that ended is a tab that was
-      // closed, and the next one starts by opening the feed again.
+      // A batch that entered cooldown closes its browser handle too, so the
+      // cooldown period creates no LinkedIn traffic.
       if (closeAfterBatch || restAfterBatch) await closeLinkedInBrowser(workspaceId, seatKey);
     }
   });

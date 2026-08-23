@@ -7,7 +7,7 @@ import {
   type LinkedInLocator,
   type LinkedInPage
 } from './driver.js';
-import { hoverClick, readPage, settle } from './human.js';
+import { hoverClick, settle } from './human.js';
 
 const NAV_TIMEOUT_MS = 30_000;
 const CLICK_TIMEOUT_MS = 10_000;
@@ -102,7 +102,6 @@ async function openAt(
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
     await settle(page, `${seed}#open`);
-    await readPage(page, `${seed}#read`);
   } catch (cause) {
     return fail(
       'selector_drift',

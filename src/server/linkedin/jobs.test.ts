@@ -694,10 +694,11 @@ describe('how often the side-task tick touches LinkedIn', () => {
     expect(second.ran).toEqual([]);
     expect(second.skipped).toContain('already happened');
 
-    // A minute after that, outside every visit: LinkedIn is not open at all.
+    // Later in the same configured work window, the pass marker prevents a
+    // second background visit for the day.
     const between = await tick(new Date(VISIT_AT.getTime() + 30 * 60_000), tickDriver().driver);
     expect(between.ran).toEqual([]);
-    expect(between.skipped).toContain('none of them is now');
+    expect(between.skipped).toContain('already happened');
   });
 
   it('does one richer catch-up when a companion returns outside the normal visit schedule', async () => {
@@ -707,14 +708,15 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
     const first = await tick(returnedAt, tickDriver().driver, true);
     expect(first.ran).toHaveLength(MAX_CATCHUP_TASKS_PER_VISIT);
-    expect(new Set(first.ran)).toEqual(new Set(['inbox', 'pending_invites', 'withdrawals']));
+    expect(first.ran).toHaveLength(1);
+    expect(['inbox', 'pending_invites']).toContain(first.ran[0]);
 
     const runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
     expect(runs.get(AVAILABILITY_CATCHUP_MARKER)?.getTime()).toBe(returnedAt.getTime());
 
     const second = await tick(new Date(returnedAt.getTime() + 60_000), tickDriver().driver, true);
     expect(second.ran).toEqual([]);
-    expect(second.skipped).toContain('none of them is now');
+    expect(second.skipped).toContain('already happened');
   });
 
   it('picks up the rest of the list on the following visits, so nothing is starved', async () => {
@@ -739,7 +741,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
       }
     }
 
-    expect([...done].sort()).toEqual(['inbox', 'pending_invites', 'withdrawals']);
+    expect([...done].sort()).toEqual(['inbox', 'pending_invites']);
   });
 
   it('confirms whose account this is ONCE for the visit, not once per job', async () => {

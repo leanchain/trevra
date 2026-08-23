@@ -412,7 +412,7 @@ describe('determinism', () => {
     expect(first.slots.length).toBeGreaterThan(0);
   });
 
-  it('moves the slots when the targets change, so the plan is not a constant', async () => {
+  it('keeps timing policy independent of target identity', async () => {
     await seat('2026-01-01');
     const first = await planPacing(
       db,
@@ -429,8 +429,11 @@ describe('determinism', () => {
       },
       NOW
     );
-    expect(second.slots.map((slot) => slot.plannedFor)).not.toEqual(
+    expect(second.slots.map((slot) => slot.plannedFor)).toEqual(
       first.slots.map((slot) => slot.plannedFor)
+    );
+    expect(second.slots.map((slot) => slot.targetRef)).not.toEqual(
+      first.slots.map((slot) => slot.targetRef)
     );
   });
 });
@@ -678,12 +681,10 @@ describe('spreading inside a short business-hours window', () => {
     );
 
     const today = plan.slots.filter((slot) => slot.plannedFor.startsWith('2026-08-06'));
-    // NOTHING TODAY, and that is the visit model doing its job. The last visit
-    // of the day is long over by 17:55; a person who last opened LinkedIn at
-    // half past three does not fire three invitations at 17:57, and "three
-    // actions in the final five minutes of the window" is the end-of-day burst
-    // this whole file exists to avoid. Before visits, the answer here was 3.
-    expect(today.length).toBe(0);
+    // The configured work window is authoritative. In the last five minutes,
+    // only the number that fits at the fixed 120-second floor may be scheduled.
+    expect(today.length).toBeGreaterThan(0);
+    expect(today.length).toBeLessThanOrEqual(3);
 
     // The original defect: every slot past capacity collapsed onto the same
     // clamped second. Distinct timestamps is the assertion that matters, and it
@@ -963,14 +964,7 @@ describe('resolving the seat a skill call meant', () => {
   });
 });
 
-/**
- * WHAT MAKES A WEEK LOOK LIKE A PERSON'S WEEK rather than a scheduler's.
- *
- * The per-action realism (`human.ts`) is about one click. This is about the
- * shape of a month: days that start and finish at slightly different times,
- * days that are simply skipped, and days that stop short of the ceiling. All
- * three are seeded, so they are assertable rather than merely hoped for.
- */
+/** The operator-configured work window is used directly; no synthetic day shaping. */
 describe('day shaping', () => {
   const WINDOW = {
     days: [1, 2, 3, 4, 5],
@@ -988,17 +982,18 @@ describe('day shaping', () => {
     expect(first.draw).toBeLessThanOrEqual(1);
   });
 
-  it('rests some days, shortens others, and rarely runs a day to its ceiling', () => {
+  it('never invents rest days, shifted edges, or per-seat volume draws', () => {
     const shapes = Array.from({ length: 60 }, (_, index) =>
       dayShapeFor('ws:owner', addLocalDays({ year: 2026, month: 8, day: 17 }, index), WINDOW)
     );
-    expect(shapes.some((shape) => shape.resting)).toBe(true);
-    expect(shapes.some((shape) => shape.draw < 1)).toBe(true);
-    expect(shapes.some((shape) => shape.startMinute > WINDOW.startMinute)).toBe(true);
-    expect(shapes.some((shape) => shape.endMinute < WINDOW.endMinute)).toBe(true);
-    // Two different seats do not share a calendar.
+    for (const shape of shapes) {
+      expect(shape.resting).toBe(false);
+      expect(shape.draw).toBe(1);
+      expect(shape.startMinute).toBe(WINDOW.startMinute);
+      expect(shape.endMinute).toBe(WINDOW.endMinute);
+    }
     const other = dayShapeFor('ws:sales', { year: 2026, month: 8, day: 17 }, WINDOW);
-    expect(other).not.toEqual(shapes[0]);
+    expect(other).toEqual(shapes[0]);
   });
 
   it("keeps every planned slot inside the operator's configured hours", async () => {

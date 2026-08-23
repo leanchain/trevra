@@ -55,14 +55,11 @@ import {
  *   1. the campaign warm-up ramp (20/40/60/80/100% of the seat's daily limit
  *      over the campaign's first five days) -- per campaign, per ledger kind;
  *   2. the seat's own working days and hours, in the seat's timezone;
- *   3. a floor of `ACTION_GAP_SECONDS.min` between consecutive slots for one
- *      seat, counted across every campaign this run touches AND against the
- *      slots already sitting in the ledger.
+ *   3. a fixed conservative `ACTION_GAP_SECONDS.max` gap between consecutive
+ *      slots for one seat, counted across every campaign this run touches AND
+ *      against the slots already sitting in the ledger.
  *
- * Nothing here is random. The jitter is a seeded draw off `member.id:step.id`,
- * so the same tick over the same state produces the same schedule on every
- * machine -- the property `pacing.ts` and `local-worker.ts` already hold, and
- * the only reason a schedule is assertable in a test at all.
+ * Nothing here is randomized: the same state produces the same schedule.
  */
 
 const UTC_ISO = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;
@@ -378,19 +375,6 @@ function parseVariants(value: unknown): Record<string, string> {
 }
 
 /**
- * A deterministic unit draw in [0, 1).
- *
- * `Math.random()` is banned on every path this subsystem schedules from: the
- * gaps must be unpredictable TO LINKEDIN, which a hash of a stable seed already
- * is, and reproducible TO US, which a platform RNG never is. Same call, same
- * reason, as `local-worker.ts` `actionGapSeconds`.
- */
-function seededUnit(seed: string): number {
-  const digest = createHash('sha256').update(seed).digest('hex');
-  return Number.parseInt(digest.slice(0, 8), 16) / 0x1_0000_0000;
-}
-
-/**
  * The first instant at or after `from` that is inside this seat's working
  * window, IN THE SEAT'S TIMEZONE.
  *
@@ -421,25 +405,17 @@ function nextOpenInstant(seat: LinkedInSeat, from: Date): Date | null {
 }
 
 /**
- * The slot for one action.
- *
- * `earliest` is when the workflow says it may happen; `floor` is the last slot
- * this seat has been given, either earlier in this run or already in the
- * ledger. The gap between two slots is never below `ACTION_GAP_SECONDS.min`,
- * and the jitter on top of it is the seeded draw -- which is what keeps a
- * sequence of actions from arriving on a grid a rate-limiter could key on.
+ * Place one action at or after its workflow delay and keep a fixed conservative
+ * gap from the seat's previous slot. No jitter is added for concealment.
  */
 function scheduleSlot(
   seat: LinkedInSeat,
   earliest: Date,
   floor: Date | null,
-  seed: string
+  _seed: string
 ): Date | null {
-  const jitterMs = Math.round(
-    seededUnit(seed) * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min) * 1000
-  );
-  const gapMs = ACTION_GAP_SECONDS.min * 1000 + jitterMs;
-  let candidate = new Date(earliest.getTime() + jitterMs);
+  const gapMs = ACTION_GAP_SECONDS.max * 1000;
+  let candidate = new Date(earliest.getTime());
   if (floor && floor.getTime() + gapMs > candidate.getTime())
     candidate = new Date(floor.getTime() + gapMs);
   return nextOpenInstant(seat, candidate);

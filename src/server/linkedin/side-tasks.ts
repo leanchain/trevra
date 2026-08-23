@@ -1,6 +1,7 @@
 /**
- * HOW OFTEN A PERSON ACTUALLY OPENS LINKEDIN, which is two to five times a day
- * for a few minutes -- not every sixty seconds, and not on a per-job timer.
+ * Background maintenance is bounded by the operator-configured work window and
+ * per-task cadence. Trevra does not invent additional short visits to imitate
+ * a person's browsing schedule.
  *
  * THE DEFECT, STATED PLAINLY. `runLinkedInSideTasks` is called once per worker
  * tick (`AUTOMATION_INTERVAL_MS`, 60s by default) and ran all five of its jobs
@@ -107,7 +108,7 @@ export const SIDE_TASKS_NEEDING_IDENTITY: ReadonlySet<SideTaskName> = new Set<Si
  */
 // One background maintenance category per visit keeps each browser session narrow.
 export const MAX_TASKS_PER_VISIT = 1;
-export const MAX_CATCHUP_TASKS_PER_VISIT = SIDE_TASK_NAMES.length;
+export const MAX_CATCHUP_TASKS_PER_VISIT = MAX_TASKS_PER_VISIT;
 export const AVAILABILITY_RETURN_MARKER = 'availability_return';
 export const AVAILABILITY_CATCHUP_MARKER = 'availability_catchup';
 

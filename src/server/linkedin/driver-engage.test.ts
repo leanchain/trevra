@@ -368,10 +368,11 @@ describe('likeRecentPost', () => {
     expect(result.failureKind).toBe('limit_wall');
   });
 
-  it('pauses before reacting, by the seeded amount and not a random one', async () => {
+  it('does not add a synthetic pre-click pause before reacting', async () => {
     const fake = fakePage({ counts: withPost() });
     await likeRecentPost(fake.page, TARGET, { sleep: fake.sleep, seed: 'batch-1:action-1' });
-    expect(fake.slept).toEqual([engageGapMs('batch-1:action-1')]);
+    expect(fake.slept).toEqual([]);
+    expect(engageGapMs('batch-1:action-1')).toBe(0);
   });
 });
 
@@ -393,35 +394,34 @@ describe('endorseSkills', () => {
     });
   }
 
-  it('endorses three skills by default and says how many of how many', async () => {
+  it('endorses exactly one skill per ledger action', async () => {
     const fake = skillsPage(9);
     const result = await endorseSkills(fake.page, TARGET, { sleep: fake.sleep });
     expect(result.ok).toBe(true);
     expect(result.externalRef).toBe(PROFILE);
-    expect(fake.clicked).toHaveLength(3);
-    expect(result.detail).toContain('Endorsed 3 of the 9');
+    expect(fake.clicked).toHaveLength(1);
+    expect(result.detail).toContain('Endorsed 1 of the 9');
   });
 
-  it('honours an explicit limit and clamps an absurd one', async () => {
+  it('clamps every requested skill count to one externally visible endorsement', async () => {
     const one = skillsPage(9);
     await endorseSkills(one.page, TARGET, { sleep: one.sleep, limit: 1 });
     expect(one.clicked).toHaveLength(1);
 
-    // One ledger action must not become thirty clicks.
     const many = skillsPage(40);
     await endorseSkills(many.page, TARGET, { sleep: many.sleep, limit: 99 });
-    expect(many.clicked).toHaveLength(10);
+    expect(many.clicked).toHaveLength(1);
 
     const zero = skillsPage(9);
     await endorseSkills(zero.page, TARGET, { sleep: zero.sleep, limit: 0 });
     expect(zero.clicked).toHaveLength(1);
   });
 
-  it('stops when the profile lists fewer skills than the limit', async () => {
+  it('still performs only one endorsement when several skills are available', async () => {
     const fake = skillsPage(2);
     const result = await endorseSkills(fake.page, TARGET, { sleep: fake.sleep });
     expect(result.ok).toBe(true);
-    expect(fake.clicked).toHaveLength(2);
+    expect(fake.clicked).toHaveLength(1);
   });
 
   it('reports a profile with no listed skills as an ordinary not_found', async () => {
@@ -453,31 +453,29 @@ describe('endorseSkills', () => {
     expect(result.ok).toBe(true);
     expect(
       fake.clicked.filter((entry) => entry === ENGAGE_SELECTORS.endorseDialogDismiss)
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
-  it('pauses between endorsements, seeded, and never before the first', async () => {
+  it('adds no synthetic sleep inside an endorsement action', async () => {
     const fake = skillsPage(5);
     await endorseSkills(fake.page, TARGET, {
       sleep: fake.sleep,
       seed: 'batch-2:action-7',
       limit: 3
     });
-    expect(fake.slept).toEqual([
-      engageGapMs('batch-2:action-7:1'),
-      engageGapMs('batch-2:action-7:2')
-    ]);
+    expect(fake.slept).toEqual([]);
+    expect(engageGapMs('batch-2:action-7:1')).toBe(0);
   });
 
   it('reports a mid-loop wall with the count that already registered', async () => {
     const fake = skillsPage(5, {
       onClick: (_selector, counts) => {
-        if ((counts[ENGAGE_SELECTORS.endorseButton] ?? 0) <= 3) counts[SELECTORS.challengeForm] = 1;
+        if ((counts[ENGAGE_SELECTORS.endorseButton] ?? 0) <= 4) counts[SELECTORS.challengeForm] = 1;
       }
     });
     const result = await endorseSkills(fake.page, TARGET, { sleep: fake.sleep });
     expect(result.failureKind).toBe('challenge');
-    expect(result.detail).toContain('after 1');
+    expect(result.detail).toContain('after 0');
   });
 
   it('is unknown when a click leaves the control count unchanged', async () => {
@@ -499,8 +497,8 @@ describe('endorseSkills', () => {
 });
 
 describe('intra-action spacing', () => {
-  it('uses one conservative maximum pause regardless of seed', () => {
-    expect(engageGapMs('a')).toBe(2_600);
-    expect(engageGapMs('b')).toBe(2_600);
+  it('does not synthesize engagement timing from a seed', () => {
+    expect(engageGapMs('a')).toBe(0);
+    expect(engageGapMs('b')).toBe(0);
   });
 });

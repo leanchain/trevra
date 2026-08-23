@@ -5,7 +5,6 @@ import type { Skill, SkillContext } from '../skills/types.js';
 import type { SeatRef } from './actions.js';
 import {
   ACCEPTANCE_WINDOW_DAYS,
-  ENFORCEMENT_SCAN_WEEKDAYS,
   INMAIL_MONTHLY_QUOTA,
   MAX_DAY_OVER_DAY_DELTA,
   MAX_OUTSTANDING_INVITES,
@@ -700,25 +699,10 @@ export async function evaluateLinkedInSafety(
     window
   );
   /**
-   * A DAY'S SHAPE IS THE ACCOUNT'S OWN RHYTHM, NOT A BUDGET FOR THE OPERATOR.
-   *
-   * `dayShapeFor` draws two things for the seat's autonomous behaviour: a
-   * fraction of the ceiling to use today, and a one-in-eight chance that today
-   * is a REST DAY and the ceiling is zero. Both exist so an account that works
-   * by itself does not do the same volume every single day, which is what a
-   * scheduler looks like from the outside.
-   *
-   * APPLIED TO A HAND-DRIVEN ACTION IT IS THE WORKING WINDOW AGAIN, WEARING A
-   * THIRD NAME: an operator who answers a message on a day the dice called a
-   * rest day was told "warm-up week N permits no replies at all" -- a ceiling
-   * of zero, reported as a ramp. So a manual action is judged against the
-   * seat's real ceiling: Trevra's band and the operator's own setting, whichever
-   * is stricter, with the warm-up multiplier still applied below.
-   *
-   * IT IS STILL A CEILING, and the count it is compared against is the same
-   * one: everything this seat did in the last 24 hours, autonomous or typed. A
-   * person cannot spend a rest day's zero, but they cannot exceed the band
-   * either, and the 7-day and 30-day windows are untouched.
+   * Production `dayShapeFor` mirrors the configured work window and full daily
+   * ceiling. The injectable shape remains for tests or an explicit future
+   * policy, but a manual action is always judged against the seat's real daily
+   * ceiling rather than an autonomous-only closed-day override.
    */
   const effectiveDailyLimit = humanInitiated
     ? ceilingBeforeDraw
@@ -964,7 +948,7 @@ export async function evaluateLinkedInSafety(
         : !insideConfiguredWindow && outsideHoursIsFine
           ? `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}, outside this account's working window -- and that does not refuse ${outsideHoursBecause}. The window paces what this account does by itself; a person uses LinkedIn when they are at it. Every other check still runs.`
           : plannedShape.resting
-            ? `This seat is not working that day. About one configured working day in eight is left empty on purpose -- an account that works every single day it is allowed to is a scheduler, not a person -- and which days those are is fixed for this seat and this date, not redrawn per attempt.`
+            ? `This policy marks that day closed, so autonomous LinkedIn work is not permitted then.`
             : `Scheduled for ${String(local.hour).padStart(2, '0')}:${String(local.minute).padStart(2, '0')} in ${timezone}; this account works on weekday(s) ${window.days.join(',') || 'none'} between ${formatMinuteOfDay(window.startMinute)} and ${formatMinuteOfDay(window.endMinute)}, and today between ${formatMinuteOfDay(plannedShape.startMinute)} and ${formatMinuteOfDay(plannedShape.endMinute)}.`
   });
   const onWeekend = weekday !== null && isWeekend(weekday);
@@ -988,9 +972,7 @@ export async function evaluateLinkedInSafety(
             ? configuredDay
               ? `Scheduled on a weekend in ${timezone}, and this account is explicitly configured to work weekday ${weekday}. A configured day is a working day; the weekend factor of ${WEEKEND_FACTOR} shapes only the days nobody configured.`
               : `Scheduled on a weekend in ${timezone} that this account has not configured as a working day, and the weekend factor is ${WEEKEND_FACTOR}.`
-            : ENFORCEMENT_SCAN_WEEKDAYS.includes(weekday as number)
-              ? `Scheduled on a weekday in ${timezone}. It is a reported enforcement-scan day, so the pacing engine keeps it below the daily maximum.`
-              : `Scheduled on a weekday in ${timezone}.`
+            : `Scheduled on a weekday in ${timezone}.`
   });
 
   // Separate from rolling-30d on purpose. That check enforces whatever band we
