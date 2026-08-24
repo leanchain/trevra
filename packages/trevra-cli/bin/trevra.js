@@ -442,7 +442,7 @@ async function reportRecoveryState(config, seatKey, state) {
 const browsers = new Map();
 let browserExecutable = null;
 
-async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
+async function ensureBrowser(workspaceId, seatKey, { headless = false, minimized = false } = {}) {
   const key = `${workspaceId}/${seatKey}`;
   const old = browsers.get(key);
   if (old?.endpoint && (await endpointResponds(old.endpoint))) {
@@ -461,22 +461,26 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
   }
 
   browserExecutable ??= systemChrome() ?? (await playwrightChromium());
-  const browserMode = headless ? 'background' : 'visible';
+  const browserMode = headless ? 'background' : minimized ? 'minimized' : 'visible';
   const reddit = seatKey === REDDIT_COMPANION_PROFILE_KEY;
   const browserLabel = reddit ? 'Reddit' : 'LinkedIn';
   const startUrl = reddit ? REDDIT_HOME : LINKEDIN_FEED;
   activity('browser_opening', `seat=${seatKey} mode=${browserMode}`);
-  if (!headless) {
+  if (!headless && !minimized) {
     process.stdout.write(
       reddit
         ? 'Opening Reddit in Chrome…\n'
         : `Opening LinkedIn in Chrome for ${seatKey === 'owner' ? 'your account' : `account ${seatKey}`}…\n`
     );
   }
-  const child = spawn(browserExecutable, chromeLaunchArgs({ profileDir, headless, startUrl }), {
-    stdio: 'ignore',
-    windowsHide: headless
-  });
+  const child = spawn(
+    browserExecutable,
+    chromeLaunchArgs({ profileDir, headless, minimized, startUrl }),
+    {
+      stdio: 'ignore',
+      windowsHide: headless || minimized
+    }
+  );
 
   const handle = { endpoint: null, child, profileDir };
   browsers.set(key, handle);
@@ -489,7 +493,6 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false } = {}) {
     activity('browser_error', `seat=${seatKey} ${error.message}`);
     process.stderr.write(`${browserLabel} Chrome could not start: ${error.message}\n`);
   });
-
   for (let attempt = 0; attempt < 200; attempt += 1) {
     const endpoint = readDevToolsEndpoint(profileDir);
     if (endpoint && (await endpointResponds(endpoint))) {
@@ -819,7 +822,8 @@ async function runCompanion(config, options = {}) {
             activity('relay_requested', `relay=${relayShort} seat=${message.seatKey}`);
             try {
               const handle = await ensureBrowser(config.workspaceId, message.seatKey, {
-                headless: options.headlessBrowser === true
+                headless: options.headlessBrowser === true,
+                minimized: options.minimizedBrowser === true
               });
               const local = new WebSocket(handle.endpoint);
               const relay = { ws: local, expectClose: false };
@@ -1164,7 +1168,6 @@ async function main() {
     config = { ...config, url: base };
     saveConfig(config);
   }
-
   if (action === 'run') {
     const requestedRecoverySeat =
       typeof config.recoveryOnNextStart?.seatKey === 'string'
@@ -1181,15 +1184,18 @@ async function main() {
       await runVisibleRecovery(config, visibleSeatKey);
       return;
     }
-    // LinkedIn background execution uses the same normal headed Chrome the
-    // member can see during recovery. Do not switch the authenticated account
-    // into a headless browser for unattended work: a prior unusual-activity
-    // incident identified that browser-mode change as a restriction risk, and
-    // hiding the browser is not a correctness requirement.
-    await runCompanion(config, { openBrowserAtStart: false, headlessBrowser: false });
+    // Autonomous execution keeps a normal headed Chrome/profile/session, but it
+    // starts minimized so background work does not take over the member's desktop.
+    // Recovery remains fully visible. This avoids switching the authenticated
+    // profile into headless mode while still giving the installed service the
+    // background UX its name promises.
+    await runCompanion(config, {
+      openBrowserAtStart: false,
+      headlessBrowser: false,
+      minimizedBrowser: true
+    });
     return;
   }
-
   // Backwards-compatible foreground/debug mode. It remains useful for seeing
   // logs interactively, but the website now recommends `linkedin install`.
   await runCompanion(config, { openBrowserAtStart: true, headlessBrowser: false });

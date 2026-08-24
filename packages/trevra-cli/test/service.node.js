@@ -14,8 +14,8 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { WebSocketServer } from 'ws';
-import { isNewerVersion, officialCompanionPackage, parseVersion } from '../lib/update.js';
 import { chromeLaunchArgs } from '../lib/browser.js';
+import { isNewerVersion, officialCompanionPackage, parseVersion } from '../lib/update.js';
 import {
   installStablePackage,
   installUserCommand,
@@ -25,7 +25,7 @@ import {
   servicePaths
 } from '../lib/service.js';
 
-test('browser launch args support both headless and visible modes', () => {
+test('browser launch args support headless, minimized and visible modes', () => {
   const background = chromeLaunchArgs({
     profileDir: '/tmp/trevra-profile',
     headless: true,
@@ -35,6 +35,16 @@ test('browser launch args support both headless and visible modes', () => {
   assert.ok(background.includes('--window-size=1365,900'));
   assert.ok(background.includes('--user-data-dir=/tmp/trevra-profile'));
   assert.ok(!background.includes('--start-maximized'));
+  assert.ok(!background.includes('--start-minimized'));
+
+  const minimized = chromeLaunchArgs({
+    profileDir: '/tmp/trevra-profile',
+    minimized: true,
+    startUrl: 'https://www.linkedin.com/feed/'
+  });
+  assert.ok(!minimized.includes('--headless'));
+  assert.ok(minimized.includes('--start-minimized'));
+  assert.ok(!minimized.includes('--start-maximized'));
 
   const visible = chromeLaunchArgs({
     profileDir: '/tmp/trevra-profile',
@@ -43,20 +53,16 @@ test('browser launch args support both headless and visible modes', () => {
   });
   assert.ok(!visible.includes('--headless'));
   assert.ok(visible.includes('--start-maximized'));
+  assert.ok(!visible.includes('--start-minimized'));
 });
 
-test('installed LinkedIn service selects visible Chrome for relay work', () => {
+test('installed LinkedIn service keeps autonomous Chrome minimized and recovery visible', () => {
   const cli = readFileSync(fileURLToPath(new URL('../bin/trevra.js', import.meta.url)), 'utf8');
-  assert.match(
-    cli,
-    /runCompanion\(config, \{ openBrowserAtStart: false, headlessBrowser: false \}\)/
-  );
-  assert.doesNotMatch(
-    cli,
-    /runCompanion\(config, \{ openBrowserAtStart: false, headlessBrowser: true \}\)/
-  );
+  assert.match(cli, /headlessBrowser: false/);
+  assert.match(cli, /minimizedBrowser: true/);
+  assert.match(cli, /runVisibleRecovery\(config, visibleSeatKey\)/);
+  assert.doesNotMatch(cli, /headlessBrowser: true/);
 });
-
 test('companion keeps the DevTools endpoint reader required by browser reuse', () => {
   const cli = readFileSync(fileURLToPath(new URL('../bin/trevra.js', import.meta.url)), 'utf8');
   assert.match(cli, /function readDevToolsEndpoint\(profileDir\)/);
