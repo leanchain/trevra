@@ -195,9 +195,14 @@ export interface CampaignQueueSummary {
   dueNow: number;
   /** Planned actions whose scheduled slot is in the next 24 hours. */
   scheduledToday: number;
-  /** Planned and due, but not yet claimed by an executor. */
+  /**
+   * Planned and due, not yet claimed, and genuinely claimable: rows parked on
+   * an unresolved outcome (`settlement_hold_at`) are excluded, because no
+   * browser will ever claim them and reporting them as waiting for one is the
+   * misleading half of "waiting for browser worker".
+   */
   queuedReady: number;
-  /** Planned for a future slot. */
+  /** Planned for a future slot. Parked rows are excluded for the same reason. */
   scheduledFuture: number;
   /** Currently leased by a browser worker. */
   executing: number;
@@ -2409,10 +2414,22 @@ export async function campaignQueueSummary(
   }
   const actionCounts = await db
     .prepare(
+      /*
+       * A ROW PARKED ON AN UNRESOLVED OUTCOME IS NOT QUEUED WORK.
+       *
+       * `settlement_hold_at` means the action was claimed, something happened,
+       * and we could not read back WHAT -- so re-running it could put a second
+       * invite in somebody's notifications. The reaper's predicate is
+       * `settlement_hold_at IS NULL`, so no browser will ever take these rows
+       * again; they are waiting for a PERSON. Counting them in `queued_ready`
+       * made the campaign card report them as "waiting for the LinkedIn
+       * executor to claim them", which is a promise nothing in this system
+       * intends to keep. They are still counted, once, in `held_for_review`.
+       */
       `SELECT
        COUNT(*) FILTER (WHERE status='planned' AND planned_for>=?::timestamptz AND planned_for<?::timestamptz)::int AS scheduled,
-       COUNT(*) FILTER (WHERE status='planned' AND planned_for<=?::timestamptz AND claimed_at IS NULL)::int AS queued_ready,
-       COUNT(*) FILTER (WHERE status='planned' AND planned_for>?::timestamptz AND claimed_at IS NULL)::int AS scheduled_future,
+       COUNT(*) FILTER (WHERE status='planned' AND planned_for<=?::timestamptz AND claimed_at IS NULL AND settlement_hold_at IS NULL)::int AS queued_ready,
+       COUNT(*) FILTER (WHERE status='planned' AND planned_for>?::timestamptz AND claimed_at IS NULL AND settlement_hold_at IS NULL)::int AS scheduled_future,
        COUNT(*) FILTER (WHERE status='planned' AND claimed_at IS NOT NULL AND settlement_hold_at IS NULL)::int AS executing,
        COUNT(*) FILTER (WHERE status='held' OR settlement_hold_at IS NOT NULL)::int AS held_for_review,
        COUNT(*) FILTER (WHERE status='held')::int AS held

@@ -56,7 +56,9 @@ import {
   type LinkedInWorkerStatus,
   type LinkedInCompanionStatus
 } from './api';
+import { awaitingResolutionBlocker, campaignExecutionBlocker } from './LinkedInExecutionBlocker';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
+import type { LinkedInCampaignExecution } from '../server/linkedin/execution-state';
 import type { LinkedInSeat } from '../server/linkedin/seats';
 import type { LinkedInWorkflow, WorkflowStep } from '../server/linkedin/workflows';
 import type {
@@ -570,16 +572,23 @@ function campaignBlockers({
   ceilings,
   report,
   workerStatus,
-  companionStatus
+  companionStatus,
+  now
 }: {
   campaign: ManagedCampaign;
   steps: readonly WorkflowStep[];
-  operations: { queues: CampaignQueueSummary; waves: ManagedCampaignWave[] } | null;
+  operations: {
+    queues: CampaignQueueSummary;
+    waves: ManagedCampaignWave[];
+    execution?: LinkedInCampaignExecution;
+  } | null;
   analytics: CampaignOperationalAnalytics | null;
   ceilings: Record<ManagedKind, EnforcedCeiling> | null;
   report: LinkedInLimitsReport | null;
   workerStatus: LinkedInWorkerStatus | null;
   companionStatus: LinkedInCompanionStatus | null;
+  /** Milliseconds. The seat's cooldown is a deadline, so it is judged against a clock. */
+  now: number;
 }): Array<{ title: string; detail: string }> {
   const out: Array<{ title: string; detail: string }> = [];
   if (campaign.status === 'draft')
@@ -632,63 +641,43 @@ function campaignBlockers({
   }
 
   const queues = operations?.queues;
-  if (queues?.queuedReady) {
-    const onlineCompanion = Boolean(companionStatus?.devices.some((device) => device.online));
-    const seatRecovery = companionStatus?.recoveries.find((recovery) =>
-      campaign.senderKeys.includes(recovery.seatKey)
-    );
-    const seatAttention = companionStatus?.attention.find((attention) =>
-      campaign.senderKeys.includes(attention.seatKey)
-    );
-    if (seatRecovery)
-      out.push({
-        title:
-          seatRecovery.status === 'verified'
-            ? 'LinkedIn recovered — recovery window still open'
-            : 'LinkedIn recovery in progress',
-        detail:
-          seatRecovery.status === 'verified'
-            ? `${queues.queuedReady} planned action(s) are due. The LinkedIn session is healthy, but Trevra intentionally keeps background execution paused until the visible recovery Chrome window closes.`
-            : `${queues.queuedReady} planned action(s) are due, but the visible recovery window is still completing sign-in or verification. No campaign action can run until recovery finishes.`
-      });
-    else if (seatAttention)
-      out.push({
-        title:
-          seatAttention.kind === 'challenge'
-            ? 'LinkedIn needs human verification'
-            : 'LinkedIn session needs reconnect',
-        detail: `${queues.queuedReady} planned action(s) are due, but the account session is not ready. ${seatAttention.message}`
-      });
-    else if (!workerStatus)
-      out.push({
-        title: 'Executor status unavailable',
-        detail: `${queues.queuedReady} planned action(s) are due, but Trevra could not read browser-worker status.`
-      });
-    else if (!workerStatus.ready)
-      out.push({
-        title: 'LinkedIn executor not ready',
-        detail: `${queues.queuedReady} planned action(s) are due. ${workerStatus.blockers.join(' ') || 'The browser worker is not ready.'}`
-      });
-    else if (workerStatus.companionBrowser && !onlineCompanion)
-      out.push({
-        title: 'Paired computer / companion offline',
-        detail: `${queues.queuedReady} planned action(s) are due, but the paired computer is not currently connected to Trevra, so no browser can claim them.`
-      });
-    else
-      out.push({
-        title: 'Waiting for browser worker',
-        detail: `${queues.queuedReady} planned action(s) have reached their scheduled time and are waiting for the LinkedIn executor to claim them.`
-      });
-  }
+  /*
+   * THE ONE SENTENCE THAT EXPLAINS A STALLED QUEUE, chosen by
+   * `campaignExecutionBlocker` rather than by a chain that ended in "waiting
+   * for browser worker" whenever nothing else matched. That fallback was
+   * printed for a companion that was online, a seat that was resting, and a
+   * gate that was refusing -- three different situations, one wrong answer.
+   * The ladder and the reasoning behind its order live in
+   * `LinkedInExecutionBlocker.ts`; this screen only supplies the facts.
+   */
+  const execution = operations?.execution ?? null;
+  const blocker = campaignExecutionBlocker({
+    senderKeys: campaign.senderKeys,
+    queues: queues ?? null,
+    execution,
+    workerStatus,
+    companionStatus,
+    now
+  });
+  if (blocker) out.push({ title: blocker.title, detail: blocker.detail });
   if (queues?.scheduledFuture)
     out.push({
       title: 'Waiting for scheduled slots',
       detail: `${queues.scheduledFuture} action(s) are already allocated but intentionally scheduled for a later time.`
     });
-  if (queues?.heldForReview)
+  // Parked rows are listed in their own right even when something else is the
+  // headline -- they need a person, and nothing else in this list will say so.
+  // Skipped when the ladder already led with them.
+  const parked = awaitingResolutionBlocker(execution);
+  if (parked && blocker?.kind !== 'awaiting-outcome-resolution')
+    out.push({ title: parked.title, detail: parked.detail });
+  // What is left of `heldForReview` once the parked rows have their own entry
+  // above: rows explicitly held for review, which are a different decision.
+  const heldOther = (queues?.heldForReview ?? 0) - (execution?.awaitingResolution ?? 0);
+  if (heldOther > 0)
     out.push({
       title: 'Actions held for review',
-      detail: `${queues.heldForReview} action(s) are held because Trevra cannot safely infer or repeat their outcome.`
+      detail: `${heldOther} action(s) are held because Trevra cannot safely infer or repeat their outcome.`
     });
   if ((queues?.waitingForConnection ?? 0) + (queues?.waitingForReply ?? 0) > 0)
     out.push({
@@ -2697,7 +2686,8 @@ export function OutreachManagerRead({
                 ceilings,
                 report,
                 workerStatus,
-                companionStatus
+                companionStatus,
+                now
               });
               return (
                 <article className={`mgr-campaign${open ? ' is-open' : ''}`} key={campaign.id}>

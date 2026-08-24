@@ -86,6 +86,7 @@ import type {
   ManagedCampaignWave,
   ManualTaskView
 } from '../server/linkedin/managed-campaigns';
+import type { LinkedInCampaignExecution } from '../server/linkedin/execution-state';
 import type {
   Account,
   AccountImportResult,
@@ -1978,6 +1979,14 @@ export async function getLinkedInCampaignOperations(id: string): Promise<{
   campaign: ManagedCampaign;
   queues: CampaignQueueSummary;
   waves: ManagedCampaignWave[];
+  /**
+   * Why the queue is or is not moving, from the only place that knows: the
+   * seat's cooldown clock, the safety gate's verdict on the next claimable
+   * action, and the rows parked on an outcome nobody could read back. Optional
+   * so a client talking to an older server degrades to the generic message
+   * rather than to a crash.
+   */
+  execution?: LinkedInCampaignExecution;
 }> {
   return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/operations`);
 }

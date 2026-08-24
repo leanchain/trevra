@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1.0.0",
-  "generatedAt": "2026-08-22T02:34:42+02:00",
-  "sourceRevision": "916e2df74746",
+  "generatedAt": "2026-08-24T13:32:47+02:00",
+  "sourceRevision": "496cf5d1c30d",
   "project": "Trevra",
   "contract": {
     "inputs": "Zod-validated input schema",
@@ -262,7 +262,7 @@
       "id": "gtm.linkedin-pace",
       "name": "LinkedIn pacing plan",
       "version": "1.0.0",
-      "description": "Schedule LinkedIn actions for one seat across a horizon: warm-up ramp from account age, day-over-day variance smoothing against the real ledger, acceptance-rate throttle, weekend and enforcement-scan rules, and a deterministic spread inside the seat's own configured working days and hours.",
+      "description": "Schedule LinkedIn actions for one seat across a horizon using account/campaign ramps, rolling ledger limits, acceptance throttling, configured working days and hours, and deterministic fixed-gap placement.",
       "sideEffect": "none",
       "requiresApproval": false,
       "runtime": "builtin",

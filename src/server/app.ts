@@ -364,6 +364,7 @@ import {
   retryCampaignChannelAction,
   upsertCampaignMailboxSettings
 } from './linkedin/campaign-channels.js';
+import { campaignExecutionState } from './linkedin/execution-state.js';
 import {
   applyLatestWorkflowToPendingMembers,
   campaignAdmissionSummary,
@@ -4367,14 +4368,24 @@ export function createApp(db: Db) {
     '/api/linkedin/manager/campaigns/:id/operations',
     linkedinRoute(async (req, res) => {
       try {
-        res.json(
-          await campaignAdmissionSummary(
-            db,
-            req.auth!.workspaceId,
-            String(req.params.id),
-            new Date()
-          )
-        );
+        const now = new Date();
+        const workspaceId = req.auth!.workspaceId;
+        const campaignId = String(req.params.id);
+        const summary = await campaignAdmissionSummary(db, workspaceId, campaignId, now);
+        /*
+         * WHY THE QUEUE SUMMARY IS NOT ENOUGH. It counts rows; it cannot say
+         * why a due row is still a due row. `campaignExecutionState` adds the
+         * three answers only the database holds -- the seat's autonomous
+         * cooldown, the safety gate's verdict on the very next claimable
+         * action, and the rows parked on an outcome nobody could read back --
+         * so the campaign card can name the real blocker instead of blaming a
+         * browser worker that is online and idle. Read on demand, for one
+         * opened campaign; it never throws for a reason of its own.
+         */
+        res.json({
+          ...summary,
+          execution: await campaignExecutionState(db, workspaceId, campaignId, now)
+        });
       } catch (error) {
         rethrowLinkedInManagerError(error);
       }
