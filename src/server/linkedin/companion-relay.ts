@@ -35,6 +35,65 @@ interface RelaySession {
 
 const MAX_PENDING_BYTES = 2 * 1024 * 1024;
 
+/**
+ * How often every relay socket -- control AND browser -- must put a frame on
+ * the wire.
+ *
+ * WHY BOTH, AND WHY THIS NUMBER. A CDP tunnel is idle for the WHOLE of the
+ * inter-action gap: `local-worker.ts` sleeps `ACTION_GAP_SECONDS.max` (120s)
+ * between actions, and a loaded LinkedIn profile emits no CDP events while it
+ * sits there. Every hop in the path therefore sees a socket carrying zero
+ * bytes for two minutes, and every idle timeout between here and the member's
+ * laptop -- Cloudflare's ~100s origin timeout on the control hop, any NAT or
+ * conntrack entry on the worker hop -- is free to reclaim it. That is exactly
+ * what a five-action batch that only ever completes ONE action looks like from
+ * the outside: action 1 succeeds, the gap starts, the tunnel dies unobserved,
+ * and action 2 fails on a page whose browser is gone.
+ *
+ * 30s is comfortably under every timeout in that list and cheap: a ping frame
+ * is 2 bytes of payload, so four of them per action gap costs nothing next to
+ * one CDP message.
+ */
+const HEARTBEAT_MS = 30_000;
+
+/**
+ * Keep one socket provably alive, and terminate it the moment it is not.
+ *
+ * A PROTOCOL PING, NOT AN APPLICATION MESSAGE, because the peer's WebSocket
+ * library answers it without the peer's application code existing: the worker
+ * side of a browser relay is Playwright's own CDP transport, which has no
+ * Trevra code in it at all and would ignore anything we invented. `ws` replies
+ * to a ping automatically on both ends, so this works against Playwright and
+ * against the companion CLI without either having to opt in.
+ *
+ * ONE MISSED BEAT TERMINATES. A half-open socket -- one whose peer is gone but
+ * whose FIN never arrived -- otherwise stays `OPEN` forever, and a relay that
+ * looks open while nothing is on the other end is worse than a closed one: the
+ * worker keeps issuing CDP commands into it and only finds out at the next
+ * navigation, minutes later, by which time the batch has already been counted.
+ */
+function heartbeat(ws: WebSocket, intervalMs: number): NodeJS.Timeout {
+  let alive = true;
+  ws.on('pong', () => {
+    alive = true;
+  });
+  const timer = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (!alive) {
+      ws.terminate();
+      return;
+    }
+    alive = false;
+    try {
+      ws.ping();
+    } catch {
+      ws.terminate();
+    }
+  }, intervalMs);
+  timer.unref();
+  return timer;
+}
+
 function bearer(request: IncomingMessage): string {
   return (
     String(request.headers.authorization ?? '')
@@ -63,7 +122,17 @@ function sendJson(ws: WebSocket, value: unknown): void {
 }
 
 /** Reverse-CDP bridge between the hosted worker and one paired member computer. */
-export function installLinkedInCompanionRelay(server: Server, db: Db): void {
+export function installLinkedInCompanionRelay(
+  server: Server,
+  db: Db,
+  /**
+   * The heartbeat period, injected only so a test can assert that a keepalive
+   * is genuinely emitted without sitting through 30 real seconds. Production
+   * never passes it.
+   */
+  options: { heartbeatMs?: number } = {}
+): void {
+  const heartbeatMs = Math.max(1, Math.trunc(options.heartbeatMs ?? HEARTBEAT_MS));
   const controlServer = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
   const browserServer = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
   const controls = new Map<string, ControlConnection>();
@@ -94,24 +163,7 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
     // Application pings update the DB lease, but are not a transport liveness
     // check. A protocol ping/pong catches half-open sockets; the ws client
     // answers these automatically. One missed heartbeat terminates the control.
-    let transportAlive = true;
-    ws.on('pong', () => {
-      transportAlive = true;
-    });
-    const heartbeat = setInterval(() => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      if (!transportAlive) {
-        ws.terminate();
-        return;
-      }
-      transportAlive = false;
-      try {
-        ws.ping();
-      } catch {
-        ws.terminate();
-      }
-    }, 30_000);
-    heartbeat.unref();
+    const controlHeartbeat = heartbeat(ws, heartbeatMs);
 
     // Only one live control connection may own a workspace. A replacement or
     // restarted companion wins immediately and detaches every browser session
@@ -186,7 +238,7 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
     });
 
     ws.on('close', () => {
-      clearInterval(heartbeat);
+      clearInterval(controlHeartbeat);
       if (controls.get(connection.workspaceId) === connection)
         controls.delete(connection.workspaceId);
       for (const session of [...sessions.values()]) {
@@ -210,6 +262,12 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
       pendingBytes: 0
     };
     sessions.set(session.id, session);
+    // THE HOP THAT HAD NOTHING. The control socket has carried a heartbeat
+    // since it was written; this one -- the CDP tunnel itself, the socket a
+    // whole batch's browser work rides on -- carried no liveness traffic at
+    // all, so it was the one socket in the path that an idle timeout could
+    // reclaim without either end noticing until the next navigation.
+    const browserHeartbeat = heartbeat(browser, heartbeatMs);
     sendJson(meta.control.ws, {
       type: 'open',
       relayId: session.id,
@@ -231,8 +289,14 @@ export function installLinkedInCompanionRelay(server: Server, db: Db): void {
       }
       sendJson(session.control.ws, { type: 'cdp', relayId: session.id, data: payload, binary });
     });
-    browser.on('close', () => forgetSession(session));
-    browser.on('error', () => forgetSession(session));
+    browser.on('close', () => {
+      clearInterval(browserHeartbeat);
+      forgetSession(session);
+    });
+    browser.on('error', () => {
+      clearInterval(browserHeartbeat);
+      forgetSession(session);
+    });
   };
 
   server.on('upgrade', (request: IncomingMessage, socket: Duplex, head: Buffer) => {

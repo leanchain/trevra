@@ -69,6 +69,23 @@ test('companion keeps the DevTools endpoint reader required by browser reuse', (
   assert.match(cli, /const onDisk = readDevToolsEndpoint\(profileDir\)/);
 });
 
+test('an open relay is kept alive and reports whether its close was expected', () => {
+  const cli = readFileSync(fileURLToPath(new URL('../bin/trevra.js', import.meta.url)), 'utf8');
+  // Trevra waits up to two minutes between actions, so a relay with no
+  // keepalive on it is a relay that dies in the gap and takes the rest of the
+  // batch with it. Chrome answers protocol pings itself.
+  assert.match(cli, /relay\.heartbeat = setInterval\(/);
+  assert.match(cli, /local\.ping\(\)/);
+  // `relay.expectClose`, never `relays.get(...)`: every other path deletes the
+  // map entry before this event fires, so the lookup form logged expected=false
+  // for every close the companion has ever made, deliberate ones included.
+  assert.match(
+    cli,
+    /activity\('relay_closed', `relay=\$\{relayShort\} expected=\$\{relay\.expectClose\}`\)/
+  );
+  assert.doesNotMatch(cli, /expected=\$\{Boolean\(current\?\.expectClose\)\}/);
+});
+
 test('service paths stay under the user home and never use the project checkout', () => {
   const home = mkdtempSync(join(tmpdir(), 'trevra-service-test-'));
   try {

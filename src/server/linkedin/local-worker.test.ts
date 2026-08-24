@@ -1193,6 +1193,33 @@ describe('what LinkedIn says stops the batch', () => {
     expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
   });
 
+  it('stops on a lost browser session without accusing the selectors', async () => {
+    // The relay to the member's computer dies mid-batch (it did, in production,
+    // during the gap between two actions). The row is released untouched, just
+    // as drift is -- nothing was clicked either way -- but the halt must name
+    // the browser session, because sending an operator to repair selectors that
+    // are fine is the one outcome this classification exists to prevent.
+    const harness = fakeStore(threeActions);
+    const { driver, calls } = fakeDriver(() => ({ ok: false, failureKind: 'session_lost' }));
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(harness.released).toEqual([{ id: 'lact_1', failureKind: 'session_lost' }]);
+    expect(harness.held).toHaveLength(0);
+    expect(result.halted).toBe(true);
+    expect(result.haltReason).toMatch(/browser session for this seat ended mid-batch/);
+    // Nobody is sent to repair a file that is not involved.
+    expect(result.haltReason).not.toMatch(/repair/i);
+    expect(result.haltReason).not.toMatch(/driver\.ts/);
+  });
+
   it('defers a message to somebody who never accepted, instead of halting the batch as drift', async () => {
     // No Message control on a profile is not always drift: LinkedIn shows it to
     // 1st-degree connections only, so the commonest managed-workflow shape --

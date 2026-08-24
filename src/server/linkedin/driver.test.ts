@@ -107,6 +107,46 @@ describe('reaching a profile', () => {
 
     expect(navigations).toEqual([TARGET]);
   });
+
+  /**
+   * A DEAD BROWSER IS NOT A DRIFTED SELECTOR, and the difference is the only
+   * thing an operator ever reads.
+   *
+   * Real row, 2026-08-24: the companion relay died during the 120s gap between
+   * two actions of one batch, the next `page.goto` came back with Playwright's
+   * `Target page, context or browser has been closed`, and every navigation
+   * failure was classified as drift -- so the ledger told somebody to go and
+   * repair selectors that had never been wrong.
+   */
+  it('reports a navigation onto a closed browser as a lost session, not as selector drift', async () => {
+    const { page } = fakePage({ startAt: 'about:blank', linkOnPage: false });
+    page.goto = async () => {
+      throw new Error(
+        'page.goto: Target page, context or browser has been closed\nCall log:\n  - navigating to "https://www.linkedin.com/in/some-person/"'
+      );
+    };
+
+    const result = await viewProfile(page, TARGET);
+
+    expect(result).toMatchObject({ ok: false, failureKind: 'session_lost' });
+    expect(result.detail).toContain('browser session for this seat ended');
+    // The operator must not be sent to a file that has nothing to do with it.
+    expect(result.detail).not.toMatch(/SELECTORS/i);
+  });
+
+  it('still reports an ordinary navigation failure as selector drift', async () => {
+    // A live browser having a bad navigation. The session is intact, so the old
+    // classification is the right one and must not have been widened away.
+    const { page } = fakePage({ startAt: 'about:blank', linkOnPage: false });
+    page.goto = async () => {
+      throw new Error('page.goto: net::ERR_NAME_NOT_RESOLVED at https://www.linkedin.com/');
+    };
+
+    const result = await viewProfile(page, TARGET);
+
+    expect(result).toMatchObject({ ok: false, failureKind: 'selector_drift' });
+    expect(result.detail).toContain('net::ERR_NAME_NOT_RESOLVED');
+  });
 });
 
 describe('connection request composer', () => {

@@ -826,11 +826,51 @@ async function runCompanion(config, options = {}) {
                 minimized: options.minimizedBrowser === true
               });
               const local = new WebSocket(handle.endpoint);
-              const relay = { ws: local, expectClose: false };
+              const relay = { ws: local, expectClose: false, heartbeat: null };
               relays.set(message.relayId, relay);
               local.once('open', () => {
                 activity('relay_ready', `relay=${relayShort} seat=${message.seatKey}`);
                 socket.send(JSON.stringify({ type: 'ready', relayId: message.relayId }));
+                // KEEPALIVE ON THE LAST HOP OF THE TUNNEL.
+                //
+                // Trevra sleeps up to two minutes between LinkedIn actions on
+                // purpose, and a loaded profile emits no CDP events while it
+                // waits, so this socket carries nothing at all for the whole
+                // gap. The server heartbeats its own end of the relay for the
+                // same reason; this is the matching half, and it is the only
+                // thing that can tell a Chrome that is still answering from a
+                // Chrome that has wedged or gone away between two actions.
+                //
+                // A PROTOCOL PING, which Chrome's DevTools socket answers with
+                // a pong on its own (verified against Chrome stable) -- no CDP
+                // message is injected into the stream, so nothing here can be
+                // mistaken for a command by the Playwright client on the other
+                // side of the relay.
+                //
+                // A missed beat terminates rather than waits. A half-open local
+                // socket looks OPEN forever, and every CDP command Trevra sends
+                // into one is lost silently until the next navigation fails
+                // minutes later -- which is precisely the failure this is here
+                // to stop being invisible.
+                let alive = true;
+                local.on('pong', () => {
+                  alive = true;
+                });
+                relay.heartbeat = setInterval(() => {
+                  if (local.readyState !== WebSocket.OPEN) return;
+                  if (!alive) {
+                    activity('relay_stalled', `relay=${relayShort} seat=${message.seatKey}`);
+                    local.terminate();
+                    return;
+                  }
+                  alive = false;
+                  try {
+                    local.ping();
+                  } catch {
+                    local.terminate();
+                  }
+                }, 30_000);
+                relay.heartbeat.unref?.();
               });
               local.on('message', (data, binary) => {
                 if (socket.readyState !== WebSocket.OPEN) return;
@@ -855,13 +895,22 @@ async function runCompanion(config, options = {}) {
                   );
               });
               local.once('close', () => {
-                const current = relays.get(message.relayId);
+                // `relay`, THE OBJECT, NOT `relays.get(...)`.
+                //
+                // Every other path deletes the map entry BEFORE this event
+                // fires -- the server's `close` message does, and so does
+                // `closeRelays` on a control drop -- so the lookup returned
+                // undefined and `expected` was logged as false for every single
+                // relay this companion has ever closed, expected or not. That
+                // made the one field in this log that says whether a browser
+                // session ended on purpose permanently useless, which is a large
+                // part of why an unexpected mid-batch relay death was so hard to
+                // attribute. Reading the captured object keeps the flag true
+                // when we asked for the close.
+                if (relay.heartbeat) clearInterval(relay.heartbeat);
                 relays.delete(message.relayId);
-                activity(
-                  'relay_closed',
-                  `relay=${relayShort} expected=${Boolean(current?.expectClose)}`
-                );
-                if (!current?.expectClose && socket.readyState === WebSocket.OPEN) {
+                activity('relay_closed', `relay=${relayShort} expected=${relay.expectClose}`);
+                if (!relay.expectClose && socket.readyState === WebSocket.OPEN) {
                   socket.send(
                     JSON.stringify({
                       type: 'error',

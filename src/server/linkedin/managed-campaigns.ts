@@ -3448,6 +3448,12 @@ const RETRYABLE_LINKEDIN_FAILURES = [
   'compose_unavailable',
   'paid_credit_required',
   'selector_drift',
+  // A relay that dropped between two actions never clicked anything, exactly as
+  // drift never clicked anything, so the row is safe to requeue on the same
+  // rule. Deliberately absent from the campaign-health counters further down:
+  // a browser session we lost is Trevra's plumbing, not evidence that this
+  // campaign is being refused by LinkedIn.
+  'session_lost',
   'limit_wall',
   'challenge'
 ] as const;

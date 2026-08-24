@@ -1372,6 +1372,30 @@ export async function runLinkedInLocalBatch(
       continue;
     }
 
+    if (failureKind === 'session_lost') {
+      /*
+       * THE BROWSER WENT AWAY UNDER A BATCH THAT WAS STILL RUNNING.
+       *
+       * Settled exactly as drift is -- nothing was clicked, so the claim is
+       * RELEASED and the row is due again untouched -- and it stops the batch
+       * for the same reason: every action after this one would be driving the
+       * same dead session.
+       *
+       * THE SENTENCE IS THE WHOLE POINT OF THE SEPARATE BRANCH. A lost session
+       * used to fall into the drift branch below and tell whoever read the
+       * ledger to repair SELECTORS in driver.ts. There is a row in production
+       * saying exactly that, and the selectors it accuses were never wrong: the
+       * relay to the member's computer had died during the 120-second gap
+       * between two actions, which is a transport problem in a completely
+       * different file. An operator sent to the wrong file is worse off than an
+       * operator told nothing, so this names the browser session instead.
+       */
+      await store.releaseClaim(action.id, failureKind);
+      result.halted = true;
+      result.haltReason = `The browser session for this seat ended mid-batch, so this batch stopped and its remaining work stays due. Nothing was sent, and the selectors are not involved: check that the paired computer is still online and that its companion relay is connected.${detail}`;
+      break;
+    }
+
     if (failureKind === 'selector_drift') {
       // Nothing was clicked (driver.ts guarantees it), so the action goes back
       // in the queue untouched. The batch still ends: if one selector has

@@ -33,6 +33,16 @@
  *   challenge         LinkedIn wants a human (captcha, PIN, checkpoint). STOP.
  *   selector_drift    the control we needed was not on the page. Nothing was
  *                     clicked, so nothing was sent.
+ *   session_lost      the browser, context or page this seat was driving is
+ *                     gone -- the companion relay dropped, the member's Chrome
+ *                     exited, the CDP tunnel died. Nothing was clicked, so this
+ *                     is as definite as drift; it is a SEPARATE kind because
+ *                     the two need opposite repairs and the operator only ever
+ *                     sees the sentence. Drift means a human edits SELECTORS in
+ *                     this file. A lost session means the selectors are fine
+ *                     and the transport is not, and sending somebody to repair
+ *                     a page they cannot even load is worse than saying
+ *                     nothing.
  *   unknown           we clicked and then lost track of the outcome. NOT
  *                     definite -- the worker holds the claim rather than
  *                     retrying, for the same reason `publish.ts` holds a
@@ -85,6 +95,7 @@ export type LinkedInFailureKind =
   | 'limit_wall'
   | 'challenge'
   | 'selector_drift'
+  | 'session_lost'
   | 'unknown'
   | 'compose_unavailable'
   | 'paid_credit_required';
@@ -596,6 +607,48 @@ function fail(failureKind: LinkedInFailureKind, detail: string): LinkedInDriverR
 }
 
 /**
+ * Did this failure happen because the browser session itself ended?
+ *
+ * WHY THIS EXISTS, WITH THE ROW THAT PROVED IT. A hosted seat drives the
+ * member's own Chrome through a relay, and on 2026-08-24 that relay died
+ * during the 120-second gap between two actions of one batch. The next action
+ * called `page.goto` on a page whose browser was gone, Playwright answered
+ * `Target page, context or browser has been closed`, and the navigation catch
+ * below -- which classified EVERY navigation failure as drift -- wrote
+ * `failure_kind='selector_drift'` and told the operator to repair SELECTORS in
+ * this file. The selectors were never touched and were never wrong. That is a
+ * transport failure wearing a maintenance instruction, and it sends the one
+ * person who could fix the relay to read a file that has nothing to do with it.
+ *
+ * MATCHED ON THE MESSAGE, DELIBERATELY. Playwright reports every one of these
+ * as a plain `Error` with no code, no class and no flag to test -- the string
+ * is the entire signal it gives us. The patterns below are the ones Playwright
+ * actually emits when the target, the context, the browser or the transport
+ * goes away; anything it does not recognise stays drift, so a genuine missing
+ * control is classified exactly as strongly as it was before.
+ *
+ * NOT a timeout, and not `net::ERR_*`. A page that took too long or a DNS
+ * failure is a live browser having a bad navigation -- the session is intact
+ * and the old classification is right about those.
+ */
+const SESSION_LOST_PATTERNS = [
+  /target (?:page|closed)/i,
+  /(?:page|context|browser) has been closed/i,
+  /browser has (?:been )?(?:closed|disconnected)/i,
+  /target (?:page, context or browser )?has been closed/i,
+  /browser(?:context)?\.\w+: browser closed/i,
+  /websocket (?:error|is not open|connection closed)/i,
+  /socket hang ?up/i,
+  /connection closed(?: while reading| unexpectedly)?/i,
+  /playwright connection closed/i
+];
+
+export function browserSessionLost(cause: unknown): boolean {
+  const message = cause instanceof Error ? cause.message : String(cause ?? '');
+  return SESSION_LOST_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+/**
  * The canonical profile URL for an operator-supplied target.
  *
  * `target_ref` is an opaque string a human typed or a CSV supplied, and this
@@ -708,12 +761,16 @@ async function openProfile(
     }
     await settle(page, `${url}#open`);
   } catch (cause) {
-    // Navigation failed, so no action was taken. Definite, and reported as
-    // drift rather than `unknown`: nothing was clicked.
-    return fail(
-      'selector_drift',
-      `Could not open ${url}: ${cause instanceof Error ? cause.message : String(cause)}`
-    );
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    // Navigation failed, so no action was taken. Definite either way, and never
+    // `unknown`: nothing was clicked. WHICH definite failure it is decides what
+    // an operator is told to go and repair -- see `browserSessionLost`.
+    if (browserSessionLost(cause))
+      return fail(
+        'session_lost',
+        `The browser session for this seat ended before ${url} could be opened: ${detail}`
+      );
+    return fail('selector_drift', `Could not open ${url}: ${detail}`);
   }
   const wall = await detectWall(page);
   if (wall) {
