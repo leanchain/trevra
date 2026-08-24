@@ -385,10 +385,13 @@ export const SELECTORS = {
   /** LinkedIn hides Connect behind "More" on many profiles. */
   moreActionsButton: 'button[aria-label="More actions"], button[aria-label="More"]',
   connectInMoreMenu: 'div[role="button"][aria-label^="Invite"]',
-  addNoteButton: 'button[aria-label="Add a note"]',
-  noteTextarea: 'textarea#custom-message, textarea[name="message"]',
-  sendInviteButton: 'button[aria-label="Send invitation"], button[aria-label="Send now"]',
-  sendWithoutNoteButton: 'button[aria-label="Send without a note"]',
+  addNoteButton: '#interop-outlet button[aria-label="Add a note"], button[aria-label="Add a note"]',
+  noteTextarea:
+    '#interop-outlet textarea, textarea#custom-message, textarea[name="message"], textarea[placeholder*="note" i], textarea[aria-label*="note" i]',
+  sendInviteButton:
+    '#interop-outlet button[aria-label="Send"], #interop-outlet button:text-is("Send"), button[aria-label="Send invitation"], button[aria-label="Send now"]',
+  sendWithoutNoteButton:
+    '#interop-outlet button[aria-label="Send without a note"], button[aria-label="Send without a note"]',
   /** Open modal. Still visible after "send" means the send did not go through. */
   inviteModal: 'div[role="dialog"].send-invite, div.artdeco-modal[role="dialog"]',
   /** An invite already awaiting their answer. */
@@ -806,22 +809,25 @@ export async function sendInvite(
 
     if (note && note.trim()) {
       const addNote = page.locator(SELECTORS.addNoteButton);
-      if ((await addNote.count()) > 0) {
+      const hadAddNoteControl = (await addNote.count()) > 0;
+      if (hadAddNoteControl) {
         await hoverClick(page, addNote.first(), `${url}#add-note`, CLICK_TIMEOUT_MS);
         await settle(page, `${url}#note-modal`);
       }
       const textarea = page.locator(SELECTORS.noteTextarea);
       if ((await textarea.count()) === 0) {
-        // The modal is open and the note cannot be typed. Sending it without
-        // the note would deliver something nobody approved, so this stops --
-        // `unknown` because the modal is open and its state is ours to settle.
+        // Seeing and clicking Add a note is positive evidence that the invite
+        // has NOT been sent yet. If the composer then drifts, classify it as a
+        // definite selector miss so the claim can be retried after a repair
+        // instead of parking an unsent invite as an unknown outcome forever.
+        // Without that positive pre-send control, keep the conservative
+        // unknown classification because the initial Connect click may have
+        // completed a no-modal flow.
         return fail(
-          'unknown',
-          `The invite modal for ${url} is open but ${SELECTORS.noteTextarea} did not match, so the approved note could not be typed. Settle this invite by hand.`
+          hadAddNoteControl ? 'selector_drift' : 'unknown',
+          `The invite composer for ${url} opened but ${SELECTORS.noteTextarea} did not match, so the approved note could not be typed. Nothing was sent${hadAddNoteControl ? '.' : ' that Trevra can prove.'}`
         );
       }
-      // Typed, not pasted -- and byte for byte either way. See `typeLike`.
-      await typeLike(page, textarea.first(), note, `${url}#note`, CLICK_TIMEOUT_MS);
       const send = page.locator(SELECTORS.sendInviteButton);
       if ((await send.count()) === 0)
         return fail(

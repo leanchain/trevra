@@ -7,6 +7,7 @@ import {
   parseConnectionsCount,
   readProfileDegree,
   readSeat,
+  sendInvite,
   sessionRecoveryReason,
   viewProfile,
   type LinkedInLocator,
@@ -105,6 +106,50 @@ describe('reaching a profile', () => {
     await viewProfile(page, TARGET);
 
     expect(navigations).toEqual([TARGET]);
+  });
+});
+
+describe('connection request composer', () => {
+  it('treats a missing note field after a visible Add a note control as definite selector drift', async () => {
+    let current = TARGET;
+    const clicked: string[] = [];
+    const locator = (selector: string): LinkedInLocator => {
+      const self: LinkedInLocator = {
+        count: async () => {
+          if (selector === SELECTORS.connectButton) return 1;
+          if (selector === SELECTORS.addNoteButton) return 1;
+          return 0;
+        },
+        first: () => self,
+        click: async () => {
+          clicked.push(selector);
+        },
+        fill: async () => {},
+        textContent: async () => null
+      };
+      return self;
+    };
+    const page: LinkedInPage = {
+      goto: async (url: string) => {
+        current = url;
+      },
+      url: () => current,
+      locator,
+      waitForTimeout: async () => {}
+    };
+
+    const result = await sendInvite(page, TARGET, 'Hi there');
+
+    expect(result).toMatchObject({ ok: false, failureKind: 'selector_drift' });
+    expect(clicked).toContain(SELECTORS.connectButton);
+    expect(clicked).toContain(SELECTORS.addNoteButton);
+    expect(result.detail).toContain('Nothing was sent.');
+  });
+
+  it('includes the current interop shadow-root controls in the invite selectors', () => {
+    expect(SELECTORS.addNoteButton).toContain('#interop-outlet');
+    expect(SELECTORS.noteTextarea).toContain('#interop-outlet textarea');
+    expect(SELECTORS.sendInviteButton).toContain('#interop-outlet');
   });
 });
 
