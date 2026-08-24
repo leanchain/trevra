@@ -433,27 +433,27 @@ function StatusLegend({ counts, total }: { counts: Record<MemberStatus, number>;
 function WorkflowStepProgress({
   steps,
   queues,
-  pending
+  waves
 }: {
   steps: readonly WorkflowStep[];
   queues: CampaignQueueSummary;
-  pending: number;
+  waves: readonly ManagedCampaignWave[];
 }) {
-  const progress = campaignStepProgress(steps, queues.backlogByStep);
+  const progress = campaignStepProgress(steps, queues.backlogByStep, waves);
   if (steps.length === 0) return null;
   return (
     <div className="mgr-workflow-progress" aria-label="Workflow step progress">
-      <div className="mgr-workflow-stage is-pending">
-        <span>Not started</span>
-        <strong>{pending}</strong>
-      </div>
       {progress.map((entry, index) => (
         <div className="mgr-workflow-stage" key={entry.stepId}>
           <span>
             {index + 1}. {entry.label}
           </span>
-          <strong>{entry.count}</strong>
-          <small>{entry.count === 0 ? 'No leads here' : `${entry.due} due now`}</small>
+          <strong>{entry.completed} done</strong>
+          <small>
+            {entry.pending === 0
+              ? 'No pending leads'
+              : `${entry.pending} pending${entry.due > 0 ? ` · ${entry.due} due now` : ''}`}
+          </small>
         </div>
       ))}
     </div>
@@ -2909,7 +2909,7 @@ export function OutreachManagerRead({
                         <WorkflowStepProgress
                           steps={campaignSteps}
                           queues={operations.queues}
-                          pending={campaign.pendingCount}
+                          waves={operations.waves}
                         />
                       )}
                     </>

@@ -57,6 +57,12 @@ test('installed LinkedIn service selects visible Chrome for relay work', () => {
   );
 });
 
+test('companion keeps the DevTools endpoint reader required by browser reuse', () => {
+  const cli = readFileSync(fileURLToPath(new URL('../bin/trevra.js', import.meta.url)), 'utf8');
+  assert.match(cli, /function readDevToolsEndpoint\(profileDir\)/);
+  assert.match(cli, /const onDisk = readDevToolsEndpoint\(profileDir\)/);
+});
+
 test('service paths stay under the user home and never use the project checkout', () => {
   const home = mkdtempSync(join(tmpdir(), 'trevra-service-test-'));
   try {

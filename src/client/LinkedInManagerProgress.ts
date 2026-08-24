@@ -1,5 +1,8 @@
 import type { WorkflowStep } from '../server/linkedin/workflows';
-import type { CampaignQueueSummary } from '../server/linkedin/managed-campaigns';
+import type {
+  CampaignQueueSummary,
+  ManagedCampaignWave
+} from '../server/linkedin/managed-campaigns';
 
 export const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   profile_view: 'View their profile',
@@ -33,15 +36,26 @@ export const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
 
 export function campaignStepProgress(
   steps: readonly WorkflowStep[],
-  backlog: CampaignQueueSummary['backlogByStep']
-): Array<{ stepId: string; label: string; count: number; due: number }> {
+  backlog: CampaignQueueSummary['backlogByStep'],
+  waves: readonly ManagedCampaignWave[] = []
+): Array<{ stepId: string; label: string; completed: number; pending: number; due: number }> {
   const byStep = new Map(backlog.map((entry) => [entry.stepId, entry]));
+  const completedByStep = new Map<string, number>();
+  for (const wave of waves) {
+    for (const funnel of wave.stepFunnel ?? []) {
+      completedByStep.set(
+        funnel.stepId,
+        (completedByStep.get(funnel.stepId) ?? 0) + Number(funnel.sent ?? 0)
+      );
+    }
+  }
   return steps.map((step) => {
     const entry = byStep.get(step.id);
     return {
       stepId: step.id,
       label: ACTION_LABEL[step.action],
-      count: entry?.count ?? 0,
+      completed: completedByStep.get(step.id) ?? 0,
+      pending: entry?.count ?? 0,
       due: entry?.due ?? 0
     };
   });

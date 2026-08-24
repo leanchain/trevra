@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ManagedCampaignWave } from '../server/linkedin/managed-campaigns';
 import type { WorkflowStep } from '../server/linkedin/workflows';
 import type { LinkedInLimitsReport } from './api';
 import { campaignStepProgress } from './LinkedInManagerProgress';
@@ -53,7 +54,7 @@ describe('campaign account warm-up label', () => {
 });
 
 describe('campaign workflow step progress', () => {
-  it('maps backlog counts onto the workflow steps', () => {
+  it('leads with completed work and keeps pending work explicitly separate', () => {
     const steps = [
       {
         id: 'step-1',
@@ -68,19 +69,37 @@ describe('campaign workflow step progress', () => {
         delayBefore: { unit: 'days', amount: 1 }
       }
     ] as unknown as WorkflowStep[];
+    const waves = [
+      {
+        stepFunnel: [
+          { stepId: 'step-1', sent: 1 },
+          { stepId: 'step-2', sent: 0 }
+        ]
+      }
+    ] as unknown as ManagedCampaignWave[];
 
     expect(
-      campaignStepProgress(steps, [
-        { stepId: 'step-1', count: 11, due: 11 },
-        { stepId: 'step-2', count: 5, due: 5 }
-      ])
+      campaignStepProgress(
+        steps,
+        [
+          { stepId: 'step-1', count: 19, due: 19 },
+          { stepId: 'step-2', count: 5, due: 5 }
+        ],
+        waves
+      )
     ).toEqual([
-      { stepId: 'step-1', label: 'View their profile', count: 11, due: 11 },
-      { stepId: 'step-2', label: 'Send a connection request', count: 5, due: 5 }
+      { stepId: 'step-1', label: 'View their profile', completed: 1, pending: 19, due: 19 },
+      {
+        stepId: 'step-2',
+        label: 'Send a connection request',
+        completed: 0,
+        pending: 5,
+        due: 5
+      }
     ]);
   });
 
-  it('keeps an empty workflow step visible', () => {
+  it('keeps an empty workflow step visible as zero done and zero pending', () => {
     const steps = [
       {
         id: 'step-1',
@@ -91,7 +110,7 @@ describe('campaign workflow step progress', () => {
     ] as unknown as WorkflowStep[];
 
     expect(campaignStepProgress(steps, [])).toEqual([
-      { stepId: 'step-1', label: 'View their profile', count: 0, due: 0 }
+      { stepId: 'step-1', label: 'View their profile', completed: 0, pending: 0, due: 0 }
     ]);
   });
 });

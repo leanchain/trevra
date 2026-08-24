@@ -5934,7 +5934,9 @@ export function createApp(db: Db) {
             ...row,
             ...(timing?.next
               ? {
-                  nextRunAt: timing.next.startAt.toISOString(),
+                  nextRunAt: new Date(
+                    Math.max(timing.next.startAt.getTime(), now.getTime())
+                  ).toISOString(),
                   nextRunWindowEndAt: timing.next.endAt.toISOString(),
                   nextRunTimezone: timing.next.timezone
                 }

@@ -289,7 +289,6 @@ function systemChrome() {
   }
   return null;
 }
-
 async function playwrightChromium() {
   const require = createRequire(import.meta.url);
   const { chromium } = await import('playwright');
@@ -315,6 +314,18 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+function readDevToolsEndpoint(profileDir) {
+  try {
+    const [port, path] = readFileSync(join(profileDir, 'DevToolsActivePort'), 'utf8')
+      .trim()
+      .split(/\r?\n/);
+    if (!port || !path) return null;
+    return `ws://127.0.0.1:${Number(port)}${path}`;
+  } catch {
+    return null;
+  }
+}
+
 async function endpointResponds(endpoint) {
   if (!endpoint) return false;
   return new Promise((resolveCheck) => {
@@ -334,7 +345,6 @@ async function endpointResponds(endpoint) {
     });
   });
 }
-
 async function recoverySessionHealthy(endpoint) {
   if (!endpoint) return false;
   return new Promise((resolveCheck) => {
