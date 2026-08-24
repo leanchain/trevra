@@ -396,13 +396,37 @@ export const SELECTORS = {
   /** LinkedIn hides Connect behind "More" on many profiles. */
   moreActionsButton: 'button[aria-label="More actions"], button[aria-label="More"]',
   connectInMoreMenu: 'div[role="button"][aria-label^="Invite"]',
-  addNoteButton: '#interop-outlet button[aria-label="Add a note"], button[aria-label="Add a note"]',
+  /*
+   * THE INVITE COMPOSER, AND WHY EVERY ONE OF THESE CARRIES A TEXT ALTERNATIVE.
+   *
+   * `1d480cd` widened these to reach LinkedIn's `#interop-outlet` shadow root
+   * and they still did not match: on 2026-08-24, with that release in
+   * production, `sendInvite` reported "the invite composer opened but
+   * [noteTextarea] did not match" for byronvoorbach -- and the sentence it
+   * chose proves `addNoteButton` did not match either, because the two
+   * classifications differ and it took the one for a composer it never saw.
+   *
+   * An `aria-label` is an ACCESSIBILITY ANNOTATION, not a contract. The live
+   * DOM this was written from showed the words "Add a note" and "Send without a
+   * note" -- what a member reads on the button -- and a button whose label is
+   * its own visible text needs no aria-label at all, so LinkedIn is free to
+   * ship it without one and evidently does. Matching only the annotation makes
+   * every one of these selectors a bet on markup nobody promised us. Matching
+   * the text as well costs nothing and is what a person looking at the screen
+   * would do.
+   *
+   * `:text-is` rather than `:has-text`: exact, so "Send" cannot match "Send
+   * without a note" and pick the wrong control. `#interop-outlet` stays as the
+   * first alternative because it is the most specific thing we know.
+   */
+  addNoteButton:
+    '#interop-outlet button[aria-label="Add a note"], button[aria-label="Add a note"], #interop-outlet button:text-is("Add a note"), button:text-is("Add a note")',
   noteTextarea:
     '#interop-outlet textarea, textarea#custom-message, textarea[name="message"], textarea[placeholder*="note" i], textarea[aria-label*="note" i]',
   sendInviteButton:
-    '#interop-outlet button[aria-label="Send"], #interop-outlet button:text-is("Send"), button[aria-label="Send invitation"], button[aria-label="Send now"]',
+    '#interop-outlet button[aria-label="Send"], #interop-outlet button:text-is("Send"), button[aria-label="Send invitation"], button[aria-label="Send now"], button:text-is("Send"), button:text-is("Send invitation")',
   sendWithoutNoteButton:
-    '#interop-outlet button[aria-label="Send without a note"], button[aria-label="Send without a note"]',
+    '#interop-outlet button[aria-label="Send without a note"], button[aria-label="Send without a note"], #interop-outlet button:text-is("Send without a note"), button:text-is("Send without a note")',
   /** Open modal. Still visible after "send" means the send did not go through. */
   inviteModal: 'div[role="dialog"].send-invite, div.artdeco-modal[role="dialog"]',
   /** An invite already awaiting their answer. */
@@ -726,6 +750,89 @@ async function present(page: LinkedInPage, selector: string): Promise<boolean> {
   }
 }
 
+/** How long a control that a click was supposed to REVEAL is given to appear. */
+const APPEAR_TIMEOUT_MS = 8_000;
+/** How often that wait re-asks. Short enough to cost nothing when it is already there. */
+const APPEAR_POLL_MS = 250;
+
+/**
+ * Wait for `selector` to match something, and say whether it ever did.
+ *
+ * `count()` DOES NOT WAIT, AND THAT IS A TRAP THIS FILE FELL INTO. Playwright's
+ * auto-waiting lives on the ACTIONS -- `click`, `fill` -- and a plain `count()`
+ * is a synchronous question about the DOM as it is at this instant. Every
+ * `present()` call above is fine on that basis: they read state that is already
+ * on the page, and "is a limit wall showing" is a question about now.
+ *
+ * A CONTROL THE PREVIOUS CLICK WAS SUPPOSED TO CREATE IS A DIFFERENT QUESTION.
+ * `sendInvite` clicks Connect and then asks whether the composer is there, with
+ * a fixed one-second `settle()` in between -- a number chosen for a rendered
+ * page to stop moving, not for a modal to be built, mounted into a shadow root
+ * and painted. When LinkedIn is a little slower than that second, `count()`
+ * returns 0 and the driver concludes the composer does not exist, which is how
+ * an invite that was one animation frame away from working got filed as an
+ * unknown outcome for a human to settle.
+ *
+ * So: ask repeatedly until it appears or the deadline passes. The cost when the
+ * control is already there is one `count()`, the same as before.
+ */
+async function waitForAny(
+  page: LinkedInPage,
+  selector: string,
+  timeoutMs = APPEAR_TIMEOUT_MS
+): Promise<number> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  for (;;) {
+    let found = 0;
+    try {
+      found = await page.locator(selector).count();
+    } catch {
+      // Same reading `present()` takes: a locator that cannot be evaluated is
+      // not a control that is there.
+      found = 0;
+    }
+    if (found > 0) return found;
+    if (Date.now() >= deadline) return 0;
+    await page.waitForTimeout(APPEAR_POLL_MS);
+  }
+}
+
+/**
+ * What IS on screen when the composer we expected is not.
+ *
+ * A REFUSAL THAT NAMES ONLY WHAT IT WANTED IS UNDIAGNOSABLE. "[five textarea
+ * selectors] did not match" tells whoever reads the ledger that LinkedIn
+ * changed something and nothing whatsoever about what it changed it TO, so the
+ * next step is always to go and drive the page by hand. These probes cost one
+ * `count()` each, run only on the failure path, and turn the next occurrence
+ * into a repair instead of an investigation.
+ *
+ * Deliberately generic: a dialog, the interop outlet itself, any textarea, any
+ * button reading Send. If the outlet is present and the button is not, the
+ * composer moved inside it; if nothing is present, the click never opened
+ * anything.
+ */
+async function describeComposer(page: LinkedInPage): Promise<string> {
+  const probes: Array<[string, string]> = [
+    ['dialog', 'div[role="dialog"]'],
+    ['interop outlet', '#interop-outlet'],
+    ['any textarea', 'textarea'],
+    ['any Send button', 'button:text-is("Send")'],
+    ['any Add a note button', 'button:text-is("Add a note")']
+  ];
+  const seen: string[] = [];
+  for (const [label, selector] of probes) {
+    let count = 0;
+    try {
+      count = await page.locator(selector).count();
+    } catch {
+      count = 0;
+    }
+    seen.push(`${label}: ${count}`);
+  }
+  return seen.join(', ');
+}
+
 /**
  * The three "stop now" reads, done BEFORE anything is clicked.
  *
@@ -801,8 +908,18 @@ function isResult(value: { url: string } | LinkedInDriverResult): value is Linke
 export async function sendInvite(
   page: LinkedInPage,
   target: string,
-  note?: string
+  note?: string,
+  /*
+   * The composer deadline, injected exactly as `dayShape` is in `pacing.ts`:
+   * production never passes it and gets `APPEAR_TIMEOUT_MS`. A test asserting
+   * that a control NEVER appears would otherwise spend the full eight seconds
+   * proving it, per assertion, against a fake page whose `waitForTimeout`
+   * returns instantly -- a busy-wait that tests nothing and costs the suite
+   * more than the feature.
+   */
+  options: { appearTimeoutMs?: number } = {}
 ): Promise<LinkedInDriverResult> {
+  const appearTimeoutMs = options.appearTimeoutMs ?? APPEAR_TIMEOUT_MS;
   const opened = await openProfile(page, target);
   if (isResult(opened)) return opened;
   const { url } = opened;
@@ -865,14 +982,18 @@ export async function sendInvite(
     }
 
     if (note && note.trim()) {
+      // WAITED FOR, NOT SAMPLED. The Connect click above is what creates this
+      // control; asking `count()` once, one second later, is asking whether
+      // LinkedIn happened to be finished. See `waitForAny`.
+      const hadAddNoteControl =
+        (await waitForAny(page, SELECTORS.addNoteButton, appearTimeoutMs)) > 0;
       const addNote = page.locator(SELECTORS.addNoteButton);
-      const hadAddNoteControl = (await addNote.count()) > 0;
       if (hadAddNoteControl) {
         await hoverClick(page, addNote.first(), `${url}#add-note`, CLICK_TIMEOUT_MS);
         await settle(page, `${url}#note-modal`);
       }
       const textarea = page.locator(SELECTORS.noteTextarea);
-      if ((await textarea.count()) === 0) {
+      if ((await waitForAny(page, SELECTORS.noteTextarea, appearTimeoutMs)) === 0) {
         // Seeing and clicking Add a note is positive evidence that the invite
         // has NOT been sent yet. If the composer then drifts, classify it as a
         // definite selector miss so the claim can be retried after a repair
@@ -882,7 +1003,7 @@ export async function sendInvite(
         // completed a no-modal flow.
         return fail(
           hadAddNoteControl ? 'selector_drift' : 'unknown',
-          `The invite composer for ${url} opened but ${SELECTORS.noteTextarea} did not match, so the approved note could not be typed. Nothing was sent${hadAddNoteControl ? '.' : ' that Trevra can prove.'}`
+          `The invite composer for ${url} opened but ${SELECTORS.noteTextarea} did not match, so the approved note could not be typed. Nothing was sent${hadAddNoteControl ? '.' : ' that Trevra can prove.'} On screen at the time -- ${await describeComposer(page)}.`
         );
       }
       // Typed, not pasted -- and byte for byte either way. See `typeLike`.
@@ -896,17 +1017,21 @@ export async function sendInvite(
       // from the one that was approved, so nothing below may run until it is.
       await typeLike(page, textarea.first(), note, `${url}#note`, CLICK_TIMEOUT_MS);
       const send = page.locator(SELECTORS.sendInviteButton);
-      if ((await send.count()) === 0)
+      if ((await waitForAny(page, SELECTORS.sendInviteButton, appearTimeoutMs)) === 0)
         return fail(
           'unknown',
-          `No send control matched in the open invite modal for ${url}. Settle it by hand.`
+          `No send control matched in the open invite modal for ${url}. Settle it by hand. On screen at the time -- ${await describeComposer(page)}.`
         );
       await hoverClick(page, send.first(), `${url}#send-note`, CLICK_TIMEOUT_MS);
     } else {
+      // The composer is what the Connect click opens, so the FIRST of these two
+      // waits; once it has resolved, the second is a question about a modal
+      // that is already rendered and needs no deadline of its own.
+      const hasWithoutNote =
+        (await waitForAny(page, SELECTORS.sendWithoutNoteButton, appearTimeoutMs)) > 0;
       const withoutNote = page.locator(SELECTORS.sendWithoutNoteButton);
-      const send =
-        (await withoutNote.count()) > 0 ? withoutNote : page.locator(SELECTORS.sendInviteButton);
-      if ((await send.count()) === 0) {
+      const send = hasWithoutNote ? withoutNote : page.locator(SELECTORS.sendInviteButton);
+      if (!hasWithoutNote && (await send.count()) === 0) {
         // Some profiles send on the first click with no modal at all. If no
         // modal is on screen either, that is what happened.
         if (!(await present(page, SELECTORS.inviteModal))) {
@@ -919,7 +1044,7 @@ export async function sendInvite(
         }
         return fail(
           'unknown',
-          `An invite modal is open for ${url} with no send control matched. Settle it by hand.`
+          `An invite modal is open for ${url} with no send control matched. Settle it by hand. On screen at the time -- ${await describeComposer(page)}.`
         );
       }
       await hoverClick(page, send.first(), `${url}#send`, CLICK_TIMEOUT_MS);

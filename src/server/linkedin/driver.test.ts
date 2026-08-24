@@ -178,7 +178,7 @@ describe('connection request composer', () => {
       waitForTimeout: async () => {}
     };
 
-    const result = await sendInvite(page, TARGET, 'Hi there');
+    const result = await sendInvite(page, TARGET, 'Hi there', { appearTimeoutMs: 20 });
 
     expect(result).toMatchObject({ ok: false, failureKind: 'selector_drift' });
     expect(clicked).toContain(SELECTORS.connectButton);
@@ -190,6 +190,117 @@ describe('connection request composer', () => {
     expect(SELECTORS.addNoteButton).toContain('#interop-outlet');
     expect(SELECTORS.noteTextarea).toContain('#interop-outlet textarea');
     expect(SELECTORS.sendInviteButton).toContain('#interop-outlet');
+  });
+
+  /**
+   * An `aria-label` is an annotation LinkedIn is free not to ship. Production
+   * on 2026-08-24 refused byronvoorbach with "the composer opened but the
+   * textarea did not match", and the WORDING of that refusal proves the Add a
+   * note button had not matched either -- so the composer selectors were
+   * betting on markup nobody promised. Every composer control now also matches
+   * the words a member actually reads on the button.
+   */
+  it('matches the composer controls by their visible text, not only by aria-label', () => {
+    expect(SELECTORS.addNoteButton).toContain(':text-is("Add a note")');
+    expect(SELECTORS.sendWithoutNoteButton).toContain(':text-is("Send without a note")');
+    expect(SELECTORS.sendInviteButton).toContain(':text-is("Send")');
+  });
+
+  /**
+   * THE OTHER HALF OF THE SAME FAILURE. `count()` does not wait -- Playwright's
+   * auto-waiting is on the actions -- so the composer was being asked about one
+   * fixed second after the Connect click that creates it. This fake makes the
+   * composer appear only on the third look, which is exactly the shape of a
+   * modal that is a frame or two slower than `settle()`, and the invite must
+   * still go out.
+   */
+  it('waits for a composer that renders after the settle rather than calling it missing', async () => {
+    let current = TARGET;
+    let looks = 0;
+    const filled: string[] = [];
+    const clicked: string[] = [];
+    const waits: number[] = [];
+    const locator = (selector: string): LinkedInLocator => {
+      const self: LinkedInLocator = {
+        count: async () => {
+          if (selector === SELECTORS.connectButton) return 1;
+          if (selector === SELECTORS.addNoteButton) {
+            looks += 1;
+            return looks >= 3 ? 1 : 0;
+          }
+          if (selector === SELECTORS.noteTextarea) return 1;
+          if (selector === SELECTORS.sendInviteButton) return 1;
+          return 0;
+        },
+        first: () => self,
+        click: async () => {
+          clicked.push(selector);
+        },
+        fill: async (value: string) => {
+          filled.push(value);
+        },
+        textContent: async () => null
+      };
+      return self;
+    };
+    const page: LinkedInPage = {
+      goto: async (url: string) => {
+        current = url;
+      },
+      url: () => current,
+      locator,
+      waitForTimeout: async (ms: number) => {
+        waits.push(ms);
+      }
+    };
+
+    const result = await sendInvite(page, TARGET, 'Hi Byron, thanks for connecting.');
+
+    expect(result).toMatchObject({ ok: true, failureKind: null });
+    expect(looks).toBeGreaterThanOrEqual(3);
+    expect(clicked).toContain(SELECTORS.addNoteButton);
+    expect(filled).toEqual(['Hi Byron, thanks for connecting.']);
+  });
+
+  /**
+   * And when it genuinely never appears, the refusal has to be diagnosable.
+   * "[five selectors] did not match" said nothing about what LinkedIn had put
+   * there instead, so every occurrence began with a human driving the page by
+   * hand. The probe counts are cheap and only run on this path.
+   */
+  it('reports what was on screen when the composer never appears', async () => {
+    let current = TARGET;
+    const locator = (selector: string): LinkedInLocator => {
+      const self: LinkedInLocator = {
+        count: async () => {
+          if (selector === SELECTORS.connectButton) return 1;
+          if (selector === '#interop-outlet') return 1;
+          if (selector === 'div[role="dialog"]') return 1;
+          return 0;
+        },
+        first: () => self,
+        click: async () => {},
+        fill: async () => {},
+        textContent: async () => null
+      };
+      return self;
+    };
+    const page: LinkedInPage = {
+      goto: async (url: string) => {
+        current = url;
+      },
+      url: () => current,
+      locator,
+      waitForTimeout: async () => {}
+    };
+
+    const result = await sendInvite(page, TARGET, 'Hi there', { appearTimeoutMs: 20 });
+
+    expect(result.ok).toBe(false);
+    expect(result.detail).toContain('On screen at the time');
+    expect(result.detail).toContain('interop outlet: 1');
+    expect(result.detail).toContain('dialog: 1');
+    expect(result.detail).toContain('any textarea: 0');
   });
 
   /**
