@@ -818,7 +818,36 @@ async function describeComposer(page: LinkedInPage): Promise<string> {
     ['interop outlet', '#interop-outlet'],
     ['any textarea', 'textarea'],
     ['any Send button', 'button:text-is("Send")'],
-    ['any Add a note button', 'button:text-is("Add a note")']
+    ['any Add a note button', 'button:text-is("Add a note")'],
+    /*
+     * THE TWO PROBES THAT TELL US WHERE TO LOOK NEXT, and the reason this
+     * function grew a second time.
+     *
+     * Its first run in production (atolbs, 2026-08-24) reported `interop
+     * outlet: 1` with every other count 0 -- including a bare
+     * `div[role="dialog"]` and a bare `button:text-is("Add a note")` after an
+     * eight-second wait. The outlet exists and nothing this page can see is
+     * inside it, which leaves exactly two explanations, and they need opposite
+     * fixes:
+     *
+     *   AN IFRAME. A Playwright locator is scoped to ONE frame, so `#interop-
+     *   outlet` matching the container while its contents match nothing is the
+     *   signature of a document boundary. The repair is a frame locator, and
+     *   `iframes under the outlet` is what proves it.
+     *
+     *   A CLOSED SHADOW ROOT. Playwright pierces OPEN shadow roots -- that is
+     *   why the light-DOM alternatives in these selectors would have worked if
+     *   the root were open -- and cannot pierce a closed one at all. No
+     *   selector will ever reach that, and the repair is a different route into
+     *   the composer entirely.
+     *
+     * If both counts come back 0, the composer never opened and the Connect
+     * click is what to look at, not the composer at all. One `count()` each,
+     * only on the path that already failed, and the next occurrence decides
+     * between three answers instead of leaving all three open.
+     */
+    ['any iframe', 'iframe'],
+    ['iframes under the outlet', '#interop-outlet iframe']
   ];
   const seen: string[] = [];
   for (const [label, selector] of probes) {
