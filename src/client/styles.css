@@ -3148,7 +3148,9 @@ button:disabled {
   border-top: 1px solid var(--line);
   box-shadow: 0 -8px 20px -14px rgba(9, 16, 12, 0.55);
 }
-.mobile-tabbar button {
+/* `> *` rather than `button`: these cells are anchors now, because each one is
+   the address of a screen. See NavButton in App.tsx. */
+.mobile-tabbar > * {
   min-width: 0;
   min-height: 44px;
   display: grid;
@@ -3166,19 +3168,20 @@ button:disabled {
   font-weight: 700;
   line-height: 1.1;
   white-space: nowrap;
+  text-decoration: none;
   cursor: pointer;
 }
-.mobile-tabbar button > span {
+.mobile-tabbar > * > span {
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.mobile-tabbar button svg {
+.mobile-tabbar > * svg {
   width: 19px;
   height: 19px;
   flex: none;
 }
-.mobile-tabbar button.is-active {
+.mobile-tabbar > .is-active {
   background: var(--t-surface);
   color: var(--green);
   box-shadow: var(--t-shadow-sm);
@@ -3321,7 +3324,7 @@ button:disabled {
     padding-left: 4px;
     padding-right: 4px;
   }
-  .mobile-tabbar button {
+  .mobile-tabbar > * {
     padding-left: 2px;
     padding-right: 2px;
   }
@@ -8671,6 +8674,11 @@ button:disabled {
 .outreach-nav > * {
   display: inline-flex;
   align-items: center;
+  /* The most-used control on either surface owed the same 40/44px floor every
+     other control in this file honours; 9px of padding on 12px type computed
+     to about 34. */
+  min-height: var(--t-tap);
+  box-sizing: border-box;
   gap: 7px;
   margin-bottom: -3px;
   padding: 9px 12px;
@@ -9230,6 +9238,48 @@ button:disabled {
   border-color: var(--t-line-strong);
   box-shadow: var(--t-shadow-sm);
 }
+/* A CAMPAIGN THAT NEEDS A PERSON SAYS SO BEFORE IT IS READ.
+   The health row inside carries the sentence; this carries the fact that there
+   is one, down the full height of the card, so a list of five is scannable
+   without opening any of them. */
+.mgr-campaign.has-issues {
+  border-left: 3px solid var(--amber);
+}
+/* "N more" is a control, not a badge: it opens the campaign on its execution
+   section, which is where the rest of the blockers are written out. It used to
+   be a bare chip that looked like it should do this and did nothing. */
+.mgr-chip-button {
+  border: 1px solid var(--line);
+  background: var(--t-surface-2);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-text-chip);
+  font-weight: var(--t-w-strong);
+  cursor: pointer;
+}
+.mgr-chip-button:hover {
+  border-color: var(--t-line-strong);
+  color: var(--green);
+}
+.mgr-chip-button:focus-visible {
+  outline: 2px solid var(--t-focus);
+  outline-offset: 2px;
+}
+/* The exact text an approval is approving. Quoted, never truncated, and never
+   collapsed: a confirmation that hides half the payload is not one. */
+.mgr-approval-body {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+  color: var(--ink);
+  font-size: var(--t-text-md);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .mgr-campaign-head {
   display: flex;
   gap: 12px;
@@ -9253,8 +9303,8 @@ button:disabled {
   cursor: pointer;
 }
 .mgr-toggle strong {
-  font-size: var(--t-text-md);
-  font-weight: 700;
+  font-size: var(--t-text-lg);
+  font-weight: var(--t-w-bold);
 }
 .mgr-toggle > svg {
   flex: none;
@@ -9304,7 +9354,7 @@ button:disabled {
   min-width: 0;
 }
 .mgr-campaign-health strong {
-  font-size: var(--t-text-xs);
+  font-size: var(--t-text-md);
 }
 .mgr-campaign-health span:not(.li-chip) {
   max-width: var(--t-measure);
@@ -9346,7 +9396,7 @@ button:disabled {
 .mgr-workflow-stage > small {
   grid-column: 1 / -1;
   color: var(--muted);
-  font-size: var(--t-text-2xs);
+  font-size: var(--t-text-chip);
 }
 .mgr-workflow-stage.is-pending > small {
   display: none;
@@ -9363,7 +9413,7 @@ button:disabled {
   padding: 0;
   list-style: none;
   color: var(--muted);
-  font-size: var(--t-text-2xs);
+  font-size: var(--t-text-chip);
 }
 /* The only line that is a person's to-do rather than a machine's queue. It has
    to stop reading as "in progress", which is exactly what it did while it was
@@ -11039,26 +11089,21 @@ button:disabled {
   }
 }
 
-/* Outreach simple mode: campaigns + messages + settings, with specialist
-   surfaces under More and only the high-signal campaign data in the main path.
-   Manager-specific overflow (`More results`, `Campaign inputs`, manual-task
-   duplication) stays hidden here; the dedicated inbox and detail toggles keep
-   those controls reachable where they belong. */
-.outreach-simple .section-heading > div > p,
-.outreach-simple .onboarding-head p,
-.outreach-simple .onboarding-steps small,
-.outreach-simple .mgr-preview,
-.outreach-simple .mgr-simple-hide,
-.outreach-simple .mgr-manual-tasks,
-.outreach-simple .li-subhead,
-.outreach-simple .mgr-ab {
-  display: none;
-}
+/* Outreach simple mode: campaigns and messages in the main path, specialist
+   surfaces under More.
+
+   THIS NO LONGER HIDES PANELS, AND THAT IS THE POINT. It used to display:none
+   the manager's `More results` fold, its `Campaign inputs` fold and its
+   duplicate manual-task table -- components that still mounted, still fetched
+   their data, and could not be reached from any route in the app. They are
+   deleted from the manager now, so the rules that hid them went with them. So
+   did the blanket suppression of `.section-heading > div > p`, which took out
+   every explanatory paragraph on the surface, including the only sentence a
+   first-time reader had telling them what this screen does. A rule that hides
+   work is not simplification; it is shipping the work twice and showing it
+   never. */
 .outreach-simple .mgr-split {
   grid-template-columns: minmax(0, 1fr);
-}
-.outreach-simple .mgr-stats .mgr-stat-secondary {
-  display: none;
 }
 .outreach-simple .builder-library-panel > .section-heading {
   display: none;
@@ -11067,11 +11112,7 @@ button:disabled {
   display: none;
 }
 /* Leads and accounts are specialist folds embedded in the campaign route;
-   unlike manager chrome, their explanatory copy and button captions matter. */
-.outreach-simple #leads .section-heading > div > p,
-.outreach-simple #accounts .section-heading > div > p {
-  display: block;
-}
+   unlike manager chrome, their button captions matter. */
 .outreach-simple #leads .panel-footer > span,
 .outreach-simple #accounts .panel-footer > span {
   display: inline;
@@ -11522,11 +11563,20 @@ button:disabled {
 }
 .li-stat-grid span {
   color: var(--muted);
-  font-size: var(--t-text-2xs);
+  font-size: var(--t-text-chip);
 }
 .li-stat-grid strong {
   font-size: var(--t-text-lg);
   font-variant-numeric: tabular-nums;
+}
+/* The two numbers a pipeline is actually read for, at a size that says so.
+   Everything else it counts lives in the fold underneath and explains them. */
+.li-stat-grid-lead {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  margin-bottom: 4px;
+}
+.li-stat-grid-lead strong {
+  font-size: var(--t-text-xl);
 }
 .mgr-wave-list {
   display: grid;

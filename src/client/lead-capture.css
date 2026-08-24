@@ -284,6 +284,49 @@
   color: var(--green);
 }
 
+/* The decisions a submission leads to. Wraps rather than scrolls: a refusal
+   that has scrolled out of reach is a refusal that does not get made. */
+.capture-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid var(--t-line-soft);
+  padding-top: 11px;
+}
+
+.capture-actions .secondary-button {
+  font-size: var(--t-text-xs);
+}
+
+.capture-action-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.capture-action-group > button:first-child {
+  max-width: 190px;
+}
+
+.capture-record dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0 0 11px;
+  font-size: var(--t-text-xs);
+}
+
+.capture-record dt {
+  color: var(--muted);
+}
+
+.capture-record dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 .capture-submission-card details {
   border-top: 1px solid var(--t-line-soft);
   padding-top: 10px;

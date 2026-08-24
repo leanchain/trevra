@@ -27,6 +27,7 @@ import './account-import-workbench.css';
 import { errorMessage } from './LinkedInSafety';
 import { relativeTime } from './LinkedInScreen';
 import { Select } from './ui/primitives';
+import { plural } from './ui/plural';
 import {
   collectPreparedPeople,
   prepareAccountFiles,
@@ -115,7 +116,7 @@ const SOURCE_OPTIONS: Array<{ value: AccountSource; label: string }> = [
 /** `+4.5` / `-2`. Sign carried explicitly, because a bare number reads as a total. */
 const signed = (points: number) => (points > 0 ? `+${points}` : String(points));
 
-const ageCopy = (ageDays: number) => (ageDays === 0 ? 'today' : `${ageDays} day(s) old`);
+const ageCopy = (ageDays: number) => (ageDays === 0 ? 'today' : `${plural(ageDays, 'day')} old`);
 
 /** `https://kestrel.dev` for a stored `kestrel.dev`. The domain IS the identity of the row. */
 const siteUrl = (domain: string) => `https://${domain}`;
@@ -217,7 +218,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       }
       setToast(
         imported.created > 0 || (imported.people?.created ?? 0) > 0
-          ? `${imported.created} account(s), ${imported.people?.created ?? 0} person(s) added.`
+          ? `${plural(imported.created, 'account')}, ${plural(imported.people?.created ?? 0, 'person', 'people')} added.`
           : 'All usable accounts and people were already imported.'
       );
       await load();
@@ -292,8 +293,8 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
       setSourceRun(sourced);
       setToast(
         sourced.import.created > 0
-          ? `${sourced.import.created} sourced account(s) added.`
-          : `${sourced.found} candidate(s) found; all usable accounts were already present.`
+          ? `${plural(sourced.import.created, 'sourced account')} added.`
+          : `${plural(sourced.found, 'candidate')} found; all usable accounts were already present.`
       );
       await load();
     } catch (err) {
@@ -323,7 +324,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     setRescoring(true);
     try {
       const { rescored } = await rescoreAccounts();
-      setToast(`${rescored} account(s) rescored.`);
+      setToast(`${plural(rescored, 'account')} rescored.`);
       await load();
       setError('');
     } catch (err) {
@@ -341,7 +342,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
         <section className="page-panel">
           <div className="section-heading">
             <div>
-              <h3 aria-level={2}>{accounts.length} account(s), highest score first</h3>
+              <h3 aria-level={2}>{plural(accounts.length, 'account')}, highest score first</h3>
               <p>Scores use the signals shown under each account. Evidence links to the source.</p>
             </div>
             <div className="acc-heading-actions">
@@ -606,7 +607,7 @@ function AddAccountsForm({
       <div className="panel-footer">
         <span>
           {hasWorkbench
-            ? `${included} reviewed account(s) will be imported. Nothing is contacted.`
+            ? `${plural(included, 'reviewed account')} will be imported. Nothing is contacted.`
             : !text.trim()
               ? 'Paste at least one domain to enable import.'
               : 'Import adds accounts. It does not contact anyone.'}
@@ -734,8 +735,9 @@ function ImportWorkbench({
 
       {contactRows > 0 && (
         <div className="acc-import-notice">
-          <strong>Contact evidence detected in {contactRows} row(s).</strong> Names, emails, and
-          phones are shown with their source, but this account import does not write contacts yet.
+          <strong>Contact evidence detected in {plural(contactRows, 'row')}.</strong> Names, emails,
+          and phones are shown with their source, but this account import does not write contacts
+          yet.
         </div>
       )}
 
@@ -793,11 +795,15 @@ function ImportWorkbench({
         </div>
         {visibleRows.map((row) => {
           const contactBits = [
-            row.contactEvidence.names.length ? `${row.contactEvidence.names.length} name(s)` : '',
-            row.contactEvidence.emails.length
-              ? `${row.contactEvidence.emails.length} email(s)`
+            row.contactEvidence.names.length
+              ? plural(row.contactEvidence.names.length, 'name')
               : '',
-            row.contactEvidence.phones.length ? `${row.contactEvidence.phones.length} phone(s)` : ''
+            row.contactEvidence.emails.length
+              ? plural(row.contactEvidence.emails.length, 'email')
+              : '',
+            row.contactEvidence.phones.length
+              ? plural(row.contactEvidence.phones.length, 'phone')
+              : ''
           ].filter(Boolean);
           return (
             <div
@@ -945,7 +951,12 @@ function ImportWorkbench({
 
       <details className="acc-import-raw">
         <summary>View exact import payload</summary>
-        <textarea readOnly rows={10} value={serializePreparedAccountRows(rows)} />
+        <textarea
+          readOnly
+          rows={10}
+          aria-label="Exact import payload"
+          value={serializePreparedAccountRows(rows)}
+        />
       </details>
     </section>
   );
@@ -1044,7 +1055,7 @@ function SourceAccountsForm({
       {result && (
         <div className="acc-source-result">
           <p className="li-hint">
-            Run <code>{result.runId}</code> found {result.found} candidate(s) through{' '}
+            Run <code>{result.runId}</code> found {plural(result.found, 'candidate')} through{' '}
             {result.providerKey}.
           </p>
           {result.warnings.map((warning, index) => (
@@ -1143,7 +1154,7 @@ function AccountRow({
         {score
           ? score.rationale.summary
           : signals.length > 0
-            ? `${signals.length} signal(s) found. Waiting for a score.`
+            ? `${plural(signals.length, 'signal')} found. Waiting for a score.`
             : 'Not read yet.'}
       </p>
 
@@ -1197,7 +1208,7 @@ function ScorePanel({ score }: { score: AccountScore }) {
   return (
     <div className="acc-why">
       <p className="acc-why-window">
-        {score.distinctKinds} signal type(s) over {rationale.windowDays} days. Scored{' '}
+        {plural(score.distinctKinds, 'signal type')} over {rationale.windowDays} days. Scored{' '}
         {relativeTime(score.computedAt)}.
       </p>
 

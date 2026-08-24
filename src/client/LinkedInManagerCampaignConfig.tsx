@@ -25,6 +25,7 @@ import type { CampaignLaunchPreview, ManagedCampaign } from '../server/linkedin/
 import { errorMessage } from './LinkedInSafety';
 import { useIsWorkspaceOwner } from './auth-client';
 import { Select } from './ui/primitives';
+import { are, plural } from './ui/plural';
 
 /**
  * Creating a campaign, with the consequences shown before the button.
@@ -144,8 +145,6 @@ const ACTION_LABEL: Record<WorkflowStep['action'], string> = {
   manual_comment: 'Manual comment checkpoint'
 };
 
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
 const clock = (minute: number) =>
   `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 const stepHours = (step: WorkflowStep) =>
@@ -454,7 +453,7 @@ export function LinkedInManagerCampaignConfig({
     } else {
       setListId('');
       setError(
-        'That campaign belongs to another LinkedIn account. Switch accounts in Outreach → Settings to reuse its lead list.'
+        'That campaign belongs to another LinkedIn account. Switch accounts in Setup → Workspace to reuse its lead list.'
       );
     }
   }, [prefill, activeSeatKey]);
@@ -615,7 +614,7 @@ export function LinkedInManagerCampaignConfig({
     );
   if (workflowNeedsFindEmail && launchPreview?.enrichmentCredits.capped)
     warnings.push(
-      `The Find Email stage is estimated to need ${launchPreview.enrichmentCredits.estimatedProviderLookups} provider credit(s), above the campaign cap of ${launchPreview.enrichmentCredits.cap ?? 0}. Leads beyond the cap will take the Email not found/failure path until the cap is raised while paused.`
+      `The Find Email stage is estimated to need ${plural(launchPreview.enrichmentCredits.estimatedProviderLookups, 'provider credit')}, above the campaign cap of ${launchPreview.enrichmentCredits.cap ?? 0}. Leads beyond the cap will take the Email not found/failure path until the cap is raised while paused.`
     );
 
   const patchMailbox = (id: string, patch: Partial<CampaignMailbox>) =>
@@ -745,9 +744,12 @@ export function LinkedInManagerCampaignConfig({
       {missing ? (
         <div className="mgr-empty">
           <h4 aria-level={3}>Add a LinkedIn account first</h4>
-          <p>A campaign sends from a real LinkedIn account, with its own hours and limits.</p>
+          <p>
+            A campaign sends from a real LinkedIn account, with its own hours and limits. Add one in
+            Setup · Workspace.
+          </p>
           <div className="mgr-actions">
-            <a className="primary-button" href="/outreach/settings">
+            <a className="primary-button" href="/setup/workspace">
               Add a LinkedIn account
             </a>
           </div>
@@ -1355,10 +1357,14 @@ export function LinkedInManagerCampaignConfig({
                 </div>
                 {launchPreview && workflowNeedsFindEmail && (
                   <div className="mgr-preview-note">
-                    <b>Email enrichment:</b> {launchPreview.enrichmentCredits.alreadyAvailable}{' '}
-                    lead(s) already have email;{' '}
-                    {launchPreview.enrichmentCredits.estimatedProviderLookups} provider lookup(s)
-                    are estimated.
+                    <b>Email enrichment:</b>{' '}
+                    {plural(launchPreview.enrichmentCredits.alreadyAvailable, 'lead')} already{' '}
+                    {launchPreview.enrichmentCredits.alreadyAvailable === 1 ? 'has' : 'have'} email;{' '}
+                    {plural(
+                      launchPreview.enrichmentCredits.estimatedProviderLookups,
+                      'provider lookup'
+                    )}{' '}
+                    {are(launchPreview.enrichmentCredits.estimatedProviderLookups)} estimated.
                     {launchPreview.enrichmentCredits.cap !== null && (
                       <>
                         {' '}

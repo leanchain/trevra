@@ -1895,6 +1895,7 @@ export function LinkedInManagerWorkflowConfig({
                     <button
                       className="icon-button"
                       type="button"
+                      aria-label="Delete workflow"
                       title="Delete workflow"
                       onClick={() => void remove(workflow)}
                     >

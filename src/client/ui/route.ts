@@ -124,9 +124,36 @@ function announce(): void {
   for (const notify of [...subscribers]) notify();
 }
 
+/**
+ * Say so, in development, when the shell sends itself somewhere that is not a
+ * route.
+ *
+ * `parseRoute` answers an unknown second segment by normalising it away rather
+ * than failing. That is right for a stale bookmark and wrong for a link we
+ * shipped ourselves: the outreach `settings` sub was a removed alias, and
+ * every link still pointing at it landed on `/outreach` with nothing said,
+ * for months.
+ * This makes that class of mistake audible at the moment the navigation is
+ * requested, and names the path so the fix is obvious.
+ *
+ * IT DOES NOT THROW AND IT DOES NOT NORMALISE. The silent normalisation is a
+ * contract -- `route.test.ts` asserts it for removed aliases -- and stays
+ * exactly as it is. This only speaks.
+ */
+function warnUnroutablePath(next: string): void {
+  if (!import.meta.env.DEV) return;
+  const pathname = next.split('?')[0];
+  if (isAppPath(pathname)) return;
+  console.error(
+    `[route] "${pathname}" is not a route. It will be normalised to a different screen; ` +
+      'point the link at a real path instead.'
+  );
+}
+
 /** Go to a path without a page load. */
 export function navigate(path: string): void {
   const next = path.startsWith('/') ? path : `/${path}`;
+  warnUnroutablePath(next);
   if (window.location.pathname + window.location.search === next) return;
   window.history.pushState(null, '', next);
   announce();
@@ -135,6 +162,7 @@ export function navigate(path: string): void {
 /** Replace the current in-app address without leaving it in Back history. */
 export function replaceNavigate(path: string): void {
   const next = path.startsWith('/') ? path : `/${path}`;
+  warnUnroutablePath(next);
   if (window.location.pathname + window.location.search === next) return;
   window.history.replaceState(null, '', next);
   announce();

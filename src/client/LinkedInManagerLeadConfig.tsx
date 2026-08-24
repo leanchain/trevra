@@ -32,6 +32,7 @@ import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { errorMessage } from './LinkedInSafety';
 import { ActionMenu } from './ui/action-menu';
 import { Select } from './ui/primitives';
+import { pluralGrouped } from './ui/plural';
 /**
  * Building a lead list, and living with one afterwards.
  *
@@ -83,9 +84,6 @@ const SOURCE_LABELS: Record<LeadListSourceKind, string> = {
   profile_urls: 'LinkedIn profile URLs',
   signal: 'External signal'
 };
-
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count.toLocaleString()} ${count === 1 ? one : many}`;
 
 const formatSize = (bytes: number) =>
   bytes < 1024 * 1024
@@ -496,7 +494,7 @@ export function LinkedInManagerLeadConfig({
       )) as ImportReport;
       setToast(
         counts.inserted > 0
-          ? `${plural(counts.inserted, 'lead')} added to “${list.name}”. Campaigns can enrol from it now.`
+          ? `${pluralGrouped(counts.inserted, 'lead')} added to “${list.name}”. Campaigns can enrol from it now.`
           : `Nothing new was added to “${list.name}” — every usable row was already there.`
       );
       // The file is done. A second import is a deliberate act, not a stray click.
@@ -545,7 +543,7 @@ export function LinkedInManagerLeadConfig({
       const counts = await importLinkedInManagerProfileUrls(list.id, profileUrls, activeSeatKey);
       setToast(
         counts.inserted > 0 || counts.reused > 0
-          ? `${plural(counts.inserted + counts.reused, 'profile')} added to “${list.name}”.${counts.rejected.length ? ` ${plural(counts.rejected.length, 'entry')} rejected.` : ''}`
+          ? `${pluralGrouped(counts.inserted + counts.reused, 'profile')} added to “${list.name}”.${counts.rejected.length ? ` ${pluralGrouped(counts.rejected.length, 'entry')} rejected.` : ''}`
           : `Nothing new was added to “${list.name}”.`
       );
       setProfileUrls('');
@@ -795,7 +793,7 @@ export function LinkedInManagerLeadConfig({
                 <option value="new">A new list…</option>
                 {lists.map((list) => (
                   <option key={list.id} value={list.id}>
-                    {list.name} · {plural(list.leadCount, 'lead')}
+                    {list.name} · {pluralGrouped(list.leadCount, 'lead')}
                   </option>
                 ))}
               </Select>
@@ -820,7 +818,7 @@ export function LinkedInManagerLeadConfig({
             <strong>{file ? file.name : 'Drop a CSV here'}</strong>
             <p>
               {file
-                ? `${formatSize(file.size)}${preview ? ` · ${plural(preview.acceptedCount, 'usable row')}` : busy === 'preview' ? ' · reading it…' : ''}`
+                ? `${formatSize(file.size)}${preview ? ` · ${pluralGrouped(preview.acceptedCount, 'usable row')}` : busy === 'preview' ? ' · reading it…' : ''}`
                 : 'Or choose one below. Up to 2 MB, .csv only — a file dropped here is read, not stored.'}
             </p>
           </div>
@@ -919,7 +917,7 @@ export function LinkedInManagerLeadConfig({
 
         {preview && preview.rejectedCount > 0 && (
           <div className="lead-section">
-            <h4>{plural(preview.rejectedCount, 'row')} will not be imported</h4>
+            <h4>{pluralGrouped(preview.rejectedCount, 'row')} will not be imported</h4>
             <p className="li-hint">
               Fix them in the file and drop it again, or import the rest and leave them. Row numbers
               count the heading as row 1.
@@ -944,7 +942,8 @@ export function LinkedInManagerLeadConfig({
             </div>
             {preview.rejectedCount > 8 && (
               <p className="li-hint">
-                {plural(preview.rejectedCount - 8, 'other row')} for the same kinds of reason.
+                {pluralGrouped(preview.rejectedCount - 8, 'other row')} for the same kinds of
+                reason.
               </p>
             )}
           </div>
@@ -954,7 +953,7 @@ export function LinkedInManagerLeadConfig({
           <span title={blocker || undefined}>
             {blocker ||
               (preview
-                ? `${plural(preview.acceptedCount, 'lead')} ready for ${destination === 'new' ? (newName.trim() ? `“${newName.trim()}”` : 'a new list') : `“${destinationList?.name ?? 'this list'}”`}.`
+                ? `${pluralGrouped(preview.acceptedCount, 'lead')} ready for ${destination === 'new' ? (newName.trim() ? `“${newName.trim()}”` : 'a new list') : `“${destinationList?.name ?? 'this list'}”`}.`
                 : 'Reading a file changes nothing. Importing writes the leads and contacts nobody.')}
           </span>
           <button
@@ -965,7 +964,7 @@ export function LinkedInManagerLeadConfig({
             onClick={() => void runImport()}
           >
             {busy === 'import' ? <LoaderCircle className="spin" size={14} /> : <Upload size={14} />}
-            {preview ? ` Import ${plural(preview.acceptedCount, 'lead')}` : ' Import'}
+            {preview ? ` Import ${pluralGrouped(preview.acceptedCount, 'lead')}` : ' Import'}
           </button>
         </div>
 
@@ -1100,7 +1099,7 @@ export function LinkedInManagerLeadConfig({
                   >
                     {lists.map((list) => (
                       <option key={list.id} value={list.id}>
-                        {list.name} · {plural(list.leadCount, 'lead')}
+                        {list.name} · {pluralGrouped(list.leadCount, 'lead')}
                       </option>
                     ))}
                   </Select>
@@ -1134,11 +1133,11 @@ export function LinkedInManagerLeadConfig({
                     short and says by how much. Contacts come back oldest first,
                     which is what makes "the first" the right word for them. */}
                   <p className="li-hint">
-                    {plural(filtered.length, 'lead')}
-                    {term ? ` of ${plural(contacts.length, 'lead')} read` : ''} in “
+                    {pluralGrouped(filtered.length, 'lead')}
+                    {term ? ` of ${pluralGrouped(contacts.length, 'lead')} read` : ''} in “
                     {openMeta?.name ?? 'this list'}”.
                     {contactTotal > contacts.length &&
-                      ` The first ${contacts.length.toLocaleString()} of ${plural(contactTotal, 'lead')} are shown — one read of a list returns no more than that, and Find someone searches the ones it returned.`}
+                      ` The first ${contacts.length.toLocaleString()} of ${pluralGrouped(contactTotal, 'lead')} are shown — one read of a list returns no more than that, and Find someone searches the ones it returned.`}
                   </p>
                   {draft && (
                     <div className="lead-editor" ref={editorRef}>

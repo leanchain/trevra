@@ -206,6 +206,26 @@ export function App() {
   const [needsAuth, setNeedsAuth] = useState<boolean | null>(null);
   const [route, go] = useRoute();
 
+  /*
+   * A ROUTE CHANGE HAS TO LAND SOMEWHERE.
+   *
+   * `navigate` replaced the whole main region and moved nothing. A keyboard or
+   * screen-reader user who activated a nav item stayed parked on that nav
+   * item, with no announcement that the screen behind it had changed and no
+   * way into the new content but to tab past the rest of the sidebar. `main`
+   * already carries `tabIndex={-1}` for the skip link above; this hands it the
+   * same focus on every in-app navigation. The first render is skipped, so a
+   * fresh page load leaves focus where the browser put it.
+   */
+  const settledFirstRoute = useRef(false);
+  useEffect(() => {
+    if (!settledFirstRoute.current) {
+      settledFirstRoute.current = true;
+      return;
+    }
+    document.getElementById('main')?.focus({ preventScroll: true });
+  }, [route.path]);
+
   const [busyId, setBusyId] = useState<string | null>(null);
   const [toast, setToastState] = useState<ToastMessage | null>(null);
   const [overlay, setOverlay] = useState<'help' | 'shortcuts' | 'jump' | null>(null);
@@ -338,7 +358,7 @@ export function App() {
               active={route.section === item.section}
               icon={item.icon}
               label={item.label}
-              onClick={() => go(item.path)}
+              href={item.path}
             />
           ))}
         </nav>
@@ -381,16 +401,15 @@ export function App() {
 
       <nav className="mobile-tabbar" aria-label="Sections">
         {NAV_ITEMS.map((item) => (
-          <button
+          <a
             key={item.section}
-            type="button"
+            href={item.path}
             className={route.section === item.section ? 'is-active' : undefined}
             aria-current={route.section === item.section ? 'page' : undefined}
-            onClick={() => go(item.path)}
           >
             {item.icon}
             <span>{item.label}</span>
-          </button>
+          </a>
         ))}
       </nav>
 
@@ -520,15 +539,14 @@ function SetupView({
     <div className="page-stack">
       <nav className="setup-nav" aria-label="Setup sections">
         {SETUP_TABS.map((tab) => (
-          <button
+          <a
             key={tab.path}
-            type="button"
+            href={tab.path}
             className={tab.sub === sub ? 'is-active' : undefined}
             aria-current={tab.sub === sub ? 'page' : undefined}
-            onClick={() => onNavigate(tab.path)}
           >
             {tab.label}
-          </button>
+          </a>
         ))}
       </nav>
 
@@ -2970,26 +2988,36 @@ function WorkspaceSwitcher({
   );
 }
 
+/*
+ * A DESTINATION IS A LINK.
+ *
+ * These were `<button onClick={go(path)}>`, which meant the five places this
+ * app has could not be middle-clicked, cmd-clicked, opened in a second tab or
+ * copied as an address -- and carried `aria-current="page"`, a link semantic,
+ * on an element that was not one. The shell already intercepts in-app anchor
+ * clicks in one place (`ui/route.ts`), so an `<a href>` still navigates
+ * without a page load; it just also behaves like the address it is.
+ */
 function NavButton({
   active,
   icon,
   label,
-  onClick
+  href
 }: {
   active: boolean;
   icon: React.ReactNode;
   label: string;
-  onClick: () => void;
+  href: string;
 }) {
   return (
-    <button
+    <a
       className={`nav-item ${active ? 'active' : ''}`}
       aria-current={active ? 'page' : undefined}
-      onClick={onClick}
+      href={href}
     >
       {icon}
       {label}
-    </button>
+    </a>
   );
 }
 
@@ -3000,7 +3028,6 @@ function viewTitle(route: Route): string {
     if (route.sub === 'inbox') return 'Messages';
     if (route.sub === 'opportunities') return 'Opportunities';
     if (route.sub === 'posts') return 'Scheduled posts';
-    if (route.sub === 'settings') return 'Outreach settings';
     if (route.sub === 'new') return 'New campaign';
     if (route.sub === 'campaign') return 'Campaign';
     if (route.sub === 'workflow') return 'Campaign workflow';

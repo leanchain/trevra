@@ -126,7 +126,7 @@ export async function getToday(
       priority: 10,
       title: `${label} needs attention`,
       detail: reason || `LinkedIn sending is ${posture}.`,
-      href: '/outreach/settings',
+      href: '/setup/workspace',
       observedAt: iso(row.updated_at, now),
       reference: { type: 'linkedin_seat', id: String(row.seat_key ?? 'owner') },
       metadata: { posture }

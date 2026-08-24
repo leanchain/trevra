@@ -1,6 +1,7 @@
 import type { CampaignQueueSummary } from '../server/linkedin/managed-campaigns';
 import type { LinkedInCampaignExecution } from '../server/linkedin/execution-state';
 import type { LinkedInCompanionStatus, LinkedInWorkerStatus } from './api';
+import { are, plural } from './ui/plural';
 
 /* ---------------------------------------------------------------------------
  * ONE SENTENCE, AND IT HAS TO BE THE TRUE ONE.
@@ -119,10 +120,6 @@ function titleKind(kind: string | null): string {
   return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
-function plural(count: number, word: string): string {
-  return `${count} ${word}${count === 1 ? '' : 's'}`;
-}
-
 /**
  * The clock an operator would read off the wall NEXT TO THE ACCOUNT, not the
  * one on their own desk. A cooldown is a fact about the seat's day -- its
@@ -228,12 +225,12 @@ export function campaignExecutionBlocker(
       ? {
           kind: 'companion-offline',
           title: 'No paired computer',
-          detail: `${due} planned action(s) are due, but no computer is paired with this workspace, so no browser can claim them.`
+          detail: `${plural(due, 'planned action')} ${are(due)} due, but no computer is paired with this workspace, so no browser can claim the work.`
         }
       : {
           kind: 'companion-offline',
           title: 'Paired computer / companion offline',
-          detail: `${due} planned action(s) are due, but the paired computer is not currently connected to Trevra, so no browser can claim them.`
+          detail: `${plural(due, 'planned action')} ${are(due)} due, but the paired computer is not currently connected to Trevra, so no browser can claim the work.`
         };
 
   // (2) A visible Chrome window is waiting for a person. Both halves of the
@@ -249,8 +246,8 @@ export function campaignExecutionBlocker(
           : 'LinkedIn recovery in progress',
       detail:
         seatRecovery.status === 'verified'
-          ? `${due} planned action(s) are due. The LinkedIn session is healthy, but Trevra intentionally keeps background execution paused until the visible recovery Chrome window closes.`
-          : `${due} planned action(s) are due, but the visible recovery window is still completing sign-in or verification. No campaign action can run until recovery finishes.`
+          ? `${plural(due, 'planned action')} ${are(due)} due. The LinkedIn session is healthy, but Trevra intentionally keeps background execution paused until the visible recovery Chrome window closes.`
+          : `${plural(due, 'planned action')} ${are(due)} due, but the visible recovery window is still completing sign-in or verification. No campaign action can run until recovery finishes.`
     };
 
   if (seatAttention)
@@ -260,21 +257,21 @@ export function campaignExecutionBlocker(
         seatAttention.kind === 'challenge'
           ? 'LinkedIn needs human verification'
           : 'LinkedIn session needs reconnect',
-      detail: `${due} planned action(s) are due, but the account session is not ready. ${seatAttention.message}`
+      detail: `${plural(due, 'planned action')} ${are(due)} due, but the account session is not ready. ${seatAttention.message}`
     };
 
   if (!workerStatus)
     return {
       kind: 'executor-unknown',
       title: 'Executor status unavailable',
-      detail: `${due} planned action(s) are due, but Trevra could not read browser-worker status.`
+      detail: `${plural(due, 'planned action')} ${are(due)} due, but Trevra could not read browser-worker status.`
     };
 
   if (!workerStatus.ready)
     return {
       kind: 'executor-not-ready',
       title: 'LinkedIn executor not ready',
-      detail: `${due} planned action(s) are due. ${workerStatus.blockers.join(' ') || 'The browser worker is not ready.'}`
+      detail: `${plural(due, 'planned action')} ${are(due)} due. ${workerStatus.blockers.join(' ') || 'The browser worker is not ready.'}`
     };
 
   // (3) Healthy, and deliberately resting. Worded so it does not read as a
@@ -285,7 +282,7 @@ export function campaignExecutionBlocker(
     return {
       kind: 'seat-cooldown',
       title: `Autonomous cooldown until ${until}`,
-      detail: `${due} planned action(s) are due. ${seatLabel} finished a sitting and rests until ${until}${execution.timezone ? ` ${execution.timezone}` : ''} before opening the browser again, so the account is not driven at a constant rate. Nothing is wrong and no action is needed.`
+      detail: `${plural(due, 'planned action')} ${are(due)} due. ${seatLabel} finished a sitting and rests until ${until}${execution.timezone ? ` ${execution.timezone}` : ''} before opening the browser again, so the account is not driven at a constant rate. Nothing is wrong and no action is needed.`
     };
   }
 
@@ -296,7 +293,7 @@ export function campaignExecutionBlocker(
     return {
       kind: 'safety-gate',
       title: gateTitle(execution.gate.check, execution.gate.kind),
-      detail: `${due} planned action(s) are due, but the safety gate refuses the next one${
+      detail: `${plural(due, 'planned action')} ${are(due)} due, but the safety gate refuses the next one${
         execution.gate.check ? ` (${execution.gate.check})` : ''
       }: ${execution.gate.detail ?? 'the safety gate refused it.'} The queue resumes by itself once that stops binding.`
     };
@@ -308,7 +305,7 @@ export function campaignExecutionBlocker(
   return {
     kind: 'unclaimed',
     title: 'Waiting for browser worker',
-    detail: `${due} planned action(s) have reached their scheduled time and are waiting for the LinkedIn executor to claim them.`
+    detail: `${plural(due, 'planned action')} ${due === 1 ? 'has' : 'have'} reached the scheduled time and ${are(due)} waiting for the LinkedIn executor to claim the work.`
   };
 }
 

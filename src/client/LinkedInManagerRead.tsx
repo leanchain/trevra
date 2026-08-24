@@ -4,11 +4,8 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  CircleAlert,
-  ClipboardList,
   Copy,
   Download,
-  Inbox,
   LoaderCircle,
   Pause,
   Play,
@@ -16,12 +13,10 @@ import {
   RefreshCw,
   Square,
   Trash2,
-  Users,
   Workflow as WorkflowIcon
 } from 'lucide-react';
 import {
   applyLatestLinkedInManagedCampaignWorkflow,
-  completeLinkedInManualTask,
   deleteLinkedInManagedCampaign,
   duplicateLinkedInManagedCampaign,
   downloadLinkedInManagedCampaignExport,
@@ -96,6 +91,7 @@ import { ChoiceMenu } from './ui/choice-menu';
 import { ActionMenu } from './ui/action-menu';
 import { Select } from './ui/primitives';
 import { Hint } from './ui/hint';
+import { are, plural } from './ui/plural';
 
 /**
  * Campaigns: the screen an operator lives on.
@@ -183,8 +179,6 @@ const CAMPAIGN_STATUS_LABEL: Record<ManagedCampaign['status'], string> = {
  * "not enough data" whenever the denominator is too small to divide by, which
  * is the same sentence on every outreach screen.
  */
-const plural = (count: number, one: string, many = `${one}s`) =>
-  `${count} ${count === 1 ? one : many}`;
 const clock = (minute: number) =>
   `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
 
@@ -665,7 +659,7 @@ function campaignBlockers({
               }
             : {
                 title: `${CAPACITY_LABEL[kind]} capacity fully allocated`,
-                detail: `${backlog.due} lead(s) are sequence-eligible at this step, but this campaign's current ramp limit is ${limit} and ${allocated} are already allocated. Remaining planner capacity is 0.`
+                detail: `${plural(backlog.due, 'lead')} ${are(backlog.due)} sequence-eligible at this step, but this campaign's current ramp limit is ${limit} and ${allocated} are already allocated. Remaining planner capacity is 0.`
               }
         );
       }
@@ -695,7 +689,7 @@ function campaignBlockers({
   if (queues?.scheduledFuture)
     out.push({
       title: 'Waiting for scheduled slots',
-      detail: `${queues.scheduledFuture} action(s) are already allocated but intentionally scheduled for a later time.`
+      detail: `${plural(queues.scheduledFuture, 'action')} ${are(queues.scheduledFuture)} already allocated but intentionally scheduled for a later time.`
     });
   // Parked rows are listed in their own right even when something else is the
   // headline -- they need a person, and nothing else in this list will say so.
@@ -709,12 +703,12 @@ function campaignBlockers({
   if (heldOther > 0)
     out.push({
       title: 'Actions held for review',
-      detail: `${heldOther} action(s) are held because Trevra cannot safely infer or repeat their outcome.`
+      detail: `${plural(heldOther, 'action')} ${are(heldOther)} held because Trevra cannot safely infer or repeat their outcome.`
     });
   if ((queues?.waitingForConnection ?? 0) + (queues?.waitingForReply ?? 0) > 0)
     out.push({
       title: 'Waiting on prospect outcomes',
-      detail: `${queues?.waitingForConnection ?? 0} lead(s) are waiting for connection evidence and ${queues?.waitingForReply ?? 0} are waiting for a reply or timeout.`
+      detail: `${plural(queues?.waitingForConnection ?? 0, 'lead')} ${are(queues?.waitingForConnection ?? 0)} waiting for connection evidence and ${queues?.waitingForReply ?? 0} ${are(queues?.waitingForReply ?? 0)} waiting for a reply or timeout.`
     });
   if (
     analytics?.bottlenecks.reason &&
@@ -1753,7 +1747,9 @@ function CampaignMembers({
           >
             Show 100 more
           </button>
-          <span className="li-hint">{shown.length - limit} more lead(s) in this filter.</span>
+          <span className="li-hint">
+            {plural(shown.length - limit, 'more lead')} in this filter.
+          </span>
         </div>
       )}
 
@@ -2002,11 +1998,11 @@ export function OutreachManagerRead({
   const [waveFilterByCampaign, setWaveFilterByCampaign] = useState<Record<string, number | null>>(
     {}
   );
-  const [openTaskId, setOpenTaskId] = useState('');
   const [loading, setLoading] = useState(true);
   const [analyticsLoading, setAnalyticsLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [starting, setStarting] = useState<ManagedCampaign | null>(null);
   const [stopping, setStopping] = useState<ManagedCampaign | null>(null);
   const [deleting, setDeleting] = useState<ManagedCampaign | null>(null);
   const [campaignFilter, setCampaignFilter] = useState('');
@@ -2207,11 +2203,11 @@ export function OutreachManagerRead({
         setToast(
           `“${campaign.name}” is running. First actions are queued for the account's next working hours.`
         );
+        setStarting(null);
         await refreshAll();
       },
       'Unable to start that campaign.'
     );
-
   const pauseCampaign = (campaign: ManagedCampaign) =>
     guard(
       `campaign:${campaign.id}`,
@@ -2414,7 +2410,7 @@ export function OutreachManagerRead({
       async () => {
         const result = await retryLinkedInManagedCampaignFailures(campaign.id, memberIds);
         setToast(
-          `Selected leads: requeued ${result.linkedinActions + result.channelActions} definite failure(s); unknown outcomes were left untouched.`
+          `Selected leads: requeued ${plural(result.linkedinActions + result.channelActions, 'definite failure')}; unknown outcomes were left untouched.`
         );
         await refreshCampaign(campaign.id);
       },
@@ -2435,7 +2431,7 @@ export function OutreachManagerRead({
           memberIds
         );
         setToast(
-          `Moved ${result.moved} lead(s) to the follow-up campaign${result.skipped ? `; ${result.skipped} were skipped by dedupe/eligibility rules` : ''}.`
+          `Moved ${plural(result.moved, 'lead')} to the follow-up campaign${result.skipped ? `; ${result.skipped} were skipped by dedupe/eligibility rules` : ''}.`
         );
         await refreshAll();
       },
@@ -2449,7 +2445,7 @@ export function OutreachManagerRead({
         const result = await retryLinkedInManagedCampaignFailures(campaign.id);
         setToast(
           result.linkedinActions + result.channelActions > 0
-            ? `Requeued ${result.linkedinActions + result.channelActions} definite failure(s). Unknown outcomes were left untouched.`
+            ? `Requeued ${plural(result.linkedinActions + result.channelActions, 'definite failure')}. Unknown outcomes were left untouched.`
             : 'No definite no-side-effect failures were eligible for retry.'
         );
         await refreshCampaign(campaign.id);
@@ -2543,30 +2539,6 @@ export function OutreachManagerRead({
       'Unable to duplicate that campaign.'
     );
 
-  const completeTask = (task: ManualTaskView) =>
-    guard(
-      `task:${task.id}`,
-      async () => {
-        await completeLinkedInManualTask(task.id);
-        setToast(
-          `Marked done for ${task.firstName} ${task.lastName}. The sequence continues from the next step.`
-        );
-        await refreshAll();
-      },
-      'Unable to mark that message done.'
-    );
-
-  const copyBody = async (task: ManualTaskView) => {
-    try {
-      await navigator.clipboard.writeText(task.suggestedBody ?? '');
-      setToast(
-        task.taskKind === 'comment' ? 'Suggested comment copied.' : 'Suggested message copied.'
-      );
-    } catch {
-      setError('Your browser blocked the copy. Select the text and copy it by hand.');
-    }
-  };
-
   const pickSeatFilter = (key: string) => {
     setSeatFilter(key);
     if (key) setActiveSeatKey(key);
@@ -2637,6 +2609,35 @@ export function OutreachManagerRead({
     return byId;
   }, [campaigns, campaignFilter]);
 
+  /*
+   * WHAT START ACTUALLY DOES, ASSEMBLED BEFORE IT DOES IT.
+   *
+   * Stop and Delete each opened a drawer and spelled out their consequence in
+   * two paragraphs. Start -- the one control on this screen that reaches a real
+   * LinkedIn account and cannot be taken back -- fired on the click. This is
+   * the exact first wave, so the drawer can SHOW the payload rather than
+   * describe it: who enters, from which account, the literal text of the first
+   * step, and what today's ceiling and remaining allowance actually are.
+   */
+  const startPlan = (() => {
+    if (!starting) return null;
+    const workflow = workflowOf(starting);
+    const steps = starting.steps.length > 0 ? starting.steps : (workflow?.steps ?? []);
+    const first = steps[0] ?? null;
+    const report = limitsBySeat[starting.seatKey] ?? null;
+    const warmup = warmupOf(starting, now, report);
+    return {
+      first,
+      copy: first ? stepCopy(first, null) : null,
+      seat: seatLabel(starting.seatKey),
+      list: listOf(starting)?.name ?? 'a deleted list',
+      ceilings: report
+        ? enforcedCeilings(report, warmup?.fraction ?? rampFractionForDay(report, 1) ?? 1)
+        : null,
+      rampDays: rampFractions(report)?.length ?? null,
+      allocated: operationsByCampaign[starting.id]?.queues.allocatedCampaignDay ?? null
+    };
+  })();
   return (
     <div className="page-stack li-polished">
       {error && <div className="error-banner">{error}</div>}
@@ -2725,6 +2726,17 @@ export function OutreachManagerRead({
               /** "Build it again" needs both halves to still exist; it cannot conjure a deleted list. */
               const rebuildable = Boolean(listOf(campaign) && workflowOf(campaign));
               const open = openCampaignId === campaign.id;
+              /*
+               * ONE CAMPAIGN'S REQUEST FREEZES ONE CAMPAIGN.
+               * Every control in this row used to read `busy !== ''`, so a
+               * single slow start disabled Pause, Stop, Retry and the overflow
+               * menu on EVERY campaign in the list -- a global mutex rendered
+               * as UI. The row now only disables itself.
+               * lc-debt: `busy` is one key, so if two campaigns are mutated at
+               * once the first to finish clears the flag and briefly re-enables
+               * the second's controls; upgrade `guard` to a Set of in-flight
+               * keys to close it.
+               */
               const busyHere = busy === `campaign:${campaign.id}`;
               const operations = operationsByCampaign[campaign.id] ?? null;
               const operationalAnalytics = operationalAnalyticsByCampaign[campaign.id] ?? null;
@@ -2740,7 +2752,12 @@ export function OutreachManagerRead({
                 now
               });
               return (
-                <article className={`mgr-campaign${open ? ' is-open' : ''}`} key={campaign.id}>
+                <article
+                  className={`mgr-campaign${open ? ' is-open' : ''}${
+                    blockers.length > 0 ? ' has-issues' : ''
+                  }`}
+                  key={campaign.id}
+                >
                   <div className="mgr-campaign-head">
                     <button
                       className="mgr-toggle"
@@ -2759,8 +2776,8 @@ export function OutreachManagerRead({
                         <button
                           className="primary-button"
                           type="button"
-                          disabled={busy !== ''}
-                          onClick={() => void startCampaign(campaign)}
+                          disabled={busyHere}
+                          onClick={() => setStarting(campaign)}
                         >
                           {busyHere ? (
                             <LoaderCircle className="spin" size={14} />
@@ -2774,7 +2791,7 @@ export function OutreachManagerRead({
                         <button
                           className="secondary-button"
                           type="button"
-                          disabled={busy !== ''}
+                          disabled={busyHere}
                           onClick={() => void pauseCampaign(campaign)}
                         >
                           {busyHere ? (
@@ -2797,7 +2814,7 @@ export function OutreachManagerRead({
                         <button
                           className="secondary-button is-danger"
                           type="button"
-                          disabled={busy !== ''}
+                          disabled={busyHere}
                           onClick={() => setStopping(campaign)}
                         >
                           <Square size={14} /> {campaign.status === 'draft' ? 'Cancel' : 'Stop'}
@@ -2807,7 +2824,7 @@ export function OutreachManagerRead({
                         <button
                           className="primary-button"
                           type="button"
-                          disabled={busy !== ''}
+                          disabled={busyHere}
                           onClick={() => rebuild(campaign)}
                         >
                           <Copy size={14} /> Build it again
@@ -2818,7 +2835,7 @@ export function OutreachManagerRead({
                           <button
                             className="secondary-button"
                             type="button"
-                            disabled={busy !== ''}
+                            disabled={busyHere}
                             title="Retries only failures known to have produced no side effect. Unknown sends remain held."
                             onClick={() => void retryCampaignFailures(campaign)}
                           >
@@ -2829,7 +2846,7 @@ export function OutreachManagerRead({
                         <button
                           className="secondary-button"
                           type="button"
-                          disabled={busy !== ''}
+                          disabled={busyHere}
                           title="Only pending, unadmitted leads change. Existing waves keep their original workflow snapshot."
                           onClick={() => void applyLatestWorkflow(campaign)}
                         >
@@ -2844,7 +2861,7 @@ export function OutreachManagerRead({
                                 {
                                   label: 'Edit workflow',
                                   icon: <WorkflowIcon size={14} />,
-                                  disabled: busy !== '',
+                                  disabled: busyHere,
                                   onSelect: () =>
                                     onNavigate(
                                       `/outreach/workflow/${encodeURIComponent(workflow.id)}/${encodeURIComponent(campaign.id)}`
@@ -2855,13 +2872,13 @@ export function OutreachManagerRead({
                           {
                             label: 'Export CSV',
                             icon: <Download size={14} />,
-                            disabled: busy !== '',
+                            disabled: busyHere,
                             onSelect: () => exportCampaign(campaign)
                           },
                           {
                             label: 'Duplicate as draft',
                             icon: <Copy size={14} />,
-                            disabled: busy !== '',
+                            disabled: busyHere,
                             onSelect: () => duplicateCampaign(campaign)
                           },
                           ...(terminal
@@ -2869,7 +2886,7 @@ export function OutreachManagerRead({
                                 {
                                   label: 'Delete campaign',
                                   icon: <Trash2 size={14} />,
-                                  disabled: busy !== '',
+                                  disabled: busyHere,
                                   danger: true,
                                   onSelect: () => setDeleting(campaign)
                                 }
@@ -2896,7 +2913,7 @@ export function OutreachManagerRead({
                               label: member.name
                             }))}
                             selectedId={campaign.ownerUserId}
-                            disabled={busy !== ''}
+                            disabled={busyHere}
                             onChoose={(userId) => transferCampaignOwner(campaign, userId)}
                           />
                         )}
@@ -2922,35 +2939,57 @@ export function OutreachManagerRead({
                     </div>
                   ) : (
                     <div className="mgr-meta mgr-meta-compact">
+                      <span>{campaign.senderKeys.map(seatLabel).join(', ')}</span>
+                      {!terminal && ceilings && (
+                        <span>
+                          {warmup && warmup.fraction < 1
+                            ? `Warm-up ${warmup.day}/${warmup.days} · ${Math.round(warmup.fraction * 100)}% today`
+                            : `Up to ${plural(ceilings.invite.today, 'invite')} today`}
+                        </span>
+                      )}
                       <span>
                         {plural(campaign.memberCount, 'lead')} · {campaign.inSequenceCount} in
                         sequence
                       </span>
-                      <span>{campaign.senderKeys.map(seatLabel).join(', ')}</span>
                     </div>
                   )}
 
-                  {open && (
-                    <div
-                      className={`mgr-campaign-health${blockers.length > 0 ? ' has-issues' : ''}`}
-                    >
-                      <div>
-                        <strong>
-                          {blockers.length === 0 ? 'No blockers detected' : 'Needs attention'}
-                        </strong>
-                        <span>
-                          {blockers.length === 0
-                            ? operations
-                              ? `${operations.queues.queuedReady} queued · ${operations.queues.dueNow} eligible · ${campaign.inSequenceCount} in sequence`
-                              : 'Reading current delivery state…'
-                            : `${blockers[0]!.title}: ${blockers[0]!.detail}`}
-                        </span>
-                      </div>
-                      {blockers.length > 1 && (
-                        <span className="li-chip">{blockers.length - 1} more</span>
-                      )}
+                  {/*
+                  THE VERDICT IS NOT BEHIND THE TOGGLE.
+                  This row used to render only once a campaign was expanded,
+                  which meant the default state of the page -- the one an
+                  operator opens to ask "is anything wrong" -- answered with
+                  lead counts and a sender name and nothing else. Three
+                  campaigns cost three expand-and-collapse cycles to learn that
+                  nothing was wrong. Expanding is the way to DETAIL now; it is
+                  no longer the way to STATE.
+                */}
+                  <div className={`mgr-campaign-health${blockers.length > 0 ? ' has-issues' : ''}`}>
+                    <div>
+                      <strong>
+                        {blockers.length === 0 ? 'No blockers detected' : 'Needs attention'}
+                      </strong>
+                      <span>
+                        {blockers.length === 0
+                          ? operations
+                            ? `${operations.queues.queuedReady} queued · ${operations.queues.dueNow} eligible · ${campaign.inSequenceCount} in sequence`
+                            : 'Reading current delivery state…'
+                          : `${blockers[0]!.title}: ${blockers[0]!.detail}`}
+                      </span>
                     </div>
-                  )}
+                    {blockers.length > 1 && (
+                      <button
+                        className="li-chip mgr-chip-button"
+                        type="button"
+                        onClick={() => {
+                          setOpenCampaignId(campaign.id);
+                          setOpenCampaignSection(`${campaign.id}:execution`);
+                        }}
+                      >
+                        {blockers.length - 1} more
+                      </button>
+                    )}
+                  </div>
 
                   {open && workflow && campaign.status === 'running' && newerWorkflowAvailable && (
                     <p className="mgr-warmup">
@@ -3110,68 +3149,92 @@ export function OutreachManagerRead({
 
                       {operations ? (
                         <>
-                          <div className="li-stat-grid">
-                            <div>
-                              <span>Total audience</span>
-                              <strong>{campaign.memberCount}</strong>
-                            </div>
-                            <div>
-                              <span>In sequence</span>
-                              <strong>{campaign.inSequenceCount}</strong>
-                            </div>
-                            <div>
-                              <span>Due now, not yet allocated</span>
-                              <strong>{operations.queues.dueNow}</strong>
-                            </div>
+                          {/*
+                        TWO NUMBERS DECIDE SOMETHING; THIRTEEN DESCRIBE.
+                        This grid opened with fifteen tiles, which is a database
+                        dump with borders: everything equally sized means
+                        nothing is the answer. "Queued for executor" is work
+                        Trevra is about to do on its own, and "Held for review"
+                        is work it will not do without a person -- the product's
+                        two modes, as two numbers. Every other count explains
+                        why those two are the size they are, so it belongs under
+                        a question, not beside them.
+                      */}
+                          <div className="li-stat-grid li-stat-grid-lead">
                             <div>
                               <span>Queued for executor</span>
                               <strong>{operations.queues.queuedReady}</strong>
                             </div>
                             <div>
-                              <span>Scheduled next 24h</span>
-                              <strong>{operations.queues.scheduledToday}</strong>
-                            </div>
-                            <div>
-                              <span>Scheduled later</span>
-                              <strong>{operations.queues.scheduledFuture}</strong>
-                            </div>
-                            <div>
-                              <span>Executing now</span>
-                              <strong>{operations.queues.executing}</strong>
-                            </div>
-                            <div>
                               <span>Held for review</span>
                               <strong>{operations.queues.heldForReview}</strong>
                             </div>
-                            <div>
-                              <span>Waiting for connection</span>
-                              <strong>{operations.queues.waitingForConnection}</strong>
-                            </div>
-                            <div>
-                              <span>Waiting for reply</span>
-                              <strong>{operations.queues.waitingForReply}</strong>
-                            </div>
-                            <div>
-                              <span>Other waits</span>
-                              <strong>{operations.queues.waitingOther}</strong>
-                            </div>
-                            <div>
-                              <span>Held by pause</span>
-                              <strong>{operations.queues.held}</strong>
-                            </div>
-                            <div>
-                              <span>Blocked</span>
-                              <strong>{operations.queues.blocked}</strong>
-                            </div>
-                            <div>
-                              <span>Failed</span>
-                              <strong>{operations.queues.failed}</strong>
-                            </div>
-                            <div>
-                              <span>Completed</span>
-                              <strong>{campaign.completedCount}</strong>
-                            </div>
                           </div>
+
+                          <details className="mgr-inputs">
+                            <summary>
+                              <strong>Why those two numbers are what they are</strong>
+                              <span>
+                                Audience, eligibility, scheduling, waits, failures and completions
+                              </span>
+                            </summary>
+                            <div className="mgr-inputs-body">
+                              <div className="li-stat-grid">
+                                <div>
+                                  <span>Total audience</span>
+                                  <strong>{campaign.memberCount}</strong>
+                                </div>
+                                <div>
+                                  <span>In sequence</span>
+                                  <strong>{campaign.inSequenceCount}</strong>
+                                </div>
+                                <div>
+                                  <span>Due now, not yet allocated</span>
+                                  <strong>{operations.queues.dueNow}</strong>
+                                </div>
+                                <div>
+                                  <span>Scheduled next 24h</span>
+                                  <strong>{operations.queues.scheduledToday}</strong>
+                                </div>
+                                <div>
+                                  <span>Scheduled later</span>
+                                  <strong>{operations.queues.scheduledFuture}</strong>
+                                </div>
+                                <div>
+                                  <span>Executing now</span>
+                                  <strong>{operations.queues.executing}</strong>
+                                </div>
+                                <div>
+                                  <span>Waiting for connection</span>
+                                  <strong>{operations.queues.waitingForConnection}</strong>
+                                </div>
+                                <div>
+                                  <span>Waiting for reply</span>
+                                  <strong>{operations.queues.waitingForReply}</strong>
+                                </div>
+                                <div>
+                                  <span>Other waits</span>
+                                  <strong>{operations.queues.waitingOther}</strong>
+                                </div>
+                                <div>
+                                  <span>Held by pause</span>
+                                  <strong>{operations.queues.held}</strong>
+                                </div>
+                                <div>
+                                  <span>Blocked</span>
+                                  <strong>{operations.queues.blocked}</strong>
+                                </div>
+                                <div>
+                                  <span>Failed</span>
+                                  <strong>{operations.queues.failed}</strong>
+                                </div>
+                                <div>
+                                  <span>Completed</span>
+                                  <strong>{campaign.completedCount}</strong>
+                                </div>
+                              </div>
+                            </div>
+                          </details>
 
                           {campaignSteps.length > 0 && (
                             <WorkflowStepProgress
@@ -3559,594 +3622,168 @@ export function OutreachManagerRead({
       </section>
 
       {campaigns.length > 0 && (
-        <>
-          <section className="page-panel">
-            <div className="section-heading">
-              <div>
-                <h3 aria-level={2}>
-                  <BarChart3 size={18} className="li-heading-icon" /> Results
-                </h3>
-                <p>
-                  Counted from what your LinkedIn accounts actually did, in the window you choose. A
-                  percentage reads &ldquo;{NOT_ENOUGH_DATA}&rdquo; until there are at least{' '}
-                  {RATE_MIN_SAMPLE} in its denominator — three of four is four invites, not 75%.
-                </p>
-              </div>
+        <section className="page-panel">
+          <div className="section-heading">
+            <div>
+              <h3 aria-level={2}>
+                <BarChart3 size={18} className="li-heading-icon" /> Results
+              </h3>
+              <p>
+                Counted from what your LinkedIn accounts actually did, in the window you choose. A
+                percentage reads &ldquo;{NOT_ENOUGH_DATA}&rdquo; until there are at least{' '}
+                {RATE_MIN_SAMPLE} in its denominator — three of four is four invites, not 75%.
+              </p>
             </div>
+          </div>
 
-            <div className="li-filter-row">
-              <label>
-                Campaign
-                <Select
-                  value={campaignFilter}
-                  onChange={(event) => setCampaignFilter(event.target.value)}
-                >
-                  <option value="">All campaigns</option>
-                  {campaigns.map((campaign) => (
-                    <option key={campaign.id} value={campaign.id}>
-                      {campaign.name}
-                    </option>
-                  ))}
-                </Select>
-              </label>
-              <label>
-                LinkedIn account
-                <Select value={seatFilter} onChange={(event) => pickSeatFilter(event.target.value)}>
-                  <option value="">All accounts</option>
-                  {seats.map((seat) => (
-                    <option key={seat.seatKey} value={seat.seatKey}>
-                      {seat.label}
-                    </option>
-                  ))}
-                </Select>
-              </label>
-              <div className="mgr-window" role="group" aria-label="Time window">
-                {(
-                  [
-                    ['7 days', 7],
-                    ['30 days', 30],
-                    ['90 days', 90],
-                    ['All time', null]
-                  ] as const
-                ).map(([label, value]) => (
-                  <button
-                    key={label}
-                    className={`li-range${windowDays === value ? ' is-active' : ''}`}
-                    type="button"
-                    aria-pressed={windowDays === value}
-                    onClick={() => setWindowDays(value)}
-                  >
-                    {label}
-                  </button>
+          <div className="li-filter-row">
+            <label>
+              Campaign
+              <Select
+                value={campaignFilter}
+                onChange={(event) => setCampaignFilter(event.target.value)}
+              >
+                <option value="">All campaigns</option>
+                {campaigns.map((campaign) => (
+                  <option key={campaign.id} value={campaign.id}>
+                    {campaign.name}
+                  </option>
                 ))}
-              </div>
-              {analyticsLoading && (
-                <span className="li-hint">
-                  <LoaderCircle className="spin" size={12} /> Reading…
-                </span>
-              )}
+              </Select>
+            </label>
+            <label>
+              LinkedIn account
+              <Select value={seatFilter} onChange={(event) => pickSeatFilter(event.target.value)}>
+                <option value="">All accounts</option>
+                {seats.map((seat) => (
+                  <option key={seat.seatKey} value={seat.seatKey}>
+                    {seat.label}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <div className="mgr-window" role="group" aria-label="Time window">
+              {(
+                [
+                  ['7 days', 7],
+                  ['30 days', 30],
+                  ['90 days', 90],
+                  ['All time', null]
+                ] as const
+              ).map(([label, value]) => (
+                <button
+                  key={label}
+                  className={`li-range${windowDays === value ? ' is-active' : ''}`}
+                  type="button"
+                  aria-pressed={windowDays === value}
+                  onClick={() => setWindowDays(value)}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
+            {analyticsLoading && (
+              <span className="li-hint">
+                <LoaderCircle className="spin" size={12} /> Reading…
+              </span>
+            )}
+          </div>
 
-            {/* The one or two numbers an operator checks without clicking anything:
+          {/* The one or two numbers an operator checks without clicking anything:
               volume and quality. Everything else this panel knows -- the other
               eight tiles and the full A/B breakdown -- is real detail, not a
               headline, and sits behind the toggle below the same way "Campaign
               inputs" further down does. */}
-            <div className="li-stat-row mgr-stats">
-              <div className="li-stat">
-                <p>Invites sent</p>
-                <strong>{analytics?.invitesSent ?? 0}</strong>
-              </div>
-              <div className="li-stat">
-                <p>Reply rate</p>
-                <strong>
-                  {ratePercent(
-                    analytics?.repliedMessagedLeads ?? 0,
-                    analytics?.contactedLeads ?? 0
-                  )}
-                </strong>
-                <span>
-                  {analytics?.repliedMessagedLeads ?? 0} of {analytics?.contactedLeads ?? 0} leads
-                  messaged replied
-                </span>
-              </div>
+          <div className="li-stat-row mgr-stats">
+            <div className="li-stat">
+              <p>Invites sent</p>
+              <strong>{analytics?.invitesSent ?? 0}</strong>
             </div>
+            <div className="li-stat">
+              <p>Reply rate</p>
+              <strong>
+                {ratePercent(analytics?.repliedMessagedLeads ?? 0, analytics?.contactedLeads ?? 0)}
+              </strong>
+              <span>
+                {analytics?.repliedMessagedLeads ?? 0} of {analytics?.contactedLeads ?? 0} leads
+                messaged replied
+              </span>
+            </div>
+          </div>
 
-            <details className="mgr-inputs mgr-simple-hide">
-              <summary>
-                More results
-                <span>{plural(visiblePendingTasks.length, 'task')} waiting · message versions</span>
-              </summary>
-              <div className="mgr-inputs-body">
-                <div className="li-stat-row mgr-stats">
-                  {/* ACCEPTED OUT OF INVITES SENT -- the one acceptance denominator a
-                user is shown, here and on the funnel. "Invites sent" now counts
-                declined invites too: they were sent, and leaving them out inflated
-                this percentage by exactly the refusals it was measuring. */}
-                  <div className="li-stat">
-                    <p>Invites accepted</p>
-                    <strong>{analytics?.invitesAccepted ?? 0}</strong>
-                    <span>
-                      {ratePercent(analytics?.invitesAccepted ?? 0, analytics?.invitesSent ?? 0)} of
-                      invites sent
-                    </span>
-                  </div>
-                  <div className="li-stat">
-                    <p>Messages sent</p>
-                    <strong>{analytics?.messagesSent ?? 0}</strong>
-                  </div>
-                  <div className="li-stat mgr-stat-secondary">
-                    <p>Leads messaged</p>
-                    <strong>{analytics?.contactedLeads ?? 0}</strong>
-                    <span>People who got at least one message</span>
-                  </div>
-                  {/* TWO TILES, BECAUSE THEY COUNT TWO POPULATIONS. "Replies" is anyone
-                who replied to anything, an invite that came back with a note
-                included. The rate divides messaged leads who replied by messaged
-                leads -- the same population top and bottom, which is what stops it
-                printing 133%, as it did when the numerator counted replies to any
-                action kind and the denominator counted messaged leads only. */}
-                  <div className="li-stat">
-                    <p>Replies</p>
-                    <strong>{analytics?.repliedLeads ?? 0}</strong>
-                    <span>People who replied to anything</span>
-                  </div>
-                  <div className="li-stat mgr-stat-secondary">
-                    <p>Profile views</p>
-                    <strong>{analytics?.profileViews ?? 0}</strong>
-                  </div>
-                  {/*
-              SIX OF THE WORKFLOW'S ACTIONS CAN RUN; ALL SIX ARE COUNTED HERE.
-              Follows and withdrawals were missing, so a workflow built out of them
-              reported nothing but zeros forever -- while the accounts table below
-              advertised a daily follow limit as a live ceiling on work this panel
-              insisted was never happening.
+          {/*
+              MESSAGE VERSIONS, IN THE OPEN.
+              This comparison used to sit inside a `More results` fold that
+              `.outreach-simple` hid on every route the manager renders on, so
+              it was fetched and never seen. It is the one thing in that fold
+              with a decision behind it -- which version to keep -- so it stays,
+              in the results panel, where results are.
             */}
-                  <div className="li-stat mgr-stat-secondary">
-                    <p>Follows</p>
-                    <strong>{analytics?.followsSent ?? 0}</strong>
-                  </div>
-                  <div className="li-stat mgr-stat-withdrawn">
-                    <p>Invites withdrawn</p>
-                    <strong>{analytics?.invitesWithdrawn ?? 0}</strong>
-                    <span>Still-pending invites the workflow cleaned up</span>
-                  </div>
-                  <div className="li-stat mgr-stat-needs-you">
-                    <p>Needs you</p>
-                    <strong>{visiblePendingTasks.length}</strong>
-                    {visiblePendingTasks.length > 0 ? (
-                      <a className="li-link" href="/outreach/inbox">
-                        Open Messages
-                      </a>
-                    ) : (
-                      <span>No manual messages waiting</span>
-                    )}
-                  </div>
-                </div>
-
-                <h4 className="li-subhead" aria-level={3}>
-                  Message versions, side by side
-                </h4>
-                {analytics ? (
-                  <VariantResults analytics={analytics} stepsById={variantStepsById} />
-                ) : (
-                  <p className="empty-copy">Reading results…</p>
-                )}
-              </div>
-            </details>
-          </section>
-
-          <section className="page-panel mgr-manual-tasks">
-            <div className="section-heading">
-              <div>
-                <h3 aria-level={2}>
-                  <ClipboardList size={18} className="li-heading-icon" /> Messages to send yourself
-                </h3>
-                <p>
-                  Some steps are deliberately yours: write the message in the inbox, send it, then
-                  mark it done and the sequence carries on from the next step. Ones already sent,
-                  and ones cancelled because their campaign was stopped or the lead was taken out of
-                  it, stay on the list so the record is complete.
-                </p>
-              </div>
-              <a className="secondary-button" href="/outreach/inbox">
-                <Inbox size={14} /> Open inbox
-              </a>
-            </div>
-            {tasks.length === 0 ? (
-              <p className="empty-copy">
-                Nothing is waiting on you. Steps marked &ldquo;a message you write yourself&rdquo;
-                in a workflow show up here when a lead reaches them.
-              </p>
-            ) : (
-              <div className="mgr-wide">
-                <div className="li-table-scroll">
-                  <table className="li-table">
-                    <thead>
-                      <tr>
-                        <th>Lead</th>
-                        <th>Company</th>
-                        <th>Campaign</th>
-                        <th>Account</th>
-                        <th>Waiting</th>
-                        <th>
-                          <span className="mgr-sr">Controls</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {[...tasks]
-                        .sort(
-                          (a, b) => Number(b.status === 'pending') - Number(a.status === 'pending')
-                        )
-                        .map((task) => {
-                          const open = openTaskId === task.id;
-                          return [
-                            <tr key={task.id} className={open ? 'mgr-row-open' : undefined}>
-                              <td>
-                                <button
-                                  className="mgr-linkish"
-                                  type="button"
-                                  aria-expanded={open}
-                                  onClick={() => setOpenTaskId(open ? '' : task.id)}
-                                >
-                                  {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                                  {task.firstName} {task.lastName}
-                                </button>
-                              </td>
-                              <td>{task.company || '—'}</td>
-                              <td>
-                                {campaigns.find((campaign) => campaign.id === task.campaignId)
-                                  ?.name ?? 'Deleted campaign'}
-                              </td>
-                              <td>{seatLabel(task.seatKey)}</td>
-                              {/*
-                    A CANCELLED TASK IS NOT A DONE TASK. Stopping a campaign, or
-                    removing a lead from one, cancels its outstanding manual
-                    messages -- and everything that was not `pending` used to
-                    render as "Done", with the completed dot, telling the
-                    operator they had sent a message that was called off.
-                  */}
-                              <td>
-                                {task.status === 'pending' ? (
-                                  <>Waiting for you · {ago(task.createdAt, now)}</>
-                                ) : task.status === 'cancelled' ? (
-                                  <span className="mgr-state">
-                                    <i className="mgr-dot-removed" aria-hidden="true" />
-                                    Cancelled
-                                  </span>
-                                ) : (
-                                  <span className="mgr-state">
-                                    <i className="mgr-dot-completed" aria-hidden="true" />
-                                    Done
-                                  </span>
-                                )}
-                              </td>
-                              <td>
-                                {task.status === 'pending' && (
-                                  <div className="li-row-actions">
-                                    <button
-                                      className="li-mini-button"
-                                      type="button"
-                                      disabled={busy !== ''}
-                                      onClick={() => void completeTask(task)}
-                                    >
-                                      {busy === `task:${task.id}` ? (
-                                        <LoaderCircle className="spin" size={12} />
-                                      ) : (
-                                        <Check size={12} />
-                                      )}{' '}
-                                      Mark done
-                                    </button>
-                                  </div>
-                                )}
-                              </td>
-                            </tr>,
-                            open ? (
-                              <tr key={`${task.id}:detail`} className="mgr-row-detail">
-                                <td colSpan={6}>
-                                  {task.status === 'cancelled' && (
-                                    <p className="mgr-tl-note">
-                                      Cancelled: its campaign was stopped, or this lead was taken
-                                      out of it. Nothing needs sending, and the sequence will not
-                                      carry on from here.
-                                    </p>
-                                  )}
-                                  {task.suggestedBody ? (
-                                    <p className="li-template">{task.suggestedBody}</p>
-                                  ) : (
-                                    <p className="mgr-tl-note">
-                                      This step has no suggested wording. Write it yourself.
-                                    </p>
-                                  )}
-                                  {task.status !== 'cancelled' && (
-                                    <div className="mgr-actions">
-                                      {task.suggestedBody && (
-                                        <button
-                                          className="secondary-button"
-                                          type="button"
-                                          onClick={() => void copyBody(task)}
-                                        >
-                                          <Copy size={14} />{' '}
-                                          {task.taskKind === 'comment'
-                                            ? 'Copy comment'
-                                            : 'Copy message'}
-                                        </button>
-                                      )}
-                                      {task.taskKind === 'comment' && task.postUrl ? (
-                                        <a
-                                          className="secondary-button"
-                                          href={task.postUrl}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                        >
-                                          Open post to comment
-                                        </a>
-                                      ) : (
-                                        <a className="secondary-button" href="/outreach/inbox">
-                                          <Inbox size={14} /> Send it in the inbox
-                                        </a>
-                                      )}
-                                      {task.profileUrl && (
-                                        <a
-                                          className="li-link"
-                                          href={task.profileUrl}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                        >
-                                          Open their LinkedIn profile
-                                        </a>
-                                      )}
-                                    </div>
-                                  )}
-                                </td>
-                              </tr>
-                            ) : null
-                          ];
-                        })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </section>
-        </>
+          {analytics && analytics.variants.length > 0 && (
+            <>
+              <h4 className="li-subhead" aria-level={3}>
+                Message versions, side by side
+              </h4>
+              <VariantResults analytics={analytics} stepsById={variantStepsById} />
+            </>
+          )}
+        </section>
       )}
 
-      <details className="mgr-inputs mgr-simple-hide">
-        <summary>
-          Campaign inputs{' '}
-          <span>
-            {seats.length} accounts · {lists.length} lead lists · {workflows.length} workflows
-          </span>
-        </summary>
-        <div className="mgr-inputs-body">
-          <section className="page-panel">
-            <div className="section-heading">
-              <div>
-                <h3 aria-level={2}>LinkedIn accounts</h3>
-                <p>
-                  Each sending account has its own timezone, working hours and daily limits. Manage
-                  them on Outreach &rarr; Settings. If an account is not connected, its campaigns
-                  wait instead of sending from another account.
-                </p>
-              </div>
-            </div>
-            {seats.length === 0 ? (
-              <div className="mgr-empty">
-                <h4 aria-level={3}>No LinkedIn account yet</h4>
-                <p>
-                  Campaigns send from a real LinkedIn account. Add one, sign it in, and set the
-                  hours it is allowed to work.
-                </p>
-                <div className="mgr-actions">
-                  <a className="primary-button" href="/outreach/settings">
-                    Add a LinkedIn account
-                  </a>
-                </div>
-              </div>
-            ) : (
-              <div className="mgr-wide">
-                <div className="li-table-scroll">
-                  <table className="li-table">
-                    {/*
-            THREE COLUMNS OF NUMBERS, BECAUSE THERE ARE THREE NUMBERS AND ONLY
-            ONE OF THEM IS THE CEILING. This table used to print the operator's
-            settings alone and label them the account's daily limits. That is not
-            what happens: what goes out is the STRICTER of the setting and
-            Trevra's researched band, unless this account has been explicitly set
-            to use its own numbers in place of the band. An operator reading "30
-            invites" here while the gate allowed 18 had nowhere to find out why,
-            and no reason to suspect there was a why.
-          */}
-                    <thead>
-                      <tr>
-                        <th>Account</th>
-                        <th>Timezone</th>
-                        <th>Working days</th>
-                        <th>Hours</th>
-                        <th>Your setting</th>
-                        <th>Trevra&rsquo;s band</th>
-                        <th>What actually goes out</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {seats.map((seat) => {
-                        const ceilings = enforcedCeilings(limitsBySeat[seat.seatKey] ?? null, 1);
-                        return (
-                          <tr key={seat.seatKey}>
-                            <td>
-                              <strong>{seat.label}</strong>
-                              {seat.seatKey === activeSeatKey && (
-                                <>
-                                  {' '}
-                                  <span className="li-chip">Active</span>
-                                </>
-                              )}
-                            </td>
-                            <td>{seat.timezone}</td>
-                            <td>
-                              {seat.workingDays.length === 0 ? (
-                                <span className="mgr-state">
-                                  <i className="mgr-dot-failed" aria-hidden="true" />
-                                  None — this account cannot work
-                                </span>
-                              ) : (
-                                seat.workingDays.map((day) => WEEKDAYS[day]).join(', ')
-                              )}
-                            </td>
-                            <td>
-                              {clock(seat.workStartMinute)}–{clock(seat.workEndMinute)}
-                            </td>
-                            <td>
-                              {seat.dailyInviteLimit} · {seat.dailyMessageLimit} ·{' '}
-                              {seat.dailyProfileViewLimit} · {seat.dailyFollowLimit}
-                            </td>
-                            <td>
-                              {ceilings
-                                ? `${ceilings.invite.band} · ${ceilings.dm.band} · ${ceilings.profile_view.band} · ${ceilings.follow.band}`
-                                : '—'}
-                            </td>
-                            <td>
-                              {ceilings ? (
-                                <>
-                                  {ceilings.invite.full} · {ceilings.dm.full} ·{' '}
-                                  {ceilings.profile_view.full} · {ceilings.follow.full}
-                                  {ceilings.invite.source === 'operator-override' && (
-                                    <>
-                                      {' '}
-                                      <span className="li-chip">Your numbers</span>
-                                    </>
-                                  )}
-                                </>
-                              ) : (
-                                '—'
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-            {seats.length > 0 && (
-              <p className="li-hint">
-                The three number columns each read invites · messages · profile views · follows.
-                What goes out is the stricter of your setting and Trevra&rsquo;s researched band,
-                and a campaign in its first days is a fraction of even that.
+      {starting && startPlan && (
+        <ConfirmDrawer
+          title={`Start “${starting.name}”?`}
+          body={
+            <>
+              <p>
+                {plural(starting.memberCount, 'person')} from {startPlan.list} enter this campaign,
+                from <b>{startPlan.seat}</b>. An invite or a message that reaches LinkedIn cannot be
+                recalled.
               </p>
-            )}
-          </section>
-
-          <section className="page-panel">
-            <div className="section-heading">
-              <div>
-                <h3 aria-level={2}>
-                  <Users size={18} className="li-heading-icon" /> Lead lists
-                </h3>
+              {startPlan.first ? (
+                <>
+                  <p>
+                    The first step is <b>{ACTION_LABEL[startPlan.first.action]}</b>, and this is
+                    exactly what it puts in front of them:
+                  </p>
+                  {startPlan.copy?.body ? (
+                    <blockquote className="mgr-approval-body">{startPlan.copy.body}</blockquote>
+                  ) : null}
+                  {startPlan.copy?.note ? <p>{startPlan.copy.note}</p> : null}
+                  {!startPlan.copy?.body && !startPlan.copy?.note ? (
+                    <p>This step carries no text of its own.</p>
+                  ) : null}
+                </>
+              ) : (
+                <p>This campaign has no steps, so nothing would be queued.</p>
+              )}
+              {startPlan.ceilings ? (
                 <p>
-                  Names, companies and contact details, kept with a note of where each list came
-                  from.
+                  Today it may do at most {plural(startPlan.ceilings.invite.today, 'invite')} and{' '}
+                  {plural(startPlan.ceilings.dm.today, 'message')} from this account
+                  {startPlan.rampDays
+                    ? `, reaching full speed on day ${startPlan.rampDays}`
+                    : ''}.{' '}
+                  {startPlan.allocated
+                    ? `${startPlan.allocated.invite} invites and ${startPlan.allocated.dm} messages have already been allocated from it today.`
+                    : 'Nothing has been allocated from it today yet.'}
                 </p>
-              </div>
-            </div>
-            {lists.length === 0 ? (
-              <p className="empty-copy">
-                No lead list yet. Import a CSV above and it becomes available to every campaign.
-              </p>
-            ) : (
-              <div className="mgr-wide">
-                <div className="li-table-scroll">
-                  <table className="li-table">
-                    <thead>
-                      <tr>
-                        <th>List</th>
-                        <th>Source</th>
-                        <th>Leads</th>
-                        <th>Updated</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lists.map((list) => (
-                        <tr key={list.id}>
-                          <td>
-                            <strong>{list.name}</strong>
-                          </td>
-                          <td>{SOURCE_LABELS[list.sourceKind]}</td>
-                          <td className="li-num">{list.leadCount}</td>
-                          <td>{new Date(list.updatedAt).toLocaleString()}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </section>
-
-          <section className="page-panel">
-            <div className="section-heading">
-              <div>
-                <h3 aria-level={2}>
-                  <WorkflowIcon size={18} className="li-heading-icon" /> Saved workflows
-                </h3>
+              ) : (
                 <p>
-                  A workflow is the order of steps and the wait between them. A campaign runs the
-                  copy of the workflow it was started with, so editing one here shapes the campaigns
-                  you start from now on and leaves the ones already going on their own copy — nobody
-                  mid-sequence is moved to a different step. To put an edit in front of a campaign
-                  that is already running, pause it and start it again.
+                  This account&rsquo;s effective limits could not be read, so today&rsquo;s ceiling
+                  cannot be shown here. Check it in Setup &rarr; Workspace before starting.
                 </p>
-              </div>
-            </div>
-            {workflows.length === 0 ? (
-              <p className="empty-copy">
-                No workflow yet. Build one above — a view, an invite and two follow-up messages is
-                the usual shape.
-              </p>
-            ) : (
-              <div className="mgr-wide">
-                <div className="li-table-scroll">
-                  <table className="li-table">
-                    <thead>
-                      <tr>
-                        <th>Workflow</th>
-                        <th>Steps</th>
-                        <th>Takes</th>
-                        <th>Updated</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {workflows.map((workflow) => {
-                        const hours = workflow.steps.reduce(
-                          (total, step) => total + stepHours(step),
-                          0
-                        );
-                        return (
-                          <tr key={workflow.id}>
-                            <td>
-                              <strong>{workflow.name}</strong>
-                            </td>
-                            <td className="li-num">{workflow.steps.length}</td>
-                            <td>
-                              {hours < 24
-                                ? 'Same day'
-                                : `about ${plural(Math.ceil(hours / 24), 'day')}`}
-                            </td>
-                            <td>{new Date(workflow.updatedAt).toLocaleString()}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </section>
-        </div>
-      </details>
+              )}
+            </>
+          }
+          confirmLabel={
+            starting.status === 'draft' ? 'Start this campaign' : 'Resume this campaign'
+          }
+          busy={busy === `campaign:${starting.id}`}
+          onConfirm={() => void startCampaign(starting)}
+          onCancel={() => setStarting(null)}
+        />
+      )}
 
       {stopping && (
         <ConfirmDrawer

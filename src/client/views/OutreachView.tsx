@@ -62,20 +62,25 @@ export function OutreachView({
     <div className="page-stack outreach-simple li-polished">
       {sub !== 'inbound' && <LinkedInCompanionAttention setToast={setToast} />}
       <nav className="outreach-nav" aria-label="Outreach sections">
+        {/*
+          Each tab is the ADDRESS of a screen, so it is an anchor: cmd-click
+          opens Messages in a second tab, `aria-current="page"` is finally on
+          an element that has a page, and the shell's one link interceptor
+          (`ui/route.ts`) still navigates without a reload.
+        */}
         {OUTREACH_TABS.map((tab) => (
-          <button
+          <a
             key={tab.path}
-            type="button"
+            href={tab.path}
             className={
               'outreach-tab ' +
               (tab.mobile === 'more' ? 'outreach-tab-more' : 'outreach-tab-main') +
               (tab.sub === current ? ' is-active' : '')
             }
             aria-current={tab.sub === current ? 'page' : undefined}
-            onClick={() => onNavigate(tab.path)}
           >
             {tab.label}
-          </button>
+          </a>
         ))}
         <ActionMenu
           className={'outreach-more-menu' + (activeMore ? ' is-active' : '')}
@@ -93,7 +98,7 @@ export function OutreachView({
         />
       </nav>
 
-      {sub === 'inbound' && <InboundPeople setToast={setToast} />}
+      {sub === 'inbound' && <InboundPeople setToast={setToast} onNavigate={onNavigate} />}
       {sub === 'inbox' && (
         <div className="page-stack">
           <div className="outreach-message-switch" role="group" aria-label="Message view">

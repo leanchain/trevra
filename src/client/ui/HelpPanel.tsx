@@ -286,11 +286,6 @@ const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
     label: 'Outreach · Posts',
     hint: 'Scheduled and published LinkedIn posts'
   },
-  {
-    path: '/outreach/settings',
-    label: 'Outreach · Settings',
-    hint: 'LinkedIn accounts and their limits'
-  },
   { path: '/ledger', label: 'Run ledger', hint: 'Every run, with the evidence' },
   {
     path: '/research',
@@ -301,7 +296,7 @@ const DESTINATIONS: Array<{ path: string; label: string; hint: string }> = [
   {
     path: '/setup/workspace',
     label: 'Setup · Workspace',
-    hint: 'Connections, limits, Agents, people and workspace data'
+    hint: 'LinkedIn accounts and their limits, Agents, people and workspace data'
   },
   {
     path: '/setup/capture',

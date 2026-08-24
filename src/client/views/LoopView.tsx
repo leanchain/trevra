@@ -382,7 +382,7 @@ export function LoopView({
         : seatError
           ? 'unavailable'
           : 'loading',
-      href: limits ? (seat?.configured ? '/outreach' : '/outreach/settings') : null,
+      href: limits ? (seat?.configured ? '/outreach' : '/setup/workspace') : null,
       unavailable: !limits || queued === null
     },
     {
@@ -408,8 +408,8 @@ export function LoopView({
               (seat.pausedReason ? ': ' + seat.pausedReason : '.')
             : 'This LinkedIn account is paused' +
               (seat.pausedReason ? ': ' + seat.pausedReason : '.'),
-        action: 'Open Settings',
-        href: '/outreach/settings'
+        action: 'Open workspace setup',
+        href: '/setup/workspace'
       };
     }
     if (!seat?.configured)
@@ -417,7 +417,7 @@ export function LoopView({
         stage: 'reach',
         sentence: 'No LinkedIn account is connected.',
         action: 'Connect an account',
-        href: '/outreach/settings'
+        href: '/setup/workspace'
       };
     if (waitingCount !== null && waitingCount > 0)
       return {

@@ -44,6 +44,7 @@ import { DELAY_CHOICES, plannedForFrom, queueWaitCopy, type ScheduleMode } from 
 import { useWorkspaceMembers } from './TeamScreen';
 import { ConfidenceTag } from './LinkedInViz';
 import { Select } from './ui/primitives';
+import { plural } from './ui/plural';
 
 /**
  * `/outreach/inbox` -- THE ONE PLACE AN OPERATOR ANSWERS A PERSON.
@@ -695,8 +696,8 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       const result = await syncLinkedInInbox({ seatKey: activeSeatKey });
       setDegraded(result.degraded);
       setToast(
-        `${result.threads} conversation(s) walked · ${result.created} new, ${result.updated} updated, ` +
-          `${result.inbound} inbound message(s) stored, ${result.linked} matched to a campaign.`
+        `${plural(result.threads, 'conversation')} walked · ${result.created} new, ${result.updated} updated, ` +
+          `${plural(result.inbound, 'inbound message')} stored, ${result.linked} matched to a campaign.`
       );
       await reloadOutreach();
       if (openUrn) await openThread(openUrn);
@@ -718,7 +719,7 @@ export function OutreachInbox({ setToast }: { setToast: (message: string) => voi
       const seatKey = seatForThread(threadUrn);
       const result = await syncLinkedInThread(threadUrn, seatKey ? { seatKey } : {});
       setDegraded(result.degraded);
-      setToast(`${result.inserted} message(s) stored, ${result.inbound} of them inbound.`);
+      setToast(`${plural(result.inserted, 'message')} stored, ${result.inbound} inbound.`);
       await openThread(threadUrn);
       await loadThreads();
       await loadReplies();

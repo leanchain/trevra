@@ -166,7 +166,7 @@ describe('getToday', () => {
       'high_priority_account'
     ]);
     expect(today.needsAttention[0]).toMatchObject({
-      href: '/outreach/settings',
+      href: '/setup/workspace',
       detail: 'Challenge detected; inspect the account before resuming.'
     });
     expect(today.needsAttention[1]).toMatchObject({

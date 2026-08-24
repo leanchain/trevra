@@ -34,6 +34,7 @@ import { relativeTime } from './LinkedInScreen';
 import { formatVisitWindow, queueWaitCopy } from './LinkedInTiming';
 import { Select } from './ui/primitives';
 import { navigate } from './ui/route';
+import { plural } from './ui/plural';
 
 /**
  * A fold on `/outreach` ("Find people") -- a search page or a post, walked
@@ -437,7 +438,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
       // post engagers rarely have one, and rejecting those would leave keyword
       // discovery unable to feed a campaign at all.
       setToast(
-        `${result.inserted} lead(s) added to “${result.list.name}”${result.reused ? `, ${result.reused} already known` : ''}${result.skipped ? `, ${result.skipped} skipped for an unusable profile URL or no first name` : ''}. They can be enrolled in a campaign now.`
+        `${plural(result.inserted, 'lead')} added to “${result.list.name}”${result.reused ? `, ${result.reused} already known` : ''}${result.skipped ? `, ${result.skipped} skipped for an unusable profile URL or no first name` : ''}. They can be enrolled in a campaign now.`
       );
       setError('');
     } catch (err) {
@@ -469,7 +470,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
     if (list.length === 0) return;
     stageTargets(list);
     setToast(
-      `${list.length} profile URL(s) staged for the campaign builder. Nothing was created — they land in the targets field.`
+      `${plural(list.length, 'profile URL')} staged for the campaign builder. Nothing was created — they land in the targets field.`
     );
     navigate('/outreach/new');
   };
@@ -602,6 +603,7 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
                     <textarea
                       rows={2}
                       autoFocus
+                      aria-label="LinkedIn URL"
                       value={url}
                       disabled={!enabled}
                       onChange={(event) => {
@@ -933,7 +935,7 @@ function LeadList({
     <section className="page-panel">
       <div className="section-heading">
         <div>
-          <h3 aria-level={2}>{source.resultCount ?? 0} person(s) stored</h3>
+          <h3 aria-level={2}>{plural(stored, 'person', 'people')} stored</h3>
           <p>
             <span className="li-chip">{KIND_LABELS[source.kind]}</span>{' '}
             <a className="li-link" href={source.url} target="_blank" rel="noreferrer">

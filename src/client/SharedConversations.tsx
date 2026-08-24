@@ -172,7 +172,7 @@ export function SharedConversations() {
         await Promise.all([readSelected(selectedId), load()]);
       } else {
         setReplyNotice(
-          `Reply approval recorded; current state: ${run.status.replaceAll('_', ' ')}.`
+          `Reply approval recorded. Nothing has been sent yet; current state: ${run.status.replaceAll('_', ' ')}.`
         );
       }
       setError('');
@@ -181,7 +181,7 @@ export function SharedConversations() {
         errorMessage(
           err,
           decision === 'approve'
-            ? 'Unable to approve and send this reply. Reload before retrying.'
+            ? 'Unable to approve this reply. Nothing was sent. Reload before retrying.'
             : 'Unable to discard this prepared reply. Reload before retrying.'
         )
       );
@@ -333,7 +333,7 @@ export function SharedConversations() {
                         disabled={approving}
                         onClick={() => void decidePreparedReply('approve')}
                       >
-                        {approving ? 'Sending…' : 'Approve & send'}
+                        {approving ? 'Approving…' : 'Approve & send'}
                       </button>
                       <button
                         className="secondary-button"

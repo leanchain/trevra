@@ -1,3 +1,5 @@
+import { plural } from './ui/plural';
+
 export interface AccountImportFileLike {
   name: string;
   size: number;
@@ -421,6 +423,6 @@ export async function prepareAccountFiles(
     inspectedFiles: scanned.inspected,
     ignoredFiles,
     usedFiles: scanned.usedFiles,
-    summary: `${rows.length} row(s) detected from ${scanned.usedFiles.length} source file(s). ${ignoredFiles} other artifact file(s) stayed local and were ignored.`
+    summary: `${plural(rows.length, 'row')} detected from ${plural(scanned.usedFiles.length, 'source file')}. ${plural(ignoredFiles, 'other artifact file')} stayed local and ${ignoredFiles === 1 ? 'was' : 'were'} ignored.`
   };
 }

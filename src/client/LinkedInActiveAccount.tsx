@@ -133,7 +133,7 @@ export function useActiveSeatKey(): [string, (key: string) => void] {
   return [key, setActiveSeatKey];
 }
 
-/** Compact read-only account context for the app header. Selection still lives in Outreach → Settings. */
+/** Compact read-only account context for the app header. Selection still lives in Setup → Workspace. */
 export function ActiveLinkedInAccountName() {
   const [seatKey] = useActiveSeatKey();
   const [accounts, setAccounts] = useState<LinkedInSeat[] | null>(null);

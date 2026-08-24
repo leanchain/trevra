@@ -65,6 +65,7 @@ import { ConfidenceTag, LiStat } from './LinkedInViz';
 import { ConfirmDrawer } from './ui/dialog';
 import { Hint } from './ui/hint';
 import { Select } from './ui/primitives';
+import { are, plural } from './ui/plural';
 import { useIsWorkspaceOwner } from './auth-client';
 import { useWorkspaceMembers } from './TeamScreen';
 
@@ -1625,12 +1626,12 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
       // not give up, and dropping it reported a half-read invitation list as a
       // complete one -- which then makes every count below look authoritative.
       setToast(
-        `${result.listed} invitation(s) still showing on LinkedIn · ${result.matched} that Trevra sent, ` +
+        `${plural(result.listed, 'invitation')} still showing on LinkedIn · ${result.matched} that Trevra sent, ` +
           `${result.unmatched} you sent yourself, ${result.disappeared} no longer shown.` +
           `${result.truncated ? ' The list was longer than one pass reads.' : ''}` +
           `${
             result.degraded.length > 0
-              ? ` Partial reading — ${result.degraded.length} thing(s) could not be read: ${result.degraded.join(', ')}.`
+              ? ` Partial reading — ${plural(result.degraded.length, 'thing')} could not be read: ${result.degraded.join(', ')}.`
               : ''
           }`
       );
@@ -1651,8 +1652,8 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
       const result = await queueLinkedInWithdrawals(days === null ? {} : { olderThanDays: days });
       setConfirming(false);
       setToast(
-        `${result.queued} withdrawal(s) queued${result.duplicates > 0 ? `, ${result.duplicates} already queued` : ''}. ` +
-          `${result.withdrawn} have actually been withdrawn, and queueing never withdraws anything by itself. ` +
+        `${plural(result.queued, 'withdrawal')} queued${result.duplicates > 0 ? `, ${result.duplicates} already queued` : ''}. ` +
+          `${result.withdrawn} ${result.withdrawn === 1 ? 'has' : 'have'} actually been withdrawn, and queueing never withdraws anything by itself. ` +
           'They go one at a time, spaced out, inside your working hours.'
       );
       await reloadOutreach();
@@ -1748,14 +1749,17 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
 
       {candidates.length === 0 ? (
         <p className="workspace-empty li-pending-empty">
-          Nothing has been waiting longer than {days ?? '—'} day(s).
+          Nothing has been waiting longer than {days === null ? '—' : plural(days, 'day')}.
         </p>
       ) : (
         <div className="li-pending-candidates">
           <div className="workspace-subsection-heading">
             <div>
               <h4>Ready to review</h4>
-              <p>{candidates.length} invite(s) are older than your threshold.</p>
+              <p>
+                {plural(candidates.length, 'invite')} {are(candidates.length)} older than your
+                threshold.
+              </p>
             </div>
           </div>
           <div className="li-table-scroll">
@@ -1792,7 +1796,7 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
               onClick={() => setConfirming(true)}
             >
               {busy === 'queue' ? <LoaderCircle className="spin" size={15} /> : <Undo2 size={15} />}{' '}
-              Queue {candidates.length} withdrawal(s)
+              Queue {plural(candidates.length, 'withdrawal')}
             </button>
           </div>
         </div>
@@ -1870,7 +1874,7 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
 
       {confirming && (
         <ConfirmDrawer
-          title={`Queue ${candidates.length} withdrawal(s)?`}
+          title={`Queue ${plural(candidates.length, 'withdrawal')}?`}
           busy={busy === 'queue'}
           body={
             <>
@@ -1891,7 +1895,7 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
               </p>
             </>
           }
-          confirmLabel={`Queue ${candidates.length} withdrawal(s)`}
+          confirmLabel={`Queue ${plural(candidates.length, 'withdrawal')}`}
           onConfirm={() => void enqueue()}
           onCancel={() => setConfirming(false)}
         />
@@ -1908,7 +1912,7 @@ function PendingInviteWithdrawals({ setToast }: { setToast: (message: string) =>
  * spends a request on its withdrawal backlog. `.li-manual-fields`, matching
  * the disclosure style the rest of Outreach settled on -- not a `.mgr-inputs`
  * workaround any more; `.outreach-simple` used to blanket-hide `.mgr-inputs`,
- * but that rule is now scoped to the opt-in `.mgr-simple-hide` (see
+ * but that rule is gone entirely along with the panels it hid (see
  * styles.css).
  */
 function PendingInviteWithdrawalsSection({ setToast }: { setToast: (message: string) => void }) {

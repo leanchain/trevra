@@ -106,15 +106,15 @@ export function OutreachManagerBuilder({
           <div className="onboarding-head">
             <div>
               <h2>One thing is missing</h2>
-              <p>Connect the LinkedIn account you want Trevra to use.</p>
+              <p>Connect the LinkedIn account you want Trevra to use, in Setup · Workspace.</p>
             </div>
           </div>
           <button
             className="primary-button"
             type="button"
-            onClick={() => onNavigate('/outreach/settings')}
+            onClick={() => onNavigate('/setup/workspace')}
           >
-            Connect account <ChevronRight size={14} />
+            Connect account in Setup <ChevronRight size={14} />
           </button>
         </section>
       )}

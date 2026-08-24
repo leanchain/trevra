@@ -292,7 +292,7 @@ async function prepareOutreachPlan(
         blockers.push({
           code: 'linkedin_sender_missing',
           message: 'The LinkedIn account attached to this People list is no longer connected.',
-          actionHref: '/outreach/settings'
+          actionHref: '/setup/workspace'
         });
       }
     }
@@ -300,7 +300,7 @@ async function prepareOutreachPlan(
     blockers.push({
       code: 'linkedin_sender_missing',
       message: 'Connect the LinkedIn account you want Trevra to use.',
-      actionHref: '/outreach/settings'
+      actionHref: '/setup/workspace'
     });
   } else if (seats.length > 1) {
     blockers.push({

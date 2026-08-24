@@ -434,6 +434,7 @@ function PostComposer({
             className="li-post-image-input"
             type="file"
             accept="image/jpeg,image/png,image/webp,image/gif"
+            aria-label="Choose JPEG, PNG, WebP or GIF images to attach"
             multiple
             onChange={(event) => addImages(event.target.files)}
           />
