@@ -14,7 +14,6 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { WebSocketServer } from 'ws';
-import { chromeLaunchArgs } from '../lib/browser.js';
 import { isNewerVersion, officialCompanionPackage, parseVersion } from '../lib/update.js';
 import {
   installStablePackage,
@@ -25,43 +24,44 @@ import {
   servicePaths
 } from '../lib/service.js';
 
-test('browser launch args support headless, minimized and visible modes', () => {
-  const background = chromeLaunchArgs({
-    profileDir: '/tmp/trevra-profile',
-    headless: true,
-    startUrl: 'https://www.linkedin.com/feed/'
-  });
-  assert.ok(background.includes('--headless'));
-  assert.ok(background.includes('--window-size=1365,900'));
-  assert.ok(background.includes('--user-data-dir=/tmp/trevra-profile'));
-  assert.ok(!background.includes('--start-maximized'));
-  assert.ok(!background.includes('--start-minimized'));
-
-  const minimized = chromeLaunchArgs({
-    profileDir: '/tmp/trevra-profile',
-    minimized: true,
-    startUrl: 'https://www.linkedin.com/feed/'
-  });
-  assert.ok(!minimized.includes('--headless'));
-  assert.ok(minimized.includes('--start-minimized'));
-  assert.ok(!minimized.includes('--start-maximized'));
-
-  const visible = chromeLaunchArgs({
-    profileDir: '/tmp/trevra-profile',
-    headless: false,
-    startUrl: 'https://www.linkedin.com/feed/'
-  });
-  assert.ok(!visible.includes('--headless'));
-  assert.ok(visible.includes('--start-maximized'));
-  assert.ok(!visible.includes('--start-minimized'));
-});
-
 test('installed LinkedIn service keeps autonomous Chrome minimized and recovery visible', () => {
   const cli = readFileSync(fileURLToPath(new URL('../bin/trevra.js', import.meta.url)), 'utf8');
   assert.match(cli, /headlessBrowser: false/);
   assert.match(cli, /minimizedBrowser: true/);
   assert.match(cli, /runVisibleRecovery\(config, visibleSeatKey\)/);
   assert.doesNotMatch(cli, /headlessBrowser: true/);
+
+  // Autonomous work minimizes for real, through the browser, once the DevTools
+  // endpoint is up -- the launch switch it used to rely on does not exist.
+  assert.match(cli, /if \(minimized && !headless\) await minimizeBrowser\(handle, seatKey\)/);
+  assert.doesNotMatch(cli, /--start-minimized/);
+
+  // Recovery is the one path that is supposed to interrupt the member, so it
+  // asks for a browser with no minimize at all and raises a window an earlier
+  // autonomous run may have left minimized.
+  const recovery = cli.slice(cli.indexOf('async function runVisibleRecovery'));
+  assert.match(
+    recovery,
+    /ensureBrowser\(config\.workspaceId, seatKey, \{ headless: false, raise: true \}\)/
+  );
+  assert.doesNotMatch(recovery, /minimized: true/);
+  assert.match(cli, /raiseBrowserWindows\(\{/);
+
+  // The relay reuses the browser once per action and must never pull it
+  // forward; only the two interrupting journeys opt into a raise.
+  assert.equal(cli.match(/raise: true/g)?.length, 2);
+});
+
+test('the browser_opening log reports the mode asked for, not one it cannot know yet', () => {
+  const cli = readFileSync(fileURLToPath(new URL('../bin/trevra.js', import.meta.url)), 'utf8');
+  // 0.2.9 logged `mode=minimized` before Chrome had even drawn the window and
+  // was wrong every single time. The achieved state is a separate event now.
+  assert.match(
+    cli,
+    /const browserMode = headless \? 'background' : minimized \? 'minimizing' : 'visible';/
+  );
+  assert.match(cli, /activity\('browser_minimized', `seat=\$\{seatKey\} windows=/);
+  assert.match(cli, /activity\('browser_minimize_failed'/);
 });
 test('companion keeps the DevTools endpoint reader required by browser reuse', () => {
   const cli = readFileSync(fileURLToPath(new URL('../bin/trevra.js', import.meta.url)), 'utf8');

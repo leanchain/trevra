@@ -30,7 +30,12 @@ import {
   uninstallBackgroundService
 } from '../lib/service.js';
 import { isNewerVersion, officialCompanionPackage } from '../lib/update.js';
-import { chromeLaunchArgs } from '../lib/browser.js';
+import {
+  chromeLaunchArgs,
+  minimizeBrowserWindows,
+  raiseBrowserWindows,
+  startMinimizeKeeper
+} from '../lib/browser.js';
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const VERSION = String(
@@ -442,12 +447,82 @@ async function reportRecoveryState(config, seatKey, state) {
 const browsers = new Map();
 let browserExecutable = null;
 
-async function ensureBrowser(workspaceId, seatKey, { headless = false, minimized = false } = {}) {
+// The keeper re-minimizes whatever the hosted driver raised, which for a busy
+// campaign is once per action. Logging each one would bury everything else in
+// the activity log, and logging none of it would hide a Chrome that is fighting
+// back, so report at most one keeper line a minute per browser.
+const MINIMIZE_KEEPER_LOG_INTERVAL_MS = 60_000;
+
+// Minimize for real and say what actually happened. `browser_opening` can only
+// report the mode that was *requested* -- the window is up and focused by then --
+// so the achieved state is a separate event, and a minimize that does not take
+// says so instead of being silently reported as success like 0.2.9 did.
+async function minimizeBrowser(handle, seatKey) {
+  const result = await minimizeBrowserWindows({
+    endpoint: handle.endpoint,
+    WebSocketImpl: WebSocket
+  });
+  if (result.minimized) activity('browser_minimized', `seat=${seatKey} windows=${result.windows}`);
+  else activity('browser_minimize_failed', `seat=${seatKey} ${result.reason ?? 'unknown'}`);
+
+  handle.stopMinimizeKeeper ??= startMinimizeKeeper({
+    endpoint: handle.endpoint,
+    WebSocketImpl: WebSocket,
+    onEvent: (event) => {
+      const now = Date.now();
+      if (now - (handle.lastMinimizeLog ?? 0) < MINIMIZE_KEEPER_LOG_INTERVAL_MS) return;
+      handle.lastMinimizeLog = now;
+      if (event.minimized)
+        activity('browser_reminimized', `seat=${seatKey} windows=${event.raised}`);
+      else activity('browser_minimize_failed', `seat=${seatKey} ${event.reason ?? 'unknown'}`);
+    }
+  });
+  return result;
+}
+
+function stopMinimizeKeeper(handle) {
+  try {
+    handle?.stopMinimizeKeeper?.();
+  } catch {
+    /* keeper already stopped */
+  }
+  if (handle) handle.stopMinimizeKeeper = null;
+}
+
+async function ensureBrowser(
+  workspaceId,
+  seatKey,
+  { headless = false, minimized = false, raise = false } = {}
+) {
   const key = `${workspaceId}/${seatKey}`;
+  // A reused browser may have been left minimized by an earlier autonomous run,
+  // or raised again by the last thing Trevra drove through it, so the window
+  // state is re-asserted on every reuse rather than only when Chrome is spawned.
+  //
+  // `raise` is opt-in rather than "anything that is not minimized": the relay
+  // reuses this browser once per action, and pulling a window forward that many
+  // times is the desktop takeover this whole change exists to stop. Only the two
+  // journeys that are meant to interrupt the member -- recovery and the
+  // foreground/debug run -- ask for it, and they ask once.
+  const settleReused = async (handle) => {
+    if (headless) return handle;
+    if (minimized) await minimizeBrowser(handle, seatKey);
+    else if (raise) {
+      const result = await raiseBrowserWindows({
+        endpoint: handle.endpoint,
+        WebSocketImpl: WebSocket
+      });
+      if (result.restored > 0) activity('browser_raised', `seat=${seatKey}`);
+      else if (!result.raised)
+        activity('browser_raise_failed', `seat=${seatKey} ${result.reason ?? 'unknown'}`);
+    }
+    return handle;
+  };
+
   const old = browsers.get(key);
   if (old?.endpoint && (await endpointResponds(old.endpoint))) {
     activity('browser_reused', `seat=${seatKey}`);
-    return old;
+    return settleReused(old);
   }
 
   const profileDir = join(PROFILES, safeSegment(workspaceId), safeSegment(seatKey));
@@ -457,11 +532,14 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false, minimized
     const handle = { endpoint: onDisk, child: null, profileDir };
     browsers.set(key, handle);
     activity('browser_reused', `seat=${seatKey}`);
-    return handle;
+    return settleReused(handle);
   }
 
   browserExecutable ??= systemChrome() ?? (await playwrightChromium());
-  const browserMode = headless ? 'background' : minimized ? 'minimized' : 'visible';
+  // `minimizing`, not `minimized`: Chrome opens this window headed and in front,
+  // and only the browser_minimized/browser_minimize_failed event that follows
+  // browser_ready knows whether it ended up out of the way.
+  const browserMode = headless ? 'background' : minimized ? 'minimizing' : 'visible';
   const reddit = seatKey === REDDIT_COMPANION_PROFILE_KEY;
   const browserLabel = reddit ? 'Reddit' : 'LinkedIn';
   const startUrl = reddit ? REDDIT_HOME : LINKEDIN_FEED;
@@ -482,10 +560,17 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false, minimized
     }
   );
 
-  const handle = { endpoint: null, child, profileDir };
+  const handle = {
+    endpoint: null,
+    child,
+    profileDir,
+    stopMinimizeKeeper: null,
+    lastMinimizeLog: 0
+  };
   browsers.set(key, handle);
   child.once('exit', (code) => {
     activity('browser_closed', `seat=${seatKey} code=${code ?? 'unknown'}`);
+    stopMinimizeKeeper(handle);
     const current = browsers.get(key);
     if (current?.child === child) browsers.delete(key);
   });
@@ -498,6 +583,9 @@ async function ensureBrowser(workspaceId, seatKey, { headless = false, minimized
     if (endpoint && (await endpointResponds(endpoint))) {
       handle.endpoint = endpoint;
       activity('browser_ready', `seat=${seatKey}`);
+      // Before the relay is handed out, so the first thing Trevra drives is
+      // already a window that is out of the member's way.
+      if (minimized && !headless) await minimizeBrowser(handle, seatKey);
       return handle;
     }
     if (child.exitCode !== null) break;
@@ -661,7 +749,7 @@ async function runVisibleRecovery(config, seatKey = 'owner') {
   process.stdout.write(
     'Opening the dedicated LinkedIn profile visibly. Complete LinkedIn sign-in, CAPTCHA, 2FA or device verification. Trevra will mark the account recovered as soon as this window is genuinely signed in; close the window whenever you want background mode to resume.\n'
   );
-  handle = await ensureBrowser(config.workspaceId, seatKey, { headless: false });
+  handle = await ensureBrowser(config.workspaceId, seatKey, { headless: false, raise: true });
   activity('recovery_browser_ready', `seat=${seatKey}`);
   await reportRecoveryState(config, seatKey, 'open');
   await reportCurrentState();
@@ -716,6 +804,7 @@ async function runCompanion(config, options = {}) {
       /* already closed */
     }
     for (const handle of browsers.values()) {
+      stopMinimizeKeeper(handle);
       try {
         handle.child?.kill();
       } catch {
@@ -741,7 +830,7 @@ async function runCompanion(config, options = {}) {
   // opens/reuses the dedicated profile only when Trevra requests a browser.
   if (options.openBrowserAtStart !== false) {
     try {
-      await ensureBrowser(config.workspaceId, 'owner', { headless: false });
+      await ensureBrowser(config.workspaceId, 'owner', { headless: false, raise: true });
       process.stdout.write(
         'Use this dedicated Chrome window only for LinkedIn; Trevra can control it while the companion is connected. Sign in if needed, then keep this command open.\n'
       );
@@ -1233,11 +1322,12 @@ async function main() {
       await runVisibleRecovery(config, visibleSeatKey);
       return;
     }
-    // Autonomous execution keeps a normal headed Chrome/profile/session, but it
-    // starts minimized so background work does not take over the member's desktop.
-    // Recovery remains fully visible. This avoids switching the authenticated
-    // profile into headless mode while still giving the installed service the
-    // background UX its name promises.
+    // Autonomous execution keeps a normal headed Chrome/profile/session, and the
+    // companion minimizes that window through its own DevTools endpoint (Chrome
+    // has no launch switch for it -- see lib/browser.js) so background work does
+    // not take over the member's desktop. Recovery remains fully visible. This
+    // avoids switching the authenticated profile into headless mode while still
+    // giving the installed service the background UX its name promises.
     await runCompanion(config, {
       openBrowserAtStart: false,
       headlessBrowser: false,
