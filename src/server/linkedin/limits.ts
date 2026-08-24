@@ -342,10 +342,22 @@ export const ACCEPTANCE_THROTTLE_FACTOR = 0.5;
 export const BUSINESS_HOURS = { start: 8, end: 18 };
 
 /**
- * Conservative action-spacing policy. The current planner/worker use the
- * maximum value as a fixed floor between autonomous external actions. `min`
- * remains for compatibility with older reports and configuration surfaces; it
- * is not used to generate randomized timing.
+ * The gap between two autonomous external actions. REPORTED (1.4): "randomised
+ * 30-120s gaps, never a block".
+ *
+ * A BAND, AND IT IS DRAWN FROM. Both numbers were here the whole time, but the
+ * planner and the worker took only `.max`, which turned the band into a
+ * constant: on 2026-08-24 six consecutive real sends came out 123, 123, 123,
+ * 124, 123, 123 seconds apart. An interval repeated to the second is a fact
+ * about the divisor rather than about the work, and it is the one thing in a
+ * send log that cannot be explained by anything else. `pacing.ts` and
+ * `local-worker.ts` now draw from `min`-`max` with a seeded generator.
+ *
+ * THIS IS NOT WHERE SAFETY COMES FROM, and the mean gap falling from 120s to
+ * 75s is the honest cost of saying so. What bounds load on an account is the
+ * per-day/-week/-month ceilings in this file, the day-over-day clamp and the
+ * gate -- none of which this constant participates in. Spacing keeps a batch
+ * from being a burst; it was never the control.
  */
 export const ACTION_GAP_SECONDS = { min: 30, max: 120 };
 

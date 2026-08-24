@@ -680,13 +680,20 @@ describe('how often the side-task tick touches LinkedIn', () => {
     const second = await tick(new Date(VISIT_AT.getTime() + 60_000), probe.driver);
     const between = await tick(new Date(VISIT_AT.getTime() + 30 * 60_000), probe.driver);
 
+    // THE ASSERTION THAT MATTERS IS UNCHANGED: no job ran and the driver was
+    // never touched, at any of the three instants.
     expect(first.ran).toEqual([]);
     expect(second.ran).toEqual([]);
     expect(between.ran).toEqual([]);
+    expect(probe.calls).toEqual([]);
+    // The REASON differs now that a day is two or three short sittings rather
+    // than one ten-hour window: inside a sitting there is simply nothing due,
+    // and thirty minutes later the seat is not at LinkedIn at all. Both are
+    // "no polling"; asserting the same sentence for both would have hidden
+    // which one was doing the work.
     expect(first.skipped).toContain('nothing has gone stale');
     expect(second.skipped).toContain('nothing has gone stale');
-    expect(between.skipped).toContain('nothing has gone stale');
-    expect(probe.calls).toEqual([]);
+    expect(between.skipped ?? '').toMatch(/none of them is now/);
 
     const event = await db
       .prepare(
@@ -706,6 +713,9 @@ describe('how often the side-task tick touches LinkedIn', () => {
     await markSideTaskRun(db, WORKSPACE_ID, 'owner', AVAILABILITY_RETURN_MARKER, returnedAt);
     const probe = tickDriver();
 
+    // The availability-return marker makes this tick evaluate a catch-up
+    // regardless of where in the day it lands, and the answer is still nothing:
+    // no job is stale, so a companion coming back does not become a burst.
     const first = await tick(returnedAt, probe.driver, true);
     expect(first.ran).toEqual([]);
     expect(first.skipped).toContain('nothing has gone stale');
@@ -714,9 +724,14 @@ describe('how often the side-task tick touches LinkedIn', () => {
     const runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
     expect(runs.get(AVAILABILITY_CATCHUP_MARKER)?.getTime()).toBe(returnedAt.getTime());
 
+    // A minute later the catch-up is already stamped, so the ordinary rule
+    // applies again -- and `returnedAt + 60s` is in the quiet gap between two
+    // sittings, which is what the refusal now says. It used to say "nothing has
+    // gone stale", because a pinned visit model left LinkedIn nominally open
+    // for the whole ten-hour window.
     const second = await tick(new Date(returnedAt.getTime() + 60_000), probe.driver, true);
     expect(second.ran).toEqual([]);
-    expect(second.skipped).toContain('nothing has gone stale');
+    expect(second.skipped ?? '').toMatch(/none of them is now/);
     expect(probe.calls).toEqual([]);
   });
 

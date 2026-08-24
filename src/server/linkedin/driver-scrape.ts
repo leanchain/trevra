@@ -10,6 +10,7 @@ import {
 import { hoverClick, settleMs } from './human.js';
 import { splitAndScrubName } from './lead-import.js';
 import { ACTION_GAP_SECONDS } from './limits.js';
+import { seededUnit } from './pacing.js';
 
 /**
  * READING LISTS OF PEOPLE OFF LINKEDIN. THIS FILE IS NOT LIKE THE OTHERS.
@@ -578,9 +579,21 @@ export function canonicalProfileUrl(raw: string): string | null {
  * Pacing. A page fetch is an action.
  * ------------------------------------------------------------------------ */
 
-/** Fixed conservative maximum spacing between explicit LinkedIn list/search fetches. */
-export function scrapeGapSeconds(_seed: string): number {
-  return ACTION_GAP_SECONDS.max;
+/**
+ * Seconds before the NEXT page fetch, drawn from ACTION_GAP_SECONDS.
+ *
+ * The same seeded draw `actionGapSeconds` in `local-worker.ts` uses, which is
+ * what the fourth point of this file's header has always claimed. Returning
+ * `.max` made that claim false and made a page walk emit a fixed 120-second
+ * beat -- ten pages at one interval, which is a property of the constant and
+ * not of the search. Seeded, so identical inputs pace identically on every
+ * machine and the walk stays assertable; there is still no `Math.random()`
+ * anywhere in this file.
+ */
+export function scrapeGapSeconds(seed: string): number {
+  return (
+    ACTION_GAP_SECONDS.min + seededUnit(seed) * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min)
+  );
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));

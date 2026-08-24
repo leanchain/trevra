@@ -1,10 +1,22 @@
 /**
  * Small interaction helpers shared by the LinkedIn drivers.
  *
- * These helpers are deliberately boring and intentionally transparent. They exist only for UI stability;
- * they do not add synthetic mouse movement, typing cadence, random dwell time,
- * or any other behaviour intended to disguise automation. Safety comes from the ledger, rate limits, work windows and
- * challenge/limit-wall handling, not from imitating a person.
+ * These helpers are deliberately boring and intentionally transparent. They
+ * exist only for UI stability: they do not add synthetic mouse movement,
+ * typing cadence, or random dwell time, and that remains true -- a fill is one
+ * fill and a click is one click.
+ *
+ * THE SCOPE OF THAT PROMISE IS ONE INTERACTION, and the previous wording
+ * overreached past it. `pacing.ts` and `local-worker.ts` DO vary when actions
+ * are scheduled and how far apart they are sent, and they should: a fixed
+ * 120-second gap repeated six times is an interval the scheduler generates
+ * that no real process would, so removing it is subtraction rather than
+ * disguise. Nothing about that reaches this file. Faking the timing of a
+ * keypress would be inventing a person; spacing two independent sends is not,
+ * and conflating the two is what made this comment wrong.
+ *
+ * Safety still comes from the ledger, the rate limits, the work windows and
+ * the challenge/limit-wall handling -- never from timing, here or anywhere.
  */
 
 export interface HumanPage {

@@ -358,7 +358,7 @@ describe('a page fetch is an action, so it is paced', () => {
     }
   });
 
-  it('uses the same conservative maximum fetch gap regardless of seed', async () => {
+  it('paces an identical walk identically, and two seeds differently', async () => {
     const run = async () => {
       const h = harness((url) =>
         pageNumber(url) <= 3 ? searchScreen([card('a', 'A')]) : searchScreen([])
@@ -367,8 +367,17 @@ describe('a page fetch is an action, so it is paced', () => {
       return h.delays;
     };
     expect(await run()).toEqual(await run());
-    expect(scrapeGapSeconds('llsrc_a:page:2')).toBe(ACTION_GAP_SECONDS.max);
-    expect(scrapeGapSeconds('llsrc_b:page:2')).toBe(ACTION_GAP_SECONDS.max);
+    // This asserted `toBe(ACTION_GAP_SECONDS.max)` while the gap was pinned,
+    // which made a ten-page walk emit one interval ten times -- the same
+    // artefact the sender emitted as 123, 123, 123, 124, 123, 123. The header
+    // of `driver-scrape.ts` has always claimed "the same seeded draw the worker
+    // uses"; this is that claim being true again.
+    expect(scrapeGapSeconds('llsrc_a:page:2')).not.toBe(scrapeGapSeconds('llsrc_b:page:2'));
+    for (const seed of ['llsrc_a:page:2', 'llsrc_b:page:2', 'llsrc_c:page:9']) {
+      expect(scrapeGapSeconds(seed)).toBe(scrapeGapSeconds(seed));
+      expect(scrapeGapSeconds(seed)).toBeGreaterThanOrEqual(ACTION_GAP_SECONDS.min);
+      expect(scrapeGapSeconds(seed)).toBeLessThanOrEqual(ACTION_GAP_SECONDS.max);
+    }
   });
 });
 

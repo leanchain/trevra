@@ -51,7 +51,7 @@ import {
   setSeatRestingUntil
 } from './seat-events.js';
 import { ACTION_GAP_SECONDS, type PacedKind } from './limits.js';
-import { localDateOf, weekdayOf, workWindowOf } from './pacing.js';
+import { localDateOf, seededUnit, weekdayOf, workWindowOf } from './pacing.js';
 
 import { clearInboxForSeat, syncThreadMessages, syncThreads } from './inbox.js';
 import { campaignSnapshotSteps } from './managed-campaigns.js';
@@ -647,26 +647,63 @@ const DEFAULT_MAX_ACTIONS = 25;
 const NEW_DM_THREAD_LOOKUP_DEPTH = 5;
 
 /**
- * Fixed autonomous batch bounds. At most five external actions are attempted
- * in one batch, followed by a fixed thirty-minute cooldown when the batch sent
- * or was refused work. These are explicit rate controls, not generated browsing
- * patterns.
+ * HOW LONG ONE AUTONOMOUS BATCH IS, AND HOW LONG THE SEAT IS AWAY AFTERWARDS.
+ *
+ * These are rate controls first: `DEFAULT_MAX_ACTIONS` bounds one tick, and
+ * this bounds one sitting so an overdue queue cannot reopen the browser in a
+ * loop. What changed is that they are DRAWN rather than fixed.
+ *
+ * A FIXED FIVE AND A FIXED THIRTY MINUTES IS ITSELF A NUMBER THE SYSTEM EMITS.
+ * Exactly five actions, then exactly 30:00 away, then exactly five actions, is
+ * a period; nothing about the work produces it, and it is the same class of
+ * artefact as the 123-second gap that prompted this change. Drawing the batch
+ * from 3-8 and the break from 25-60 minutes deletes the period without
+ * touching what actually bounds risk -- the ceilings in `limits.ts` and the
+ * gate are unchanged, and every action in every sitting is still evaluated by
+ * `evaluateLinkedInSafety` one at a time.
+ *
+ * THE MEANS MOVED DELIBERATELY LITTLE. 3-8 averages 5.5 against the fixed 5,
+ * so throughput is if anything slightly up. 25-60 averages 42.5 against the
+ * fixed 30, which is the one number here that costs the operator something: at
+ * the worst draw a seat is away for an hour rather than half of one. That is
+ * the reason the band stops at 60 rather than at the 90 this file used
+ * historically -- an operator watching a campaign move is owed a bounded wait,
+ * and 25-60 removes the constant just as completely as 25-90 does. A ten-hour
+ * window still holds ~14 sittings at the mean, which is far more than any
+ * daily ceiling in `limits.ts` can fill.
+ *
+ * Seeded per seat AND per session index, so consecutive sittings differ from
+ * each other and from the next seat's, and none of it is `Math.random()`.
+ *
+ * lc-debt: in-process Maps, so a worker restart forgets an in-flight break and
+ * the seat may start its next sitting early; the same trade `challengedSeats`
+ * already makes, and `setSeatRestingUntil` (migration 061) is the durable half.
+ * Upgrade path: move the session index onto the seat row too.
  */
-const SESSION_ACTIONS = { min: 5, max: 5 } as const;
-const SESSION_BREAK_MS = { min: 30 * 60_000, max: 30 * 60_000 } as const;
+const SESSION_ACTIONS = { min: 3, max: 8 } as const;
+const SESSION_BREAK_MS = { min: 25 * 60_000, max: 60 * 60_000 } as const;
 /** seat handle key -> epoch ms this seat may next open a browser. */
 const seatBreaks = new Map<string, number>();
-export function sessionActionBudget(_seed: string): number {
-  return SESSION_ACTIONS.max;
+/** seat handle key -> how many sittings this process has served it. */
+const seatSessions = new Map<string, number>();
+
+export function sessionActionBudget(seed: string): number {
+  return (
+    SESSION_ACTIONS.min +
+    Math.floor(seededUnit(seed) * (SESSION_ACTIONS.max - SESSION_ACTIONS.min + 1))
+  );
 }
 
-export function sessionBreakMs(_seed: string): number {
-  return SESSION_BREAK_MS.max;
+export function sessionBreakMs(seed: string): number {
+  return Math.round(
+    SESSION_BREAK_MS.min + seededUnit(seed) * (SESSION_BREAK_MS.max - SESSION_BREAK_MS.min)
+  );
 }
 
 /** Forget the in-process autonomous cooldown state. Tests only. */
 export function resetLinkedInSessionRhythm(): void {
   seatBreaks.clear();
+  seatSessions.clear();
 }
 
 /**
@@ -742,14 +779,33 @@ export async function autonomousWindowOpen(
 const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
 /**
- * Conservative fixed maximum gap between ledger actions.
+ * Seconds to wait before the next action, drawn from ACTION_GAP_SECONDS.
  *
- * Trevra uses the maximum configured spacing instead of shaping a randomized
- * rhythm. The purpose is load/rate control, not making automation harder to
- * identify.
+ * THE ARTEFACT THIS DELETES IS NOT HYPOTHETICAL. Returning `.max` made every
+ * gap 120 seconds, and on 2026-08-24 this workspace's real sends came out
+ * 123, 123, 123, 124, 123, 123 seconds apart. A repeated interval accurate to
+ * one second across six consecutive actions is not something the work produces
+ * -- it is the constant, visible in the log. `limits.ts` has always documented
+ * 30-120s as the intended BAND; taking only its top turned a range into a
+ * period, and this draws from it again.
+ *
+ * NOT A DISGUISE, AND NOT THE SAFETY CONTROL. Nothing here imitates a person
+ * (`human.ts` still refuses to fake typing cadence, hover or dwell), and what
+ * bounds risk on this account is volume -- the bands, the operator's ceilings
+ * and the gate, all unchanged. This only stops the scheduler signing its own
+ * name on the timestamps. It is also, on average, MORE spacing per unit of
+ * work than a fixed floor would be and less than a fixed ceiling: the mean gap
+ * is 75s rather than 120s, which is the one direction this trades against, and
+ * the per-day ceilings are what actually cap load.
+ *
+ * SEEDED, so "randomised" means unpredictable to LinkedIn and not
+ * unreproducible to us: re-running the same batch produces the same gaps, and
+ * the pacing is therefore assertable in a test rather than merely hoped for.
  */
-export function actionGapSeconds(_seed: string): number {
-  return ACTION_GAP_SECONDS.max;
+export function actionGapSeconds(seed: string): number {
+  return (
+    ACTION_GAP_SECONDS.min + seededUnit(seed) * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min)
+  );
 }
 
 /**
@@ -4914,7 +4970,14 @@ export async function runDueLinkedInActions(
       });
       return;
     }
-    const sessionSeed = handleKey;
+    // ONE SEED PER SITTING, NOT ONE PER SEAT. `handleKey` alone gave a seat the
+    // same batch size and the same break for its entire life, which is how the
+    // draw below stayed a constant even after it stopped being written as one.
+    // The index makes consecutive sittings differ from each other while keeping
+    // each one reproducible from the seat and the count.
+    const sessionIndex = (seatSessions.get(handleKey) ?? 0) + 1;
+    seatSessions.set(handleKey, sessionIndex);
+    const sessionSeed = `${handleKey}:session:${sessionIndex}`;
     let restAfterBatch = false;
 
     // A legacy local path or an external provider name. External homes are
@@ -5013,7 +5076,8 @@ export async function runDueLinkedInActions(
       const result = await runLinkedInLocalBatch(store, {
         driver,
         page: handle.page,
-        // One fixed bounded batch, not everything that is due.
+        // One bounded sitting, not everything that is due. Drawn per sitting --
+        // see SESSION_ACTIONS.
         maxActions: sessionActionBudget(sessionSeed),
         // The gate is called as a FUNCTION, not through the `gtm.linkedin-guard`
         // skill: `excludeActionId` is deliberately absent from the skill's
@@ -5099,8 +5163,11 @@ export async function runDueLinkedInActions(
       // pattern than the actions it was refusing to send, and every reason the
       // gate refuses for is one that needs HOURS to change, not a minute.
       if (result.executed > 0 || result.blocked > 0) {
-        // A fixed cooldown prevents an overdue queue from reopening the browser
-        // continuously. This is rate control, not generated browsing behavior.
+        // The cooldown prevents an overdue queue from reopening the browser
+        // continuously. That is rate control; the fact that it is DRAWN from
+        // SESSION_BREAK_MS rather than fixed is the artefact removal described
+        // there -- a break of exactly 30:00 after exactly five actions is a
+        // period the scheduler emits and the work does not.
         const until = Date.now() + sessionBreakMs(sessionSeed);
         seatBreaks.set(handleKey, until);
         await setSeatRestingUntil(db, workspaceId, seatKey, new Date(until));

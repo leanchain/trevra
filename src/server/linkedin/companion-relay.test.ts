@@ -183,11 +183,14 @@ describe('LinkedIn companion reverse CDP relay', () => {
   /**
    * THE SOCKET THAT HAD NO HEARTBEAT, AND THE BATCH THAT DIED IN THE GAP.
    *
-   * `local-worker.ts` sleeps `ACTION_GAP_SECONDS.max` -- 120 seconds -- between
-   * two actions of the same batch, and a loaded LinkedIn profile emits no CDP
-   * events while it waits. The browser relay therefore carried zero bytes for
-   * the whole gap, and on 2026-08-24 a five-action batch completed exactly one
-   * action because the relay was gone by the time the second one navigated.
+   * `local-worker.ts` sleeps a draw from `ACTION_GAP_SECONDS` -- up to 120
+   * seconds -- between two actions of the same batch, and a loaded LinkedIn
+   * profile emits no CDP events while it waits. The browser relay therefore
+   * carried zero bytes for the whole gap, and on 2026-08-24 a five-action batch
+   * completed exactly one action because the relay was gone by the time the
+   * second one navigated. Drawing the gap rather than pinning it to the maximum
+   * shortens the average silence but not the worst case, so the heartbeat below
+   * is what this still rests on.
    *
    * A REAL SOCKET AND A SHORT PERIOD, not fake timers: what has to be proved is
    * that a frame reaches the peer, and a faked clock proves only that a

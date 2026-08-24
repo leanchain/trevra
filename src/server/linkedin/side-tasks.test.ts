@@ -59,23 +59,38 @@ function minutesOpen(seat: SideTaskSeat, date: string): number[] {
   return open;
 }
 
+/**
+ * These four expectations were "exactly one visit, spanning the whole
+ * configured window, identical for every seat and every date" while the visit
+ * model was pinned. That one flat window is the artefact: a day divided evenly
+ * across 08:00-18:00 emits an interval that is a property of the divisor, and
+ * the sender's ledger showed it as 123, 123, 123, 124, 123, 123 seconds. They
+ * move back to the operator's own description of their use -- two or three
+ * openings a day of five to ten minutes -- and the bounds are asserted against
+ * the exported constants rather than literals.
+ */
 describe('visitsForDay', () => {
-  it('uses exactly one operator-configured execution window per working day', () => {
+  it('opens LinkedIn two or three times a day, not once and not continuously', () => {
     for (let day = 1; day <= 28; day += 1) {
       const visits = visitsForDay('ws:owner', { year: 2026, month: 9, day }, WINDOW);
-      expect(visits).toHaveLength(1);
-      expect(visits.length).toBe(VISITS_PER_DAY.max);
+      expect(visits.length).toBeGreaterThanOrEqual(VISITS_PER_DAY.min);
+      expect(visits.length).toBeLessThanOrEqual(VISITS_PER_DAY.max);
     }
   });
 
-  it('matches the configured working window exactly', () => {
+  it('lasts five to ten minutes when there is nothing to send', () => {
     for (let day = 1; day <= 28; day += 1) {
-      const [visit] = visitsForDay('ws:owner', { year: 2026, month: 9, day }, WINDOW);
-      expect(visit.startMinute).toBe(WINDOW.startMinute);
-      expect(visit.endMinute).toBe(WINDOW.endMinute);
-      expect(visit.endMinute - visit.startMinute).toBe(WINDOW.endMinute - WINDOW.startMinute);
+      for (const visit of visitsForDay('ws:owner', { year: 2026, month: 9, day }, WINDOW)) {
+        // Rounded to whole minutes, so the floor and the ceiling are the
+        // rounded band rather than the raw one.
+        expect(visit.endMinute - visit.startMinute).toBeGreaterThanOrEqual(VISIT_MINUTES.min - 1);
+        expect(visit.endMinute - visit.startMinute).toBeLessThanOrEqual(VISIT_MINUTES.max + 1);
+        // NEVER OUTSIDE THE OPERATOR'S WINDOW. The visit model narrows the
+        // configured day and may not widen it.
+        expect(visit.startMinute).toBeGreaterThanOrEqual(WINDOW.startMinute);
+        expect(visit.endMinute).toBeLessThanOrEqual(WINDOW.endMinute);
+      }
     }
-    expect(VISIT_MINUTES).toEqual({ min: 0, max: 0 });
   });
 
   it('spreads them out -- a clump after a long silence is worse than a flat line', () => {
@@ -96,25 +111,33 @@ describe('visitsForDay', () => {
     );
   });
 
-  it('does not alter the operator window by seat identity', () => {
-    expect(visitsForDay('ws:owner', TUESDAY, WINDOW)).toEqual(
+  it('gives two seats different days, so one machine is not one schedule', () => {
+    expect(visitsForDay('ws:owner', TUESDAY, WINDOW)).not.toEqual(
       visitsForDay('ws:sales', TUESDAY, WINDOW)
     );
   });
 
-  it('does not alter the operator window by calendar date', () => {
-    expect(visitsForDay('ws:owner', TUESDAY, WINDOW)).toEqual(
+  it('gives one seat a different day on a different date', () => {
+    expect(visitsForDay('ws:owner', TUESDAY, WINDOW)).not.toEqual(
       visitsForDay('ws:owner', { ...TUESDAY, day: 5 }, WINDOW)
     );
   });
 });
 
 describe('visitAt', () => {
-  it('is eligible throughout the configured working window', () => {
+  it('is open for a few short sittings inside the window, not all of it', () => {
     const open = minutesOpen(SEAT, '2026-08-04');
-    expect(open.length).toBe(SEAT.workEndMinute - SEAT.workStartMinute);
-    expect(open[0]).toBe(SEAT.workStartMinute);
-    expect(open.at(-1)).toBe(SEAT.workEndMinute - 1);
+    const visits = visitsForDay('ws_side_tasks:owner', TUESDAY, WINDOW);
+    // WAS: every minute of the configured window. That is what "one visit
+    // spanning 08:00-18:00" means, and it is the shape that let background
+    // work be indistinguishable from a polling loop with office hours.
+    expect(open.length).toBe(
+      visits.reduce((total, visit) => total + (visit.endMinute - visit.startMinute), 0)
+    );
+    expect(open.length).toBeLessThan(SEAT.workEndMinute - SEAT.workStartMinute);
+    // Still strictly inside the operator's hours at both ends.
+    expect(open[0]).toBeGreaterThanOrEqual(SEAT.workStartMinute);
+    expect(open.at(-1)).toBeLessThan(SEAT.workEndMinute);
   });
 
   it('is never open at 03:00', () => {

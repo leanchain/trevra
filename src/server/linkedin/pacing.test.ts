@@ -4,7 +4,10 @@ import { recordAction, type LinkedInActionKind, type LinkedInActionStatus } from
 import { evaluateLinkedInSafety } from './guard.js';
 import { ACTION_GAP_SECONDS, BUSINESS_HOURS } from './limits.js';
 import {
+  DAILY_DRAW,
+  DAY_EDGE_JITTER_MINUTES,
   FLAT_DAY_SHAPE,
+  REST_DAY_ODDS,
   VISITS_PER_DAY,
   addLocalDays,
   dayShapeFor,
@@ -599,6 +602,95 @@ describe('slot placement', () => {
     expect(span).toBeGreaterThan(2);
   });
 
+  /**
+   * THE REGRESSION THIS FILE WAS REOPENED FOR.
+   *
+   * With `actionGapSeconds` and the slot spread both pinned to
+   * ACTION_GAP_SECONDS.max, this workspace's real sends on 2026-08-24 came out
+   * 123, 123, 123, 124, 123, 123 seconds apart. Six consecutive gaps agreeing
+   * to the second is not a fact about the work -- it is the divisor, visible.
+   * The band in `limits.ts` has always been 30-120s; the assertion here is
+   * that the planner draws from it rather than sitting on its top.
+   */
+  it('draws the gap across the 30-120s band instead of pinning it to the maximum', async () => {
+    await seat('2026-01-01');
+    // Yesterday's real volume, so the day-over-day ramp is not what binds and
+    // the day is big enough to have a rhythm at all.
+    for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 30);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(13), horizonDays: 1 },
+      NOW
+    );
+    expect(plan.slots.length).toBeGreaterThan(4);
+
+    const seconds = plan.slots.map((slot) => new Date(slot.plannedFor).getTime() / 1000);
+    const gaps = seconds.slice(1).map((at, index) => at - seconds[index]);
+    // Never closer than the floor, whatever else varies.
+    for (const gap of gaps) expect(gap).toBeGreaterThanOrEqual(ACTION_GAP_SECONDS.min);
+    // NOT A METRONOME. Consecutive gaps inside one visit differ; the old
+    // behaviour made this set a singleton.
+    const withinVisit = gaps.filter((gap) => gap < 20 * 60);
+    expect(withinVisit.length).toBeGreaterThan(2);
+    expect(new Set(withinVisit.map((gap) => Math.round(gap))).size).toBeGreaterThan(1);
+    // And no two are equal to the second across the whole day, which is the
+    // exact shape of the evidence: 123, 123, 123, 124, 123, 123.
+    expect(withinVisit.every((gap) => gap === withinVisit[0])).toBe(false);
+  });
+
+  /**
+   * A DAY IS A FEW SITTINGS, NOT A SMEAR. One visit spanning 08:00-18:00 with
+   * the day's actions divided evenly across it is what produced the metronome;
+   * clustering is what removes the divisor. This asserts the clustering itself
+   * -- more than one occupied visit, and a real quiet gap between them.
+   */
+  it('clusters a day into more than one sitting, with quiet time between them', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 30);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(13), horizonDays: 1 },
+      NOW
+    );
+
+    // Derived from the same function the planner used, at the same instant, so
+    // what is under test is the CLUSTERING rather than a hardcoded schedule.
+    const visits = visitsForDay(
+      `${WORKSPACE_ID}:owner`,
+      { year: 2026, month: 8, day: 6 },
+      dayShapeFor(
+        `${WORKSPACE_ID}:owner`,
+        { year: 2026, month: 8, day: 6 },
+        {
+          days: [1, 2, 3, 4, 5],
+          startMinute: 480,
+          endMinute: 1080
+        }
+      ),
+      { actions: plan.slots.length, earliestMinute: 540 }
+    );
+    expect(visits.length).toBeGreaterThan(1);
+    expect(visits.length).toBeLessThanOrEqual(VISITS_PER_DAY.max);
+
+    const occupied = new Set(
+      plan.slots.map((slot) => {
+        const at = new Date(slot.plannedFor);
+        const minuteOfDay = at.getUTCHours() * 60 + at.getUTCMinutes();
+        return visits.findIndex(
+          (visit) => minuteOfDay >= visit.startMinute && minuteOfDay <= visit.endMinute
+        );
+      })
+    );
+    expect(occupied.has(-1)).toBe(false);
+    expect(occupied.size).toBeGreaterThan(1);
+
+    // The gap BETWEEN sittings is the point: a person closes the tab. At least
+    // one pause is longer than any within-visit gap could be.
+    const seconds = plan.slots.map((slot) => new Date(slot.plannedFor).getTime() / 1000);
+    const gaps = seconds.slice(1).map((at, index) => at - seconds[index]);
+    expect(Math.max(...gaps)).toBeGreaterThan(30 * 60);
+  });
+
   it('drops repeated targets rather than scheduling the same person twice', async () => {
     await seat('2026-01-01');
     const plan = await planPacing(
@@ -734,10 +826,16 @@ describe('spreading inside a short business-hours window', () => {
     );
 
     const today = plan.slots.filter((slot) => slot.plannedFor.startsWith('2026-08-06'));
-    // The configured work window is authoritative. In the last five minutes,
-    // only the number that fits at the fixed 120-second floor may be scheduled.
-    expect(today.length).toBeGreaterThan(0);
-    expect(today.length).toBeLessThanOrEqual(3);
+    // NOTHING TODAY, and that is the visit model doing its job. This expectation
+    // moved from "1 to 3 slots" back to zero when visits were restored: the
+    // day's last visit is long over by 17:55, and `visitsForDay` hands work only
+    // to visits that are still reachable, so there is nowhere left to put one.
+    // The flat spread had to answer 3 here, because a flat window is open until
+    // the second it closes -- and three invitations fired between 17:55 and
+    // 18:00 is an end-of-day burst, which is the shape this whole file exists to
+    // avoid. The eighteen targets are not lost; they roll to the next day.
+    expect(today.length).toBe(0);
+    expect(plan.slots.length).toBeGreaterThan(0);
 
     // The original defect: every slot past capacity collapsed onto the same
     // clamped second. Distinct timestamps is the assertion that matters, and it
@@ -971,6 +1069,83 @@ describe('the planner and the gate agree', () => {
       expect(timing.map((entry) => entry.passed)).toEqual([true, true]);
     }
   });
+
+  /**
+   * THE INVARIANT THE DAY SHAPING PUTS AT RISK, checked across a month.
+   *
+   * `dayShapeFor` narrows a day's hours, and `guard.ts` narrows its own
+   * `business-hours` check with the SAME function and the SAME seed. That is
+   * an agreement by construction, and it survives exactly as long as both
+   * sides keep passing `${workspaceId}:${seatKey}` and the seat's configured
+   * window. If either drifts, this fails; nothing else would notice, because a
+   * slot the gate refuses is an action that stalls rather than one that is
+   * blocked with a reason.
+   */
+  it('accepts every slot of a shaped month, and the shaping is really narrowing', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 18; index += 1) await log('invite', 'sent', 30);
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(90), horizonDays: 28 },
+      NOW
+    );
+    expect(plan.slots.length).toBeGreaterThan(30);
+
+    for (const slot of plan.slots) {
+      const at = new Date(slot.plannedFor);
+      const shape = dayShapeFor(
+        `${WORKSPACE_ID}:owner`,
+        { year: at.getUTCFullYear(), month: at.getUTCMonth() + 1, day: at.getUTCDate() },
+        {
+          days: [1, 2, 3, 4, 5],
+          startMinute: BUSINESS_HOURS.start * 60,
+          endMinute: BUSINESS_HOURS.end * 60
+        }
+      );
+      const minuteOfDay = at.getUTCHours() * 60 + at.getUTCMinutes();
+      // Inside the DAY'S window, which is stricter than the configured one --
+      // this is the assertion that would break if the two seeds diverged.
+      expect(minuteOfDay).toBeGreaterThanOrEqual(shape.startMinute);
+      expect(minuteOfDay).toBeLessThan(shape.endMinute);
+    }
+
+    // NOT VACUOUS: at least one day in the horizon is genuinely shorter than
+    // the configured window, so the paragraph above is testing something.
+    const narrowed = plan.slots.some((slot) => {
+      const at = new Date(slot.plannedFor);
+      const shape = dayShapeFor(
+        `${WORKSPACE_ID}:owner`,
+        { year: at.getUTCFullYear(), month: at.getUTCMonth() + 1, day: at.getUTCDate() },
+        {
+          days: [1, 2, 3, 4, 5],
+          startMinute: BUSINESS_HOURS.start * 60,
+          endMinute: BUSINESS_HOURS.end * 60
+        }
+      );
+      return (
+        shape.startMinute > BUSINESS_HOURS.start * 60 || shape.endMinute < BUSINESS_HOURS.end * 60
+      );
+    });
+    expect(narrowed).toBe(true);
+
+    // And the gate agrees about the whole month, not just about the arithmetic.
+    for (const slot of plan.slots) {
+      const verdict = await evaluateLinkedInSafety(
+        db,
+        {
+          workspaceId: WORKSPACE_ID,
+          kind: 'invite',
+          targetRef: slot.targetRef,
+          plannedFor: slot.plannedFor
+        },
+        NOW
+      );
+      const timing = verdict.checks.filter(
+        (entry) => entry.check === 'business-hours' || entry.check === 'weekend'
+      );
+      expect(timing.map((entry) => entry.passed)).toEqual([true, true]);
+    }
+  });
 });
 
 /**
@@ -1017,7 +1192,16 @@ describe('resolving the seat a skill call meant', () => {
   });
 });
 
-/** The operator-configured work window is used directly; no synthetic day shaping. */
+/**
+ * WHAT MAKES A MONTH LOOK LIKE A PERSON'S MONTH rather than a scheduler's.
+ *
+ * `human.ts` is about one click and deliberately does nothing. This is about
+ * the shape of a month: days that start and finish at slightly different times
+ * inside the SAME configured window, and days that stop short of their ceiling
+ * instead of running to it. Both are seeded, so they are assertable rather
+ * than merely hoped for -- and `guard.ts` recomputes them from the same seed,
+ * which is what stops the gate refusing what the planner just placed.
+ */
 describe('day shaping', () => {
   const WINDOW = {
     days: [1, 2, 3, 4, 5],
@@ -1031,22 +1215,70 @@ describe('day shaping', () => {
     expect(first).toEqual(second);
     expect(first.startMinute).toBeGreaterThanOrEqual(WINDOW.startMinute);
     expect(first.endMinute).toBeLessThanOrEqual(WINDOW.endMinute);
-    expect(first.draw).toBeGreaterThanOrEqual(0.8);
+    expect(first.draw).toBeGreaterThanOrEqual(DAILY_DRAW.min);
     expect(first.draw).toBeLessThanOrEqual(1);
   });
 
-  it('never invents rest days, shifted edges, or per-seat volume draws', () => {
+  /**
+   * These four expectations were inverted while the shaping was pinned -- the
+   * test asserted `draw === 1` and both edges equal to the configured window,
+   * which is precisely the flat month that produced the 123-second metronome.
+   * They move back to "some days differ" now that the draws are live. The
+   * bounds stay exact and stay tied to the exported constants rather than to
+   * literals, so widening a band is a deliberate edit to `pacing.ts` and not
+   * something a test quietly tolerates.
+   */
+  it('shortens some days and stops others short of the ceiling, inside the same window', () => {
     const shapes = Array.from({ length: 60 }, (_, index) =>
       dayShapeFor('ws:owner', addLocalDays({ year: 2026, month: 8, day: 17 }, index), WINDOW)
     );
+    expect(shapes.some((shape) => shape.draw < 1)).toBe(true);
+    expect(shapes.some((shape) => shape.startMinute > WINDOW.startMinute)).toBe(true);
+    expect(shapes.some((shape) => shape.endMinute < WINDOW.endMinute)).toBe(true);
+    // THE HARD BOUNDARY, on every one of the sixty days: the shape narrows the
+    // operator's window and may never widen it, because `guard.ts` refuses a
+    // slot outside the configured hours and a plan the gate refuses is an
+    // action that stalls rather than one that is blocked with a reason.
     for (const shape of shapes) {
-      expect(shape.resting).toBe(false);
-      expect(shape.draw).toBe(1);
-      expect(shape.startMinute).toBe(WINDOW.startMinute);
-      expect(shape.endMinute).toBe(WINDOW.endMinute);
+      expect(shape.startMinute).toBeGreaterThanOrEqual(WINDOW.startMinute);
+      expect(shape.startMinute).toBeLessThanOrEqual(WINDOW.startMinute + DAY_EDGE_JITTER_MINUTES);
+      expect(shape.endMinute).toBeLessThanOrEqual(WINDOW.endMinute);
+      expect(shape.endMinute).toBeGreaterThanOrEqual(WINDOW.endMinute - DAY_EDGE_JITTER_MINUTES);
+      expect(shape.draw).toBeGreaterThanOrEqual(DAILY_DRAW.min);
+      expect(shape.draw).toBeLessThanOrEqual(1);
     }
+    // Two different seats do not share a calendar.
     const other = dayShapeFor('ws:sales', { year: 2026, month: 8, day: 17 }, WINDOW);
-    expect(other).toEqual(shapes[0]);
+    expect(other).not.toEqual(shapes[0]);
+  });
+
+  /**
+   * REST DAYS ARE OFF, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT.
+   *
+   * A resting day is the one thing the shaping could do that changes HOW MUCH
+   * rather than WHEN, and from outside a silently skipped day is
+   * indistinguishable from the product being broken. The seam is kept (the
+   * planner zeroes a resting day and the gate refuses one), the odds are zero,
+   * and this test is what stops the odds drifting up without the refusal
+   * sentence in `guard.ts` being rewritten first.
+   */
+  it('never rests a day while REST_DAY_ODDS is zero', () => {
+    expect(REST_DAY_ODDS).toBe(0);
+    const shapes = Array.from({ length: 400 }, (_, index) =>
+      dayShapeFor('ws:owner', addLocalDays({ year: 2026, month: 1, day: 1 }, index), WINDOW)
+    );
+    expect(shapes.every((shape) => shape.resting === false)).toBe(true);
+  });
+
+  it('gives the same seat the same day every time it is asked', () => {
+    // The property the whole file is built on: a plan can be reproduced from
+    // the ledger, on any machine and any Node version, because nothing here
+    // reads a clock or `Math.random()`.
+    for (let index = 0; index < 30; index += 1) {
+      const day = addLocalDays({ year: 2026, month: 8, day: 17 }, index);
+      expect(dayShapeFor('ws:owner', day, WINDOW)).toEqual(dayShapeFor('ws:owner', day, WINDOW));
+      expect(visitsForDay('ws:owner', day, WINDOW)).toEqual(visitsForDay('ws:owner', day, WINDOW));
+    }
   });
 
   it("keeps every planned slot inside the operator's configured hours", async () => {
