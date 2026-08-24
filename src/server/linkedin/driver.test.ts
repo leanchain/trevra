@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   SELECTORS,
+  connectAnchorSelector,
   isDegreeRead,
   isLoggedIn,
   parseConnectionDegree,
   parseConnectionsCount,
+  profileHandleFor,
   readProfileDegree,
   readSeat,
   sendInvite,
@@ -364,6 +366,162 @@ describe('connection request composer', () => {
     expect(events.indexOf(`click:${SELECTORS.sendInviteButton}`)).toBeGreaterThan(
       events.indexOf(`fill:${SELECTORS.noteTextarea}`)
     );
+  });
+
+  /**
+   * THE REASON THE CAMPAIGN SENT ZERO INVITES, and neither half of it was a
+   * timing problem.
+   *
+   * Measured against the live seat on 2026-08-25: LinkedIn renders Connect as
+   * an ANCHOR carrying the target's vanity name --
+   * `<a href="/preload/custom-invite/?vanityName=some-person">` -- and renders
+   * it in the MEMBER's language, which on this seat is German ("Vernetzen").
+   * `connectButton` is `button[aria-label^="Invite"]...` and misses on both
+   * counts. The profile-view step kept working the entire time because it
+   * needs no selector at all, which is exactly what "13 views, 0 invites"
+   * looked like from the outside.
+   */
+  it("clicks the target's own Connect anchor when no Connect button exists", async () => {
+    let current = TARGET;
+    const clicked: string[] = [];
+    const filled: string[] = [];
+    const anchor = connectAnchorSelector('some-person');
+    const locator = (selector: string): LinkedInLocator => {
+      const self: LinkedInLocator = {
+        count: async () => {
+          // The German profile: no Connect BUTTON anywhere, and no More menu
+          // this table's English labels can find either.
+          if (selector === anchor) return 1;
+          if (selector === SELECTORS.addNoteButton) return 1;
+          if (selector === SELECTORS.noteTextarea) return 1;
+          if (selector === SELECTORS.sendInviteButton) return 1;
+          return 0;
+        },
+        first: () => self,
+        click: async () => {
+          clicked.push(selector);
+        },
+        fill: async (value: string) => {
+          filled.push(value);
+        },
+        textContent: async () => null
+      };
+      return self;
+    };
+    const page: LinkedInPage = {
+      goto: async (url: string) => {
+        current = url;
+      },
+      url: () => current,
+      locator,
+      waitForTimeout: async () => {}
+    };
+
+    const result = await sendInvite(page, TARGET, 'Hi Byron, thanks for connecting.');
+
+    expect(result).toMatchObject({ ok: true, failureKind: null });
+    expect(clicked).toContain(anchor);
+    expect(filled).toEqual(['Hi Byron, thanks for connecting.']);
+  });
+
+  /**
+   * AND IT HAS TO BE THAT PERSON'S ANCHOR.
+   *
+   * A profile page carries other people's Connect anchors: `ptr2m` was
+   * measured with seven, one for the profile and six for the "People also
+   * viewed" rail. A selector that matched `vanityName=byron` as a substring
+   * would match `vanityName=byronsmith` too, and `.first()` would then invite
+   * a stranger nobody approved -- which cannot be withdrawn quietly. So the
+   * handle is pinned to the END of the parameter, both for today's URL and for
+   * the day LinkedIn appends another one.
+   */
+  it('pins the Connect anchor to the whole handle, never a prefix of it', () => {
+    const selector = connectAnchorSelector('byron');
+    expect(selector).toContain('[href$="vanityName=byron"]');
+    expect(selector).toContain('[href*="vanityName=byron&"]');
+    expect(selector).not.toContain('[href*="vanityName=byron"]');
+    /*
+     * AND IT HAS TO BE THE COPY A PERSON CAN ACTUALLY HIT. The profile
+     * renders three anchors for its own subject: a sticky-header duplicate
+     * OUTSIDE `main` that a Premium banner covers -- first in the DOM, so
+     * `.first()` picks it and the click times out after 15 seconds -- the real
+     * top-card control inside `main`, and a 0x0 ghost. Every alternative is
+     * therefore scoped and `:visible`, and none of them may be unscoped.
+     */
+    for (const alternative of selector.split(', ')) {
+      expect(alternative.startsWith('main ')).toBe(true);
+      expect(alternative.endsWith(':visible')).toBe(true);
+    }
+    expect(profileHandleFor(TARGET)).toBe('some-person');
+    // A target this driver would not navigate to yields no handle, so the
+    // caller falls back to the selectors that need none.
+    expect(profileHandleFor('https://evil.example/in/some-person/')).toBeNull();
+  });
+
+  /**
+   * THE COMPOSER IS TOLD APART BY STRUCTURE, BECAUSE ITS WORDS ARE TRANSLATED.
+   *
+   * The live modal reads "Nachricht hinzufügen" and "Ohne Notiz senden". Both
+   * are artdeco buttons, and artdeco's own primary/secondary classes say which
+   * one sends in every language LinkedIn ships.
+   */
+  it('matches the composer controls by artdeco role as well as by words', () => {
+    expect(SELECTORS.addNoteButton).toContain('div.send-invite button.artdeco-button--secondary');
+    expect(SELECTORS.sendInviteButton).toContain('div.send-invite button.artdeco-button--primary');
+    expect(SELECTORS.sendWithoutNoteButton).toContain(
+      'div.send-invite button.artdeco-button--primary'
+    );
+  });
+
+  /**
+   * THE PRICE OF THOSE TWO PRIMARIES BEING THE SAME BUTTON.
+   *
+   * Before the note field is opened, the modal's primary reads "send without a
+   * note"; after, it reads "send". `sendInviteButton` now matches that primary
+   * structurally, so an approved note plus a composer that never opens its
+   * note field must NOT end in a click on it -- that would send the empty
+   * invite commit 496cf5d was written to stop, wearing a different disguise.
+   * The textarea is the proof of which state the modal is in, and nothing is
+   * sent without it.
+   */
+  it('never clicks send when an approved note has nowhere to be typed', async () => {
+    let current = TARGET;
+    const clicked: string[] = [];
+    const locator = (selector: string): LinkedInLocator => {
+      const self: LinkedInLocator = {
+        count: async () => {
+          if (selector === connectAnchorSelector('some-person')) return 1;
+          // The modal is open on its FIRST state: a primary button is there,
+          // and the note field is not.
+          if (selector === SELECTORS.sendInviteButton) return 1;
+          if (selector === SELECTORS.sendWithoutNoteButton) return 1;
+          return 0;
+        },
+        first: () => self,
+        click: async () => {
+          clicked.push(selector);
+        },
+        fill: async () => {},
+        textContent: async () => null
+      };
+      return self;
+    };
+    const page: LinkedInPage = {
+      goto: async (url: string) => {
+        current = url;
+      },
+      url: () => current,
+      locator,
+      waitForTimeout: async () => {}
+    };
+
+    const result = await sendInvite(page, TARGET, 'Hi Byron, thanks for connecting.', {
+      appearTimeoutMs: 20
+    });
+
+    expect(result.ok).toBe(false);
+    expect(clicked).not.toContain(SELECTORS.sendInviteButton);
+    expect(clicked).not.toContain(SELECTORS.sendWithoutNoteButton);
   });
 });
 

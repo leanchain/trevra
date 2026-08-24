@@ -418,15 +418,51 @@ export const SELECTORS = {
    * `:text-is` rather than `:has-text`: exact, so "Send" cannot match "Send
    * without a note" and pick the wrong control. `#interop-outlet` stays as the
    * first alternative because it is the most specific thing we know.
+   *
+   * AND THEN THE COMPOSER WAS MEASURED, and both beliefs above were wrong.
+   *
+   * On 2026-08-25 this modal was opened against the live seat and read without
+   * clicking anything that sends. It is NOT in the interop outlet and NOT in a
+   * shadow root: `#interop-outlet` is present with an EMPTY open shadow root
+   * and no children, while the composer is a plain light-DOM Ember modal --
+   * `div[role="dialog"].artdeco-modal.send-invite`, the same `send-invite`
+   * class `inviteModal` below has always named. Every `#interop-outlet`
+   * alternative in this table is therefore dead weight, kept only because a
+   * selector that matches nothing costs one `count()` and removing it would
+   * make this comment unfalsifiable.
+   *
+   * THE TEXT ALTERNATIVES WERE ALSO WRONG, for a reason no amount of widening
+   * would have fixed: THIS SEAT'S LINKEDIN IS IN GERMAN. `document.
+   * documentElement.lang` is `de`, the cookie is `lang=v=2&lang=de-de`, and
+   * the controls read "Nachricht hinzufügen", "Ohne Notiz senden" and
+   * "Senden". LinkedIn renders its interface in the MEMBER's language, so an
+   * English word is no more a contract than an English `aria-label` is --
+   * exactly the lesson `connectionsCount` below already learned from `1
+   * Kontakt`, and this table did not carry across.
+   *
+   * So each of these now ends with a STRUCTURAL alternative scoped to the
+   * modal, which is what a person distinguishes these controls by anyway:
+   * artdeco's own `--primary` is the button that sends and `--secondary` is
+   * the one that opens the note field, in every language LinkedIn ships.
+   *
+   * THE TWO PRIMARIES ARE THE SAME BUTTON IN DIFFERENT STATES, and that is
+   * safe only because of the ORDER `sendInvite` reads them in. Before the note
+   * field is opened the primary is "send without a note"; after it is opened
+   * the primary is "send". `sendWithoutNoteButton` is consulted ONLY in the
+   * no-note branch, which never opens the note field, and `sendInviteButton`
+   * ONLY after `noteTextarea` has matched AND been typed into -- a textarea
+   * that exists is positive proof of which state the modal is in. Reordering
+   * that would send an approved note as an empty invite; see the load-bearing
+   * `typeLike` call in `sendInvite`.
    */
   addNoteButton:
-    '#interop-outlet button[aria-label="Add a note"], button[aria-label="Add a note"], #interop-outlet button:text-is("Add a note"), button:text-is("Add a note")',
+    '#interop-outlet button[aria-label="Add a note"], button[aria-label="Add a note"], #interop-outlet button:text-is("Add a note"), button:text-is("Add a note"), div.send-invite button.artdeco-button--secondary',
   noteTextarea:
     '#interop-outlet textarea, textarea#custom-message, textarea[name="message"], textarea[placeholder*="note" i], textarea[aria-label*="note" i]',
   sendInviteButton:
-    '#interop-outlet button[aria-label="Send"], #interop-outlet button:text-is("Send"), button[aria-label="Send invitation"], button[aria-label="Send now"], button:text-is("Send"), button:text-is("Send invitation")',
+    '#interop-outlet button[aria-label="Send"], #interop-outlet button:text-is("Send"), button[aria-label="Send invitation"], button[aria-label="Send now"], button:text-is("Send"), button:text-is("Send invitation"), div.send-invite button.artdeco-button--primary',
   sendWithoutNoteButton:
-    '#interop-outlet button[aria-label="Send without a note"], button[aria-label="Send without a note"], #interop-outlet button:text-is("Send without a note"), button:text-is("Send without a note")',
+    '#interop-outlet button[aria-label="Send without a note"], button[aria-label="Send without a note"], #interop-outlet button:text-is("Send without a note"), button:text-is("Send without a note"), div.send-invite button.artdeco-button--primary',
   /** Open modal. Still visible after "send" means the send did not go through. */
   inviteModal: 'div[role="dialog"].send-invite, div.artdeco-modal[role="dialog"]',
   /** An invite already awaiting their answer. */
@@ -701,6 +737,84 @@ export function profileUrlFor(target: string): string | null {
 }
 
 /**
+ * The vanity name inside a profile URL -- `byronvoorbach`, not the URL.
+ *
+ * Derived from `profileUrlFor` rather than from the raw target, so it inherits
+ * the host check: a handle is only ever read out of a URL this driver has
+ * already agreed to navigate to. Returns null for anything that is not a
+ * `/in/<handle>` profile, and for a handle carrying characters that have no
+ * business inside a CSS attribute selector -- both of which make the caller
+ * fall back to the selectors that do not need a handle at all.
+ */
+export function profileHandleFor(target: string): string | null {
+  const url = profileUrlFor(target);
+  if (!url) return null;
+  const match = /\/in\/([^/?#]+)/i.exec(url);
+  if (!match?.[1]) return null;
+  let handle: string;
+  try {
+    handle = decodeURIComponent(match[1]);
+  } catch {
+    handle = match[1];
+  }
+  // The same charset `profileUrlFor` accepts for a bare handle. A quote or a
+  // bracket reaching `connectAnchorSelector` would not be an injection into
+  // anything that matters, but it would silently compile to a selector that
+  // matches the wrong element, which is the failure mode this whole function
+  // exists to remove.
+  return /^[A-Za-z0-9\-_%À-ÿ]{1,120}$/.test(handle) ? handle : null;
+}
+
+/**
+ * THE CONNECT CONTROL FOR ONE NAMED PERSON, and why it is a function.
+ *
+ * LinkedIn's current profile renders Connect as an ANCHOR, not a button:
+ *
+ *   <a href="/preload/custom-invite/?vanityName=byronvoorbach"
+ *      componentkey="ConnectButtonstate:invitation:urn:li:member:35587845_connect"
+ *      aria-label="Byron Voorbach als Kontakt einladen">Vernetzen</a>
+ *
+ * measured on the live seat on 2026-08-25. `connectButton` above is
+ * `button[aria-label^="Invite"][aria-label*="connect"]` and cannot match that
+ * on either count -- wrong element, and an `aria-label` translated into the
+ * member's own language. This is why the campaign sent ZERO invites while its
+ * profile-view step, which needs no selector at all, worked perfectly.
+ *
+ * IT TAKES A HANDLE BECAUSE THE PAGE IS FULL OF OTHER PEOPLE'S CONNECT LINKS.
+ * The same profile carries a "People also viewed" rail: `ptr2m` was measured
+ * with SEVEN of these anchors, one for the profile itself and six for
+ * strangers. Any person-blind selector plus `.first()` is then one LinkedIn
+ * layout change away from inviting somebody nobody approved -- a mistake that
+ * cannot be taken back, and the reason this is not a plain entry in the
+ * table above.
+ *
+ * The two alternatives pin the END of the handle: `vanityName=byron` must not
+ * match `vanityName=byronsmith`. `$=` covers today's URL, where the parameter
+ * is last, and `*="...&"` covers the day LinkedIn appends another one.
+ *
+ * `main` AND `:visible` ARE NOT TIDINESS -- WITHOUT THEM THE CLICK NEVER
+ * LANDS. The profile renders THREE anchors for its own subject, measured on
+ * 2026-08-25:
+ *
+ *   0. y=3, OUTSIDE `main` -- the sticky-header duplicate, and a "Premium für
+ *      0 CHF testen" banner sits on top of it. It hit-tests to the banner, so
+ *      Playwright waits for it to become clickable and times out after 15s.
+ *      It is also FIRST in the DOM, so `.first()` chooses exactly this one.
+ *   1. y=499, inside `main`, hit-tests to its own "Vernetzen" label -- the
+ *      top-card control, and the one a person clicks.
+ *   2. inside `main`, 0x0 -- a collapsed duplicate that can never be clicked.
+ *
+ * `main` drops 0, `:visible` drops 2 -- Playwright's `:visible` is a non-empty
+ * box -- and 1 is what remains. There is deliberately NO unscoped fallback
+ * alternative: a CSS selector list has no precedence, Playwright resolves
+ * `.first()` in DOM order, and adding one would hand the click straight back
+ * to the covered sticky-header copy.
+ */
+export function connectAnchorSelector(handle: string): string {
+  return `main a[href*="/preload/custom-invite/"][href$="vanityName=${handle}"]:visible, main a[href*="/preload/custom-invite/"][href*="vanityName=${handle}&"]:visible`;
+}
+
+/**
  * Reach a profile by CLICKING A LINK TO IT, when the page already shows one.
  *
  * WHY THIS IS NOT COSMETIC, and why it is the last structural difference
@@ -847,7 +961,20 @@ async function describeComposer(page: LinkedInPage): Promise<string> {
      * between three answers instead of leaving all three open.
      */
     ['any iframe', 'iframe'],
-    ['iframes under the outlet', '#interop-outlet iframe']
+    ['iframes under the outlet', '#interop-outlet iframe'],
+    /*
+     * WHAT THE ANSWER TURNED OUT TO BE, kept as probes so the next drift is
+     * read against the shape that is actually there. The composer is a
+     * light-DOM Ember modal and its two controls are told apart by artdeco's
+     * primary/secondary classes, not by their words -- see the note above
+     * `addNoteButton`. `connect anchors (any person)` is the count that
+     * separates "the click never opened anything" from "this page has no
+     * Connect control on it at all".
+     */
+    ['send-invite modal', 'div.send-invite'],
+    ['modal primary button', 'div.send-invite button.artdeco-button--primary'],
+    ['modal secondary button', 'div.send-invite button.artdeco-button--secondary'],
+    ['connect anchors (any person)', 'a[href*="/preload/custom-invite/"]']
   ];
   const seen: string[] = [];
   for (const [label, selector] of probes) {
@@ -960,10 +1087,24 @@ export async function sendInvite(
     );
   }
 
-  // Connect is either on the action bar or behind "More". Both are read before
-  // anything is clicked, so a miss on both is unambiguously "nothing happened".
+  /*
+   * Connect is the person's own anchor, or the action bar, or behind "More",
+   * in that order. All of them are read before anything is clicked, so a miss
+   * on every one is unambiguously "nothing happened".
+   *
+   * THE ANCHOR IS TRIED FIRST BECAUSE IT IS THE ONLY ONE THAT NAMES WHO IT
+   * INVITES. `connectAnchorSelector` is scoped to this target's own handle, so
+   * it cannot match the "People also viewed" rail; `connectButton` and the
+   * More menu are person-blind and take `.first()`, which is safe only while
+   * LinkedIn keeps the profile's own control first in the DOM. They stay as
+   * fallbacks -- an English seat on the older markup still works exactly as it
+   * did -- but they are no longer what this reaches for.
+   */
+  const handle = profileHandleFor(target);
   let connect = page.locator(SELECTORS.connectButton);
-  if ((await connect.count()) === 0) {
+  const ownAnchor = handle ? page.locator(connectAnchorSelector(handle)) : null;
+  if (ownAnchor && (await ownAnchor.count()) > 0) connect = ownAnchor;
+  else if ((await connect.count()) === 0) {
     const more = page.locator(SELECTORS.moreActionsButton);
     if ((await more.count()) === 0) {
       if (await present(page, SELECTORS.messageButton)) {
