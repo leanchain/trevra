@@ -82,7 +82,11 @@ import {
   type EnforcedCeiling,
   type ManagedKind
 } from './LinkedInManagerCampaignConfig';
-import { ACTION_LABEL, campaignStepProgress } from './LinkedInManagerProgress';
+import {
+  ACTION_LABEL,
+  campaignStepProgress,
+  campaignStepStateLines
+} from './LinkedInManagerProgress';
 import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
 import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { useIsWorkspaceOwner } from './auth-client';
@@ -432,32 +436,60 @@ function StatusLegend({ counts, total }: { counts: Record<MemberStatus, number>;
   );
 }
 
+/**
+ * Completed work as the headline, and everything still waiting broken out by
+ * WHAT IT IS WAITING FOR.
+ *
+ * The one line this replaces read "17 pending · 5 due now", which was two wrong
+ * statements about the same live step: five of those leads were parked for a
+ * human to resolve and no browser would ever claim them, and the other twelve
+ * were not stuck at all -- their invite is scheduled for the next day because
+ * the step declares a one-day gap. The reasoning, and the copy, live in
+ * `LinkedInManagerProgress.ts`.
+ *
+ * `timezone` is the seat's, because "tomorrow from 11:47" is a claim about the
+ * account's clock; `now` is the card's ticking minute, so "tomorrow" stops
+ * saying tomorrow when it becomes today.
+ */
 function WorkflowStepProgress({
   steps,
   queues,
-  waves
+  waves,
+  timezone,
+  now
 }: {
   steps: readonly WorkflowStep[];
   queues: CampaignQueueSummary;
   waves: readonly ManagedCampaignWave[];
+  timezone: string | null;
+  now: number;
 }) {
   const progress = campaignStepProgress(steps, queues.backlogByStep, waves);
   if (steps.length === 0) return null;
   return (
     <div className="mgr-workflow-progress" aria-label="Workflow step progress">
-      {progress.map((entry, index) => (
-        <div className="mgr-workflow-stage" key={entry.stepId}>
-          <span>
-            {index + 1}. {entry.label}
-          </span>
-          <strong>{entry.completed} done</strong>
-          <small>
-            {entry.pending === 0
-              ? 'No pending leads'
-              : `${entry.pending} pending${entry.due > 0 ? ` · ${entry.due} due now` : ''}`}
-          </small>
-        </div>
-      ))}
+      {progress.map((entry, index) => {
+        const lines = campaignStepStateLines(entry, index, { timezone, now });
+        return (
+          <div className="mgr-workflow-stage" key={entry.stepId}>
+            <span>
+              {index + 1}. {entry.label}
+            </span>
+            <strong>{entry.completed} done</strong>
+            {lines.length === 0 ? (
+              <small>No leads waiting here</small>
+            ) : (
+              <ul className="mgr-workflow-states">
+                {lines.map((line) => (
+                  <li key={line.kind} className={line.attention ? 'is-attention' : undefined}>
+                    {line.text}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1936,8 +1968,22 @@ export function OutreachManagerRead({
   const [membersByCampaign, setMembersByCampaign] = useState<
     Record<string, ManagedCampaignMember[]>
   >({});
+  /*
+   * `execution` IS KEPT. The route has returned it since 19eabd6 and this state
+   * dropped it on the floor, so every consumer -- the blocker ladder that names
+   * the real reason a queue is stalled, and now the step card's seat-local
+   * schedule times -- silently fell back to the generic wording it was written
+   * to replace. It stays optional because an older server does not send it.
+   */
   const [operationsByCampaign, setOperationsByCampaign] = useState<
-    Record<string, { queues: CampaignQueueSummary; waves: ManagedCampaignWave[] }>
+    Record<
+      string,
+      {
+        queues: CampaignQueueSummary;
+        waves: ManagedCampaignWave[];
+        execution?: LinkedInCampaignExecution;
+      }
+    >
   >({});
   const [operationalAnalyticsByCampaign, setOperationalAnalyticsByCampaign] = useState<
     Record<string, CampaignOperationalAnalytics>
@@ -2119,7 +2165,11 @@ export function OutreachManagerRead({
     setMembersByCampaign((current) => ({ ...current, [campaignId]: detail.members }));
     setOperationsByCampaign((current) => ({
       ...current,
-      [campaignId]: { queues: operations.queues, waves: operations.waves }
+      [campaignId]: {
+        queues: operations.queues,
+        waves: operations.waves,
+        ...(operations.execution ? { execution: operations.execution } : {})
+      }
     }));
     setOperationalAnalyticsByCampaign((current) => ({
       ...current,
@@ -2880,7 +2930,29 @@ export function OutreachManagerRead({
                     </div>
                   )}
 
-                  {open && workflow && campaign.status === 'running' && (
+                  {open && (
+                    <div
+                      className={`mgr-campaign-health${blockers.length > 0 ? ' has-issues' : ''}`}
+                    >
+                      <div>
+                        <strong>
+                          {blockers.length === 0 ? 'No blockers detected' : 'Needs attention'}
+                        </strong>
+                        <span>
+                          {blockers.length === 0
+                            ? operations
+                              ? `${operations.queues.queuedReady} queued · ${operations.queues.dueNow} eligible · ${campaign.inSequenceCount} in sequence`
+                              : 'Reading current delivery state…'
+                            : `${blockers[0]!.title}: ${blockers[0]!.detail}`}
+                        </span>
+                      </div>
+                      {blockers.length > 1 && (
+                        <span className="li-chip">{blockers.length - 1} more</span>
+                      )}
+                    </div>
+                  )}
+
+                  {open && workflow && campaign.status === 'running' && newerWorkflowAvailable && (
                     <p className="mgr-warmup">
                       Workflow v{campaign.workflowVersion ?? '—'} locked
                       <Hint label="Why is this workflow version locked?">
@@ -2895,13 +2967,6 @@ export function OutreachManagerRead({
                     <>
                       <StatusBar counts={counts} total={campaign.memberCount} />
                       <StatusLegend counts={counts} total={campaign.memberCount} />
-                      {operations && (
-                        <WorkflowStepProgress
-                          steps={campaignSteps}
-                          queues={operations.queues}
-                          waves={operations.waves}
-                        />
-                      )}
                     </>
                   )}
 
@@ -2969,28 +3034,6 @@ export function OutreachManagerRead({
 
                   {open && (
                     <div
-                      className={`mgr-campaign-health${blockers.length > 0 ? ' has-issues' : ''}`}
-                    >
-                      <div>
-                        <strong>
-                          {blockers.length === 0 ? 'No blockers detected' : 'Needs attention'}
-                        </strong>
-                        <span>
-                          {blockers.length === 0
-                            ? operations
-                              ? `${operations.queues.queuedReady} queued · ${operations.queues.dueNow} eligible · ${campaign.inSequenceCount} in sequence`
-                              : 'Reading current delivery state…'
-                            : `${blockers[0]!.title}: ${blockers[0]!.detail}`}
-                        </span>
-                      </div>
-                      {blockers.length > 1 && (
-                        <span className="li-chip">{blockers.length - 1} more</span>
-                      )}
-                    </div>
-                  )}
-
-                  {open && (
-                    <div
                       className="mgr-campaign-section-list"
                       role="group"
                       aria-label="Campaign details"
@@ -3009,7 +3052,7 @@ export function OutreachManagerRead({
                             'Delivery',
                             warmup && warmup.fraction < 1
                               ? `${Math.round(warmup.fraction * 100)}% today`
-                              : 'Accounts, workflow and limits'
+                              : 'Daily send ceilings'
                           ],
                           [
                             'settings',
@@ -3049,32 +3092,6 @@ export function OutreachManagerRead({
                         Sequence eligibility, planner allocation, scheduling and browser execution
                         are separate states.
                       </p>
-                      <div className="li-stat-grid">
-                        <div>
-                          <span>Eligible · not allocated</span>
-                          <strong>{operations?.queues.dueNow ?? 0}</strong>
-                        </div>
-                        <div>
-                          <span>Queued · due for executor</span>
-                          <strong>{operations?.queues.queuedReady ?? 0}</strong>
-                        </div>
-                        <div>
-                          <span>Scheduled later</span>
-                          <strong>{operations?.queues.scheduledFuture ?? 0}</strong>
-                        </div>
-                        <div>
-                          <span>Executing now</span>
-                          <strong>{operations?.queues.executing ?? 0}</strong>
-                        </div>
-                        <div>
-                          <span>Held for review</span>
-                          <strong>{operations?.queues.heldForReview ?? 0}</strong>
-                        </div>
-                        <div>
-                          <span>Completed</span>
-                          <strong>{campaign.completedCount}</strong>
-                        </div>
-                      </div>
 
                       <div className="mgr-callout">
                         <strong>What is preventing progress right now?</strong>
@@ -3091,59 +3108,40 @@ export function OutreachManagerRead({
                         )}
                       </div>
 
-                      <div className="li-stat-grid">
-                        <div>
-                          <span>Total audience</span>
-                          <strong>{campaign.memberCount}</strong>
-                        </div>
-                        <div>
-                          <span>Pending / not admitted</span>
-                          <strong>{campaign.pendingCount}</strong>
-                        </div>
-                        <div>
-                          <span>In sequence</span>
-                          <strong>{campaign.inSequenceCount}</strong>
-                        </div>
-                        <div>
-                          <span>Waiting on condition</span>
-                          <strong>{campaign.waitingCount}</strong>
-                        </div>
-                        <div>
-                          <span>Manual checkpoint</span>
-                          <strong>{campaign.manualCount}</strong>
-                        </div>
-                        <div>
-                          <span>Replied</span>
-                          <strong>{campaign.repliedCount}</strong>
-                        </div>
-                        <div>
-                          <span>Completed</span>
-                          <strong>{campaign.completedCount}</strong>
-                        </div>
-                        <div>
-                          <span>Failed</span>
-                          <strong>{campaign.failedCount}</strong>
-                        </div>
-                        <div>
-                          <span>Excluded</span>
-                          <strong>{campaign.excludedCount}</strong>
-                        </div>
-                        <div>
-                          <span>Paused leads</span>
-                          <strong>{campaign.pausedCount}</strong>
-                        </div>
-                      </div>
                       {operations ? (
                         <>
-                          <h4>Queue and backlog</h4>
                           <div className="li-stat-grid">
                             <div>
-                              <span>Due now</span>
+                              <span>Total audience</span>
+                              <strong>{campaign.memberCount}</strong>
+                            </div>
+                            <div>
+                              <span>In sequence</span>
+                              <strong>{campaign.inSequenceCount}</strong>
+                            </div>
+                            <div>
+                              <span>Due now, not yet allocated</span>
                               <strong>{operations.queues.dueNow}</strong>
+                            </div>
+                            <div>
+                              <span>Queued for executor</span>
+                              <strong>{operations.queues.queuedReady}</strong>
                             </div>
                             <div>
                               <span>Scheduled next 24h</span>
                               <strong>{operations.queues.scheduledToday}</strong>
+                            </div>
+                            <div>
+                              <span>Scheduled later</span>
+                              <strong>{operations.queues.scheduledFuture}</strong>
+                            </div>
+                            <div>
+                              <span>Executing now</span>
+                              <strong>{operations.queues.executing}</strong>
+                            </div>
+                            <div>
+                              <span>Held for review</span>
+                              <strong>{operations.queues.heldForReview}</strong>
                             </div>
                             <div>
                               <span>Waiting for connection</span>
@@ -3169,173 +3167,210 @@ export function OutreachManagerRead({
                               <span>Failed</span>
                               <strong>{operations.queues.failed}</strong>
                             </div>
+                            <div>
+                              <span>Completed</span>
+                              <strong>{campaign.completedCount}</strong>
+                            </div>
                           </div>
-                          {operations.queues.backlogByStep.length > 0 && (
-                            <p className="li-hint">
-                              Backlog by node:{' '}
-                              {operations.queues.backlogByStep
-                                .map((row) => `${row.stepId} ${row.due}/${row.count} due`)
-                                .join(' · ')}
-                            </p>
+
+                          {campaignSteps.length > 0 && (
+                            <WorkflowStepProgress
+                              steps={campaignSteps}
+                              queues={operations.queues}
+                              waves={operations.waves}
+                              timezone={operations.execution?.timezone ?? null}
+                              now={now}
+                            />
                           )}
+
                           {operationalAnalytics && (
                             <>
-                              <h4>Why this campaign is moving at this speed</h4>
-                              <p className="li-hint">{operationalAnalytics.bottlenecks.reason}</p>
+                              <p className="li-hint">
+                                <b>Why this campaign is moving at this speed:</b>{' '}
+                                {operationalAnalytics.bottlenecks.reason}
+                              </p>
                               {operationalAnalytics.admissionForecast.reasons.length > 0 && (
                                 <p className="li-hint">
                                   Admission throttle:{' '}
                                   {operationalAnalytics.admissionForecast.reasons.join(' ')}
                                 </p>
                               )}
-                              <div className="li-stat-grid">
-                                <div>
-                                  <span>Audience</span>
-                                  <strong>{operationalAnalytics.funnel.totalAudience}</strong>
-                                </div>
-                                <div>
-                                  <span>Pending</span>
-                                  <strong>{operationalAnalytics.funnel.pending}</strong>
-                                </div>
-                                <div>
-                                  <span>In sequence</span>
-                                  <strong>{operationalAnalytics.funnel.inSequence}</strong>
-                                </div>
-                                <div>
-                                  <span>Invited</span>
-                                  <strong>{operationalAnalytics.funnel.invited}</strong>
-                                </div>
-                                <div>
-                                  <span>Accepted</span>
-                                  <strong>{operationalAnalytics.funnel.accepted}</strong>
-                                </div>
-                                <div>
-                                  <span>Messaged</span>
-                                  <strong>{operationalAnalytics.funnel.messaged}</strong>
-                                </div>
-                                <div>
-                                  <span>Replied</span>
-                                  <strong>{operationalAnalytics.funnel.replied}</strong>
-                                </div>
-                                <div>
-                                  <span>Overdue actions</span>
-                                  <strong>{operationalAnalytics.bottlenecks.overdueActions}</strong>
-                                </div>
-                                <div>
-                                  <span>Forecast acceptance</span>
-                                  <strong>
-                                    {operationalAnalytics.admissionForecast.acceptanceRate === null
-                                      ? `learning (${operationalAnalytics.admissionForecast.acceptanceSampleSize}/20)`
-                                      : `${Math.round(operationalAnalytics.admissionForecast.acceptanceRate * 100)}%${operationalAnalytics.admissionForecast.acceptanceConfidence95 ? ` (95% ${Math.round(operationalAnalytics.admissionForecast.acceptanceConfidence95.low * 100)}–${Math.round(operationalAnalytics.admissionForecast.acceptanceConfidence95.high * 100)}%)` : ''}`}
-                                  </strong>
-                                </div>
-                                <div>
-                                  <span>New-admission multiplier</span>
-                                  <strong>
-                                    {Math.round(
-                                      operationalAnalytics.admissionForecast.throttle * 100
-                                    )}
-                                    %
-                                  </strong>
-                                </div>
-                                <div>
-                                  <span>InMail sent</span>
-                                  <strong>{operationalAnalytics.channels.inmailSent}</strong>
-                                </div>
-                                <div>
-                                  <span>InMail replies</span>
-                                  <strong>{operationalAnalytics.channels.inmailReplied}</strong>
-                                </div>
-                                <div>
-                                  <span>InMail failures</span>
-                                  <strong>{operationalAnalytics.channels.inmailFailed}</strong>
-                                </div>
-                                <div>
-                                  <span>Paid InMail credits</span>
-                                  <strong>
-                                    {operationalAnalytics.channels.inmailPaidCreditsUsed}
-                                    {operationalAnalytics.channels.inmailPaidCreditCap === null
-                                      ? ''
-                                      : ` / ${operationalAnalytics.channels.inmailPaidCreditCap}`}
-                                  </strong>
-                                </div>
-                                <div>
-                                  <span>Enrichment credits</span>
-                                  <strong>
-                                    {operationalAnalytics.channels.enrichmentCreditsUsed}
-                                    {operationalAnalytics.channels.enrichmentCreditCap === null
-                                      ? ''
-                                      : ` / ${operationalAnalytics.channels.enrichmentCreditCap}`}
-                                  </strong>
-                                </div>
-                                <div>
-                                  <span>Emails found</span>
-                                  <strong>
-                                    {operationalAnalytics.channels.enrichmentFound} /{' '}
-                                    {operationalAnalytics.channels.enrichmentAttempts}
-                                  </strong>
-                                </div>
-                                <div>
-                                  <span>Email replies</span>
-                                  <strong>{operationalAnalytics.channels.emailReplied}</strong>
-                                </div>
-                              </div>
-                              {operationalAnalytics.steps.length > 0 && (
-                                <p className="li-hint">
-                                  Step health:{' '}
-                                  {operationalAnalytics.steps
-                                    .map(
-                                      (row) =>
-                                        `${row.workflowStepId}: ${row.executed} done · ${row.skipped} skipped · ${row.failed} failed · ${row.overdue} overdue${row.outcomeRate === null ? '' : ` · ${Math.round(row.outcomeRate * 100)}% settled`}${row.slaMissRate === null ? '' : ` · SLA ${Math.round(row.slaMissRate * 100)}% missed (${row.slaMissed}/${row.slaMeasured})`}${row.medianDelayVsIntendedMinutes === null ? '' : ` · median ${Math.round(row.medianDelayVsIntendedMinutes)}m vs intended`}`
-                                    )
-                                    .join(' | ')}
-                                </p>
-                              )}
-                              {operationalAnalytics.variants.length > 0 && (
-                                <p className="li-hint">
-                                  Variant outcomes:{' '}
-                                  {operationalAnalytics.variants
-                                    .map((row) => {
-                                      const rates = [
-                                        row.acceptanceRate === null
+                              <details className="mgr-inputs">
+                                <summary>
+                                  <strong>Advanced diagnostics</strong>
+                                  <span>
+                                    Funnel, InMail/enrichment credits, per-step and per-sender
+                                    detail
+                                  </span>
+                                </summary>
+                                <div className="mgr-inputs-body">
+                                  <div className="li-stat-grid">
+                                    <div>
+                                      <span>Invited</span>
+                                      <strong>{operationalAnalytics.funnel.invited}</strong>
+                                    </div>
+                                    <div>
+                                      <span>Accepted</span>
+                                      <strong>{operationalAnalytics.funnel.accepted}</strong>
+                                    </div>
+                                    <div>
+                                      <span>Messaged</span>
+                                      <strong>{operationalAnalytics.funnel.messaged}</strong>
+                                    </div>
+                                    <div>
+                                      <span>Replied</span>
+                                      <strong>{operationalAnalytics.funnel.replied}</strong>
+                                    </div>
+                                    <div>
+                                      <span>Overdue actions</span>
+                                      <strong>
+                                        {operationalAnalytics.bottlenecks.overdueActions}
+                                      </strong>
+                                    </div>
+                                    <div>
+                                      <span>Forecast acceptance</span>
+                                      <strong>
+                                        {operationalAnalytics.admissionForecast.acceptanceRate ===
+                                        null
+                                          ? `learning (${operationalAnalytics.admissionForecast.acceptanceSampleSize}/20)`
+                                          : `${Math.round(operationalAnalytics.admissionForecast.acceptanceRate * 100)}%${operationalAnalytics.admissionForecast.acceptanceConfidence95 ? ` (95% ${Math.round(operationalAnalytics.admissionForecast.acceptanceConfidence95.low * 100)}–${Math.round(operationalAnalytics.admissionForecast.acceptanceConfidence95.high * 100)}%)` : ''}`}
+                                      </strong>
+                                    </div>
+                                    <div>
+                                      <span>New-admission multiplier</span>
+                                      <strong>
+                                        {Math.round(
+                                          operationalAnalytics.admissionForecast.throttle * 100
+                                        )}
+                                        %
+                                      </strong>
+                                    </div>
+                                    <div>
+                                      <span>InMail sent</span>
+                                      <strong>{operationalAnalytics.channels.inmailSent}</strong>
+                                    </div>
+                                    <div>
+                                      <span>InMail replies</span>
+                                      <strong>{operationalAnalytics.channels.inmailReplied}</strong>
+                                    </div>
+                                    <div>
+                                      <span>InMail failures</span>
+                                      <strong>{operationalAnalytics.channels.inmailFailed}</strong>
+                                    </div>
+                                    <div>
+                                      <span>Paid InMail credits</span>
+                                      <strong>
+                                        {operationalAnalytics.channels.inmailPaidCreditsUsed}
+                                        {operationalAnalytics.channels.inmailPaidCreditCap === null
                                           ? ''
-                                          : `${Math.round(row.acceptanceRate * 100)}% accepted`,
-                                        row.replyRate === null
+                                          : ` / ${operationalAnalytics.channels.inmailPaidCreditCap}`}
+                                      </strong>
+                                    </div>
+                                    <div>
+                                      <span>Enrichment credits</span>
+                                      <strong>
+                                        {operationalAnalytics.channels.enrichmentCreditsUsed}
+                                        {operationalAnalytics.channels.enrichmentCreditCap === null
                                           ? ''
-                                          : `${Math.round(row.replyRate * 100)}% replied`
-                                      ]
-                                        .filter(Boolean)
-                                        .join(' · ');
-                                      return `${row.workflowStepId}/${row.variantId.toUpperCase()}: ${row.sent} sent${rates ? ` · ${rates}` : ''} · ${row.eligibleForWinner ? 'enough sample to compare' : 'learning (<20 sends)'}`;
-                                    })
-                                    .join(' | ')}
-                                </p>
-                              )}
-                              {operationalAnalytics.senders.length > 0 && (
-                                <p className="li-hint">
-                                  Sender allocation:{' '}
-                                  {operationalAnalytics.senders
-                                    .map((row) => {
-                                      const rates = [
-                                        row.acceptanceRate === null
-                                          ? ''
-                                          : `${Math.round(row.acceptanceRate * 100)}% accepted`,
-                                        row.replyRate === null
-                                          ? ''
-                                          : `${Math.round(row.replyRate * 100)}% replied`,
-                                        row.allocationShare === null
-                                          ? ''
-                                          : `${Math.round(row.allocationShare * 100)}% of executed work`
-                                      ]
-                                        .filter(Boolean)
-                                        .join(' · ');
-                                      return `${seatLabel(row.seatKey)} ${row.executed} actions · ${row.safetyBlocks} safety blocks${rates ? ` · ${rates}` : ''}`;
-                                    })
-                                    .join(' | ')}
-                                </p>
-                              )}
+                                          : ` / ${operationalAnalytics.channels.enrichmentCreditCap}`}
+                                      </strong>
+                                    </div>
+                                    <div>
+                                      <span>Emails found</span>
+                                      <strong>
+                                        {operationalAnalytics.channels.enrichmentFound} /{' '}
+                                        {operationalAnalytics.channels.enrichmentAttempts}
+                                      </strong>
+                                    </div>
+                                    <div>
+                                      <span>Email replies</span>
+                                      <strong>{operationalAnalytics.channels.emailReplied}</strong>
+                                    </div>
+                                  </div>
+                                  {operationalAnalytics.steps.length > 0 && (
+                                    <>
+                                      <h4>Step health</h4>
+                                      <ul className="mgr-detail-list">
+                                        {operationalAnalytics.steps.map((row) => (
+                                          <li key={row.workflowStepId}>
+                                            <b>{row.workflowStepId}:</b> {row.executed} done ·{' '}
+                                            {row.skipped} skipped · {row.failed} failed ·{' '}
+                                            {row.overdue} overdue
+                                            {row.outcomeRate !== null &&
+                                              ` · ${Math.round(row.outcomeRate * 100)}% settled`}
+                                            {row.slaMissRate !== null &&
+                                              ` · SLA ${Math.round(row.slaMissRate * 100)}% missed (${row.slaMissed}/${row.slaMeasured})`}
+                                            {row.medianDelayVsIntendedMinutes !== null &&
+                                              ` · median ${Math.round(row.medianDelayVsIntendedMinutes)}m vs intended`}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </>
+                                  )}
+                                  {operationalAnalytics.variants.length > 0 && (
+                                    <>
+                                      <h4>Variant outcomes</h4>
+                                      <ul className="mgr-detail-list">
+                                        {operationalAnalytics.variants.map((row) => {
+                                          const rates = [
+                                            row.acceptanceRate === null
+                                              ? ''
+                                              : `${Math.round(row.acceptanceRate * 100)}% accepted`,
+                                            row.replyRate === null
+                                              ? ''
+                                              : `${Math.round(row.replyRate * 100)}% replied`
+                                          ]
+                                            .filter(Boolean)
+                                            .join(' · ');
+                                          return (
+                                            <li key={`${row.workflowStepId}-${row.variantId}`}>
+                                              <b>
+                                                {row.workflowStepId}/{row.variantId.toUpperCase()}:
+                                              </b>{' '}
+                                              {row.sent} sent{rates ? ` · ${rates}` : ''} ·{' '}
+                                              {row.eligibleForWinner
+                                                ? 'enough sample to compare'
+                                                : 'learning (<20 sends)'}
+                                            </li>
+                                          );
+                                        })}
+                                      </ul>
+                                    </>
+                                  )}
+                                  {operationalAnalytics.senders.length > 0 && (
+                                    <>
+                                      <h4>Sender allocation</h4>
+                                      <ul className="mgr-detail-list">
+                                        {operationalAnalytics.senders.map((row) => {
+                                          const rates = [
+                                            row.acceptanceRate === null
+                                              ? ''
+                                              : `${Math.round(row.acceptanceRate * 100)}% accepted`,
+                                            row.replyRate === null
+                                              ? ''
+                                              : `${Math.round(row.replyRate * 100)}% replied`,
+                                            row.allocationShare === null
+                                              ? ''
+                                              : `${Math.round(row.allocationShare * 100)}% of executed work`
+                                          ]
+                                            .filter(Boolean)
+                                            .join(' · ');
+                                          return (
+                                            <li key={row.seatKey}>
+                                              <b>{seatLabel(row.seatKey)}:</b> {row.executed}{' '}
+                                              actions · {row.safetyBlocks} safety blocks
+                                              {rates ? ` · ${rates}` : ''}
+                                            </li>
+                                          );
+                                        })}
+                                      </ul>
+                                    </>
+                                  )}
+                                </div>
+                              </details>
                             </>
                           )}
+
                           <h4>Admission waves</h4>
                           {operations.waves.length === 0 ? (
                             <p className="empty-copy">
@@ -3408,35 +3443,9 @@ export function OutreachManagerRead({
 
                   {open && openCampaignSection === `${campaign.id}:delivery` && (
                     <div className="mgr-operations">
-                      <div className="li-stat-grid">
-                        <div>
-                          <span>Sends from</span>
-                          <strong>{campaign.senderKeys.map(seatLabel).join(', ')}</strong>
-                        </div>
-                        <div>
-                          <span>Workflow</span>
-                          <strong>
-                            {workflow
-                              ? `${workflow.name}${campaign.workflowVersion === null ? '' : ` · v${campaign.workflowVersion}`}`
-                              : 'Workflow unavailable'}
-                          </strong>
-                        </div>
-                        <div>
-                          <span>Pacing</span>
-                          <strong>
-                            {warmup && warmup.fraction < 1
-                              ? `Warm-up ${warmup.day}/${warmup.days} · ${Math.round(warmup.fraction * 100)}%`
-                              : warmup
-                                ? 'Full speed'
-                                : campaign.status === 'draft'
-                                  ? 'Starts on launch'
-                                  : 'Allowance unavailable'}
-                          </strong>
-                        </div>
-                      </div>
+                      <h4>Daily ceilings</h4>
                       {ceilings ? (
                         <>
-                          <h4>Daily ceilings</h4>
                           <p className="mgr-warmup">
                             <Allowance
                               ceilings={ceilings}

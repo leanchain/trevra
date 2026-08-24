@@ -9351,6 +9351,27 @@ button:disabled {
 .mgr-workflow-stage.is-pending > small {
   display: none;
 }
+/* A step's backlog is a LIST because "pending" was never one state: leads
+   waiting for the browser, leads waiting out a delay their own workflow
+   declares, and leads waiting for the operator to resolve an outcome all used
+   to share one number. One line each, and only the non-zero ones. */
+.mgr-workflow-states {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: var(--t-text-2xs);
+}
+/* The only line that is a person's to-do rather than a machine's queue. It has
+   to stop reading as "in progress", which is exactly what it did while it was
+   counted as pending. */
+.mgr-workflow-states > li.is-attention {
+  color: var(--amber);
+  font-weight: var(--t-w-bold);
+}
 
 /* Expanding a campaign should answer the operator's immediate question before
    exposing the full execution console. One compact health row stays visible;
@@ -11474,6 +11495,17 @@ button:disabled {
   padding-left: 18px;
   color: var(--muted);
   font-size: var(--t-text-xs);
+}
+.mgr-detail-list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.mgr-detail-list b {
+  color: var(--ink);
 }
 .li-stat-grid {
   display: grid;

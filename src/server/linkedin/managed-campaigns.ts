@@ -217,7 +217,60 @@ export interface CampaignQueueSummary {
   failed: number;
   /** Actions already allocated inside the campaign's current 24h ramp day, by the four headline safety buckets. */
   allocatedCampaignDay: Record<'invite' | 'dm' | 'profile_view' | 'follow', number>;
-  backlogByStep: Array<{ stepId: string; count: number; due: number }>;
+  /**
+   * WHAT EACH WORKFLOW STEP IS ACTUALLY WAITING FOR, one row per step.
+   *
+   * `count` used to be the whole answer and the card printed it as "N
+   * pending", which merged three situations an operator has three different
+   * responses to. A live example: a step showing "17 pending" was 5 leads
+   * parked on an outcome nobody could read back (waiting for a PERSON, and no
+   * browser will ever take them), and 12 whose invite is simply not due yet
+   * because the step itself declares `delayBefore: 1 day` (waiting for the
+   * CLOCK, and nothing is wrong). Neither is what "pending" means on the step
+   * above it, where the leads are due and genuinely queued for the browser.
+   *
+   * `count` is still the total, and every subdivision below is a subset of it,
+   * so a reader can print the ones it understands and account for the rest
+   * rather than having to trust that they add up.
+   */
+  backlogByStep: Array<{
+    stepId: string;
+    /** Every `active`/`waiting` lead sitting on this step. The old `count`, unchanged. */
+    count: number;
+    /**
+     * Sequence-eligible: `next_eligible_at` has passed. Unchanged, and
+     * deliberately NOT narrowed -- the campaign-capacity blocker reads it to
+     * mean "leads the planner would want a slot for", which is true of a
+     * parked lead too.
+     */
+    due: number;
+    /**
+     * Eligible AND claimable: nothing parked, nothing already leased. This is
+     * the only part of the old `due` that "waiting for the browser worker"
+     * was ever honest about, and it uses `settlement_hold_at IS NULL` exactly
+     * as `queuedReady` and `execution-state.ts` do, so the step card and the
+     * banner above it cannot disagree.
+     */
+    dueNow: number;
+    /** Eligible, and a browser worker holds the claim right now. In flight, not queued. */
+    running: number;
+    /** `next_eligible_at` is still in the future. Waiting for the clock, not for anything to be fixed. */
+    scheduled: number;
+    /**
+     * The earliest of those future slots, ISO-8601 UTC, or null when nothing
+     * is scheduled. The card renders it in the seat's own timezone: "scheduled
+     * for tomorrow from 11:47" is the sentence that tells an operator their
+     * workflow has a day-long gap in it, which is the thing "12 pending" hid.
+     */
+    scheduledFrom: string | null;
+    /**
+     * Parked on `settlement_hold_at`: claimed, outcome unreadable, and waiting
+     * for a human to resolve it. Counted in LEADS, where the campaign-level
+     * `heldForReview` counts ACTION ROWS -- one lead with two parked rows is 1
+     * here and 2 there, which is correct for both questions.
+     */
+    awaitingDecision: number;
+  }>;
 }
 interface CampaignRow {
   id: string;
@@ -2367,18 +2420,81 @@ export async function campaignQueueSummary(
   if (!campaign) throw new Error('Campaign not found.');
   const rows = await db
     .prepare(
-      `SELECT step_index,status,COUNT(*)::int AS total,
-            COUNT(*) FILTER (WHERE next_eligible_at IS NULL OR next_eligible_at<=?::timestamptz)::int AS due
-     FROM linkedin_campaign_members
-     WHERE workspace_id=? AND campaign_id=?
-     GROUP BY step_index,status ORDER BY step_index,status`
+      /*
+       * "PENDING" WAS THREE ANSWERS WEARING ONE WORD.
+       *
+       * This used to return `total` and `due` per step, and the card printed
+       * `total` as "N pending". Against a live campaign that read "17
+       * pending" on the invite step, the 17 were: 5 leads whose invite was
+       * claimed and whose outcome could not be read back (`settlement_hold_at`
+       * -- waiting for a person to resolve them, and the reaper's
+       * `settlement_hold_at IS NULL` predicate means no browser will EVER take
+       * them), and 12 whose invite is simply not due yet because the step
+       * declares `delayBefore: 1 day`. The operator did not know their own
+       * workflow had a day-long gap in it, because nothing on the screen said
+       * so, and "pending" reads as "stuck".
+       *
+       * The lateral is per member and answers the one question the members
+       * table cannot: is this lead's own planned row parked, or leased right
+       * now. `status='planned'` scopes it to rows that are still going to
+       * happen -- a settled row is history and says nothing about what this
+       * lead is waiting for. BOOL_OR is COALESCEd inside the subquery because
+       * an aggregate over no rows is NULL, and `NOT NULL` is NULL, which would
+       * silently drop every lead the planner has not written an action for yet
+       * out of all three buckets.
+       *
+       * `due` keeps its old, wider meaning on purpose: its one other reader is
+       * the campaign-capacity blocker, which asks "how many leads would the
+       * planner want a slot for", and that is true of a parked lead too.
+       */
+      `SELECT m.step_index,m.status,COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE m.next_eligible_at IS NULL OR m.next_eligible_at<=?::timestamptz)::int AS due,
+            COUNT(*) FILTER (WHERE act.held)::int AS awaiting_decision,
+            COUNT(*) FILTER (WHERE NOT act.held AND act.running)::int AS running,
+            COUNT(*) FILTER (
+              WHERE NOT act.held AND NOT act.running
+                AND m.next_eligible_at IS NOT NULL AND m.next_eligible_at>?::timestamptz
+            )::int AS scheduled,
+            COUNT(*) FILTER (
+              WHERE NOT act.held AND NOT act.running
+                AND (m.next_eligible_at IS NULL OR m.next_eligible_at<=?::timestamptz)
+            )::int AS due_now,
+            TO_CHAR(
+              MIN(m.next_eligible_at) FILTER (
+                WHERE NOT act.held AND NOT act.running
+                  AND m.next_eligible_at IS NOT NULL AND m.next_eligible_at>?::timestamptz
+              ) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            ) AS scheduled_from
+     FROM linkedin_campaign_members m
+     LEFT JOIN LATERAL (
+       SELECT
+         COALESCE(BOOL_OR(a.settlement_hold_at IS NOT NULL), FALSE) AS held,
+         COALESCE(BOOL_OR(a.claimed_at IS NOT NULL AND a.settlement_hold_at IS NULL), FALSE) AS running
+       FROM linkedin_actions a
+       WHERE a.workspace_id=m.workspace_id AND a.campaign_member_id=m.id AND a.status='planned'
+     ) act ON TRUE
+     WHERE m.workspace_id=? AND m.campaign_id=?
+     GROUP BY m.step_index,m.status ORDER BY m.step_index,m.status`
     )
-    .all<{ step_index: number; status: string; total: number; due: number }>(
+    .all<{
+      step_index: number;
+      status: string;
+      total: number;
+      due: number;
+      awaiting_decision: number;
+      running: number;
+      scheduled: number;
+      due_now: number;
+      scheduled_from: string | null;
+    }>(
+      now.toISOString(),
+      now.toISOString(),
+      now.toISOString(),
       now.toISOString(),
       workspaceId,
       campaignId
     );
-  const backlog = new Map<number, { count: number; due: number }>();
+  const backlog = new Map<number, Omit<CampaignQueueSummary['backlogByStep'][number], 'stepId'>>();
   let pending = 0,
     dueNow = 0,
     manual = 0,
@@ -2394,9 +2510,30 @@ export async function campaignQueueSummary(
     if (row.status === 'failed') failed += count;
     if (['active', 'waiting'].includes(row.status)) {
       dueNow += due;
-      const current = backlog.get(Number(row.step_index)) ?? { count: 0, due: 0 };
+      const current = backlog.get(Number(row.step_index)) ?? {
+        count: 0,
+        due: 0,
+        dueNow: 0,
+        running: 0,
+        scheduled: 0,
+        scheduledFrom: null,
+        awaitingDecision: 0
+      };
       current.count += count;
       current.due += due;
+      current.dueNow += Number(row.due_now);
+      current.running += Number(row.running);
+      current.scheduled += Number(row.scheduled);
+      current.awaitingDecision += Number(row.awaiting_decision);
+      // A step is grouped by (step_index, status), so `active` and `waiting`
+      // leads on the same step arrive as two rows. The step is next going to
+      // move at the EARLIER of their two next slots, so the merge is a min and
+      // not a last-write.
+      if (
+        row.scheduled_from &&
+        (current.scheduledFrom === null || row.scheduled_from < current.scheduledFrom)
+      )
+        current.scheduledFrom = row.scheduled_from;
       backlog.set(Number(row.step_index), current);
       const step = campaign.steps[Number(row.step_index)];
       if (
