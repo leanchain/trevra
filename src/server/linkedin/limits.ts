@@ -233,6 +233,90 @@ export const MAX_DAY_OVER_DAY_DELTA = 0.35;
 export const MIN_RAMP_STEP = 1;
 
 /**
+ * How many recent BUSINESS days the day-over-day clamp reads to decide what
+ * this seat's current volume actually is.
+ *
+ * OURS, NOT REPORTED, and marked as such in the manner of `MIN_RAMP_STEP`.
+ * The research (1.3) describes the SIGNATURE -- "5-10 days of decline followed
+ * by a +120% surge within 24-48h" -- and says nothing about how many days you
+ * should look at to decide what "before the surge" was. One is a guess as much
+ * as three is; the difference is which failure the guess causes.
+ *
+ * ONE DAY WAS THE WRONG GUESS, and it was wrong in production. Seeding the
+ * clamp from the single previous business day means any day that carried zero
+ * -- a paused seat, an offline companion, a public holiday, a founder on a
+ * plane -- resets the next day's ceiling to `MIN_RAMP_STEP`, and the seat then
+ * climbs 1, 2, 3, 4, 5, 6, 8, 10, 13, 17, 23 before it is back where it was.
+ * A ten-day climb out of every quiet day is not a smoother, it is a sawtooth
+ * generator, and a sawtooth is the exact shape 1.3 says gets accounts
+ * restricted. The control was manufacturing the pattern it exists to prevent.
+ *
+ * THREE, AND THE MAXIMUM OVER THEM, is the shortest window that separates the
+ * two cases the research actually distinguishes. A single quiet day inside an
+ * otherwise active stretch leaves two active days in the window, so the
+ * baseline holds and nothing spikes when work resumes -- resumption at the
+ * level you were already running at is not a surge. A genuine 5-10 day decline
+ * fills the whole window with low days, the baseline falls with it, and the
+ * clamp still refuses the surge that follows. Anything longer would start
+ * remembering volume the account has demonstrably stopped doing.
+ */
+export const DAY_OVER_DAY_BASELINE_DAYS = 3;
+
+/**
+ * The day-over-day ceiling for one day, given this seat's recent baseline.
+ *
+ * The single place this arithmetic lives. `guard.ts` refuses actions with it
+ * and `pacing.ts` places slots with it, and the two having their own copies is
+ * how a plan starts scheduling work the gate will refuse.
+ *
+ * `floor` is the established-account floor described on
+ * `establishedDayOverDayFloor` and is 0 for every seat that has not explicitly
+ * claimed to be established. It raises the ceiling and never lowers it: an
+ * established account that is ALREADY running above the floor is clamped by
+ * the ratio exactly like anybody else.
+ */
+export function dayOverDayCeiling(baseline: number, floor = 0): number {
+  const safeBaseline = Math.max(0, baseline);
+  const ratio = Math.max(
+    safeBaseline + MIN_RAMP_STEP,
+    Math.floor(safeBaseline * (1 + MAX_DAY_OVER_DAY_DELTA))
+  );
+  return Math.max(ratio, Math.max(0, Math.floor(floor)));
+}
+
+/**
+ * What an EXPLICITLY ESTABLISHED account may start a day at when Trevra's own
+ * ledger has nothing to ramp from.
+ *
+ * WHAT `warmupOverride` MEANS. It is an operator asserting, on the record, that
+ * this LinkedIn account is not new -- that it has years of real activity
+ * Trevra's ledger cannot see and does not need to rebuild. Until now it set the
+ * account warm-up multiplier to 1 and stopped there, which left the seat caught
+ * on a second, unrelated cold start: the day-over-day clamp reads the same
+ * empty ledger and, finding zero, hands out a ceiling of 1. An operator who
+ * declared their account established and set profile views to 25/day got one
+ * profile view a day, and the refusal quoted a research number that was never
+ * about their account. That is a bug, not a safety margin.
+ *
+ * `WARMUP_MULTIPLIERS[0]`, NOT A NEW NUMBER. Week 1 of the researched ramp is
+ * already this codebase's reviewed answer to "what may an account that Trevra
+ * has no history for do on its first day", and reusing it means there is one
+ * such answer instead of two that drift. For a seat at 25 profile views/day
+ * that is 12 on a standing start, then 16, 21, 25 -- an established account
+ * back at its configured volume inside four days rather than eleven, and never
+ * with a day-over-day step the research would call a surge.
+ *
+ * THIS IS A FLOOR ON ONE CEILING, AND NOTHING ELSE. The per-kind band, the
+ * operator's own daily number, the rolling 24h/7d/30d windows, the campaign-day
+ * ramp, the acceptance throttle, the outstanding-invite backlog, the working
+ * window and posture all still apply and any of them can still refuse. An
+ * established account is not an unpaced one.
+ */
+export function establishedDayOverDayFloor(dailyCeiling: number): number {
+  return Math.max(0, Math.floor(dailyCeiling * WARMUP_MULTIPLIERS[0]));
+}
+
+/**
  * Sustained acceptance below this reads as spam. REPORTED (1.3): "<30% over a
  * week". Measured over ACCEPTANCE_WINDOW_DAYS.
  */

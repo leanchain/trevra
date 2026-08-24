@@ -143,10 +143,63 @@ describe('warm-up ramp', () => {
       NOW,
       { dayShape: FLAT_DAY_SHAPE }
     );
-    expect(perDay(plan)).toEqual([1, 2, 0, 0, 3, 4, 5]);
+    // WAS [1, 2, 0, 0, 3, 4, 5], AND THAT WAS THE BUG THIS TEST NOW GUARDS.
+    //
+    // An account the operator had marked established, with an empty Trevra
+    // ledger, planned ONE action on its first day and needed a fortnight to
+    // reach the ceiling it was configured for -- because `warmupOverride`
+    // skipped the account warm-up multiplier and left the day-over-day clamp
+    // reading the same empty ledger and finding zero. The clamp's floor for an
+    // established account is `establishedDayOverDayFloor`: half the daily
+    // ceiling, the week-1 fraction of the researched ramp, so 9 of 18 here.
+    // From there the +35% ratio takes over -- 9, 12, weekend, 16 -- and day 6
+    // is 3 only because 40 targets have run out, not because a ceiling bound.
+    expect(perDay(plan)).toEqual([9, 12, 0, 0, 16, 3, 0]);
     expect(plan.ceilingsApplied).not.toContain('warmup-multiplier');
     expect(plan.reasons.join(' ')).toContain('Account warm-up is explicitly skipped');
     expect(plan.reasons.join(' ')).toContain('recorded clock is week 1');
+    expect(plan.reasons.join(' ')).toContain(
+      'an empty Trevra ledger is not evidence of a cold LinkedIn account'
+    );
+  });
+
+  /**
+   * The same seat WITHOUT the established mark, so the floor is the only
+   * difference between the two plans and this is what it is a difference from.
+   */
+  it('leaves an account nobody marked established on the one-a-day cold start', async () => {
+    await seat('2026-01-01');
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 7 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
+    expect(perDay(plan)).toEqual([1, 2, 0, 0, 3, 4, 5]);
+    expect(plan.reasons.join(' ')).not.toContain('marked established');
+  });
+
+  /**
+   * ONE QUIET DAY IS NOT A DECLINE. NOW is a Thursday, so 54h ago is Tuesday
+   * and 78h ago Monday; Wednesday carried nothing. The planner used to seed
+   * Thursday from that Wednesday zero and schedule 1, 2, 3 into a week the
+   * seat had been running at 10/day through. It now reads the highest of the
+   * last three business days and resumes at the volume this seat was already
+   * at.
+   */
+  it('resumes at the recent baseline after a single quiet business day', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 78); // Monday
+    for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 54); // Tuesday
+    const plan = await planPacing(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'invite', targets: targets(40), horizonDays: 2 },
+      NOW,
+      { dayShape: FLAT_DAY_SHAPE }
+    );
+    // max(Wed 0, Tue 10, Mon 10) = 10, so Thursday is 13, not 1.
+    expect(perDay(plan)[0]).toBe(13);
+    expect(plan.reasons.join(' ')).toContain('The last 3 business days carried at most 10');
   });
 
   it('uses the steady band once the account is past the ramp', async () => {

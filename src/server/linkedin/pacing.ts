@@ -12,6 +12,7 @@ import {
   ACCEPTANCE_WINDOW_DAYS,
   ACTION_GAP_SECONDS,
   BUSINESS_HOURS,
+  DAY_OVER_DAY_BASELINE_DAYS,
   MAX_DAY_OVER_DAY_DELTA,
   MAX_OUTSTANDING_INVITES,
   MIN_ACCEPTANCE_RATE,
@@ -21,7 +22,9 @@ import {
   WARMUP_WEEKS,
   WEEKEND_FACTOR,
   bandFor,
+  dayOverDayCeiling,
   effectiveDailyCeiling,
+  establishedDayOverDayFloor,
   isPassiveKind,
   seatOperatorLimit,
   warmupMultiplierFor,
@@ -381,12 +384,50 @@ export function previousBusinessDayCount(
   todayLocal: LocalDate,
   window: WorkWindow = DEFAULT_WORK_WINDOW
 ): number {
-  for (let index = history.length - 2; index >= 0; index -= 1) {
+  return recentBusinessDayCounts(history, todayLocal, window, 1)[0] ?? 0;
+}
+
+/**
+ * The last `days` completed BUSINESS days' counts, NEWEST FIRST.
+ *
+ * Same two exclusions `previousBusinessDayCount` documents above -- the day in
+ * progress is never included, and days this seat does not work are skipped
+ * rather than read as zeros -- applied `days` times instead of once. Shorter
+ * than `days` only when the history itself runs out.
+ */
+export function recentBusinessDayCounts(
+  history: readonly number[],
+  todayLocal: LocalDate,
+  window: WorkWindow = DEFAULT_WORK_WINDOW,
+  days: number = DAY_OVER_DAY_BASELINE_DAYS
+): number[] {
+  const wanted = Math.max(0, Math.trunc(days));
+  const counts: number[] = [];
+  for (let index = history.length - 2; index >= 0 && counts.length < wanted; index -= 1) {
     const bucketDate = addLocalDays(todayLocal, -(history.length - 1 - index));
     if (weekdayVolumeFactor(window, weekdayOf(bucketDate)) === 0) continue;
-    return history[index];
+    counts.push(history[index]);
   }
-  return 0;
+  return counts;
+}
+
+/**
+ * THE NUMBER THE DAY-OVER-DAY CLAMP RAMPS FROM: the highest of the last
+ * `DAY_OVER_DAY_BASELINE_DAYS` business days.
+ *
+ * Why a maximum over a window rather than yesterday's count is the whole
+ * argument on `DAY_OVER_DAY_BASELINE_DAYS` in `limits.ts`, and it is the same
+ * function here and in `guard.ts` so a plan and the gate that judges it can
+ * never disagree about what this seat's current volume is.
+ */
+export function sustainedBusinessDayCount(
+  history: readonly number[],
+  todayLocal: LocalDate,
+  window: WorkWindow = DEFAULT_WORK_WINDOW,
+  days: number = DAY_OVER_DAY_BASELINE_DAYS
+): number {
+  const counts = recentBusinessDayCounts(history, todayLocal, window, days);
+  return counts.length === 0 ? 0 : Math.max(...counts);
 }
 
 /**
@@ -591,10 +632,24 @@ export async function planPacing(
   const startsToday = nowSecondOfDay < window.endMinute * 60;
   const startDate = startsToday ? todayLocal : addLocalDays(todayLocal, 1);
 
-  // --- Step 3 seed: the most recent BUSINESS day's actual count. ---
-  let previousActual = previousBusinessDayCount(history, todayLocal, window);
+  // --- Step 3 seed: the recent BUSINESS days' actual counts, newest first. ---
+  //
+  // A WINDOW, NOT YESTERDAY. Seeding from the single previous business day made
+  // one quiet day reset this seat to `MIN_RAMP_STEP` and cost it a ten-day
+  // climb back -- see `DAY_OVER_DAY_BASELINE_DAYS` in `limits.ts` for why that
+  // was manufacturing the sawtooth this clamp exists to prevent. The window
+  // rolls forward through the simulated days below exactly as it reads back
+  // through the ledger here, so day 4 of a plan is ramped from days 1-3 of that
+  // same plan and not from a ledger that has not caught up yet.
+  const recentActuals = recentBusinessDayCounts(history, todayLocal, window);
+  // The floor an EXPLICITLY established account gets when Trevra's ledger has
+  // nothing to ramp from. 0 for everybody else, and it raises this one ceiling
+  // and nothing else. See `establishedDayOverDayFloor`.
+  const establishedFloor = seat.warmupOverride ? establishedDayOverDayFloor(dailyCeiling) : 0;
   reasons.push(
-    `Previous business day carried ${previousActual} ${input.kind}(s); the next day may not exceed it by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%.`
+    seat.warmupOverride
+      ? `The last ${DAY_OVER_DAY_BASELINE_DAYS} business days carried at most ${recentActuals.length === 0 ? 0 : Math.max(...recentActuals)} ${input.kind}(s); the next day may not exceed that by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%, or ${establishedFloor}/day, whichever is higher. The floor is there because this account is marked established: an empty Trevra ledger is not evidence of a cold LinkedIn account.`
+      : `The last ${DAY_OVER_DAY_BASELINE_DAYS} business days carried at most ${recentActuals.length === 0 ? 0 : Math.max(...recentActuals)} ${input.kind}(s); the next day may not exceed that by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%.`
   );
 
   const horizon = Math.max(1, Math.min(Math.trunc(input.horizonDays), MAX_HORIZON_DAYS));
@@ -623,11 +678,9 @@ export async function planPacing(
     };
     const dayCeiling = shape.resting ? 0 : Math.floor(baseDaily * shape.draw);
 
-    // --- Step 3: variance smoothing against the previous day's ACTUAL. ---
-    const deltaCeiling = Math.max(
-      previousActual + MIN_RAMP_STEP,
-      Math.floor(previousActual * (1 + MAX_DAY_OVER_DAY_DELTA))
-    );
+    // --- Step 3: variance smoothing against the recent days' ACTUALS. ---
+    const baseline = recentActuals.length === 0 ? 0 : Math.max(...recentActuals);
+    const deltaCeiling = dayOverDayCeiling(baseline, establishedFloor);
     let allowed = Math.min(dayCeiling, deltaCeiling);
     if (deltaCeiling < baseDaily) deltaClamped = true;
 
@@ -700,14 +753,20 @@ export async function planPacing(
     }
 
     timeline.push(secondsOfDay.length);
-    if (dayFactor > 0) previousActual = secondsOfDay.length;
+    // Only BUSINESS days enter the baseline window, for the same reason
+    // `recentBusinessDayCounts` skips them when reading the ledger: a day this
+    // seat does not work is 0 by design and must not drag the ramp down.
+    if (dayFactor > 0) {
+      recentActuals.unshift(secondsOfDay.length);
+      recentActuals.length = Math.min(recentActuals.length, DAY_OVER_DAY_BASELINE_DAYS);
+    }
   }
 
   // --- Step 7: report every ceiling that bound, not just the first. ---
   if (deltaClamped) {
     ceilingsApplied.push('day-over-day-delta');
     reasons.push(
-      `Volume is ramped rather than started at ${baseDaily}/day: no day may exceed the one before it by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%, which is what keeps this seat off the "slide and spike" signature.`
+      `Volume is ramped rather than started at ${baseDaily}/day: no day may exceed the highest of the last ${DAY_OVER_DAY_BASELINE_DAYS} business days by more than ${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%, which is what keeps this seat off the "slide and spike" signature.`
     );
   }
   if (weekendSkipped) {

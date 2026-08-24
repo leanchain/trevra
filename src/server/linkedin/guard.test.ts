@@ -382,6 +382,122 @@ describe('day-over-day delta', () => {
     // 10 x 1.35 = 13.
     expect(check(verdict, 'day-over-day-delta').passed).toBe(true);
   });
+
+  /**
+   * ONE QUIET DAY IS NOT A DECLINE, and reading it as one was a production
+   * bug. NOW is a Thursday: 30h ago is Wednesday, 54h ago Tuesday, 78h ago
+   * Monday. A seat that ran at 10/day on Monday and Tuesday and did nothing on
+   * Wednesday -- an offline companion, a holiday, a founder on a plane -- used
+   * to get a Thursday ceiling of 1 and a ten-day climb back to the volume it
+   * was already running at. That climb IS the sawtooth this check refuses.
+   */
+  it('does not collapse the ceiling after a single quiet business day', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 78); // Monday
+    for (let index = 0; index < 10; index += 1) await log('invite', 'sent', 54); // Tuesday
+    // Wednesday carried nothing at all.
+    for (let index = 0; index < 5; index += 1) await log('invite', 'sent', 1);
+    const verdict = await guard();
+    // max(Wed 0, Tue 10, Mon 10) = 10, so 10 x 1.35 = 13, not 0 + 1 = 1.
+    expect(check(verdict, 'day-over-day-delta').detail).toContain('at most 10');
+    expect(check(verdict, 'day-over-day-delta').detail).toContain("today's ceiling is 13");
+    expect(check(verdict, 'day-over-day-delta').passed).toBe(true);
+  });
+
+  /**
+   * AND THE CONTROL STILL WORKS, which is the half that matters. A seat that
+   * ran at 20/day last week and has spent this week sliding to 2, 1, 0 is the
+   * exact 1.3 signature, and the window fills with the decline rather than
+   * remembering the peak. The 150h bucket is the Friday before, deliberately
+   * outside the three business days the baseline reads.
+   */
+  it('still refuses the spike at the end of a real multi-day decline', async () => {
+    await seat('2026-01-01');
+    for (let index = 0; index < 20; index += 1) await log('invite', 'sent', 150); // Friday before
+    // Monday carried nothing; the slide continues into this week.
+    for (let index = 0; index < 1; index += 1) await log('invite', 'sent', 54); // Tuesday
+    for (let index = 0; index < 2; index += 1) await log('invite', 'sent', 30); // Wednesday
+    for (let index = 0; index < 3; index += 1) await log('invite', 'sent', 1);
+    const verdict = await guard();
+    // max(Wed 2, Tue 1, Mon 0) = 2, so the ceiling is 3 and the 4th is refused.
+    expect(check(verdict, 'day-over-day-delta').detail).toContain('at most 2');
+    expect(check(verdict, 'day-over-day-delta').passed).toBe(false);
+  });
+});
+
+/**
+ * WHAT `warmupOverride` HAS TO MEAN, AND DID NOT.
+ *
+ * Reproduced from production: workspace seat 'Pankaj', an account with 3840
+ * connections, marked established, profile views set to 25/day, running a
+ * View-then-Invite campaign. It completed exactly ONE profile view a day and
+ * the gate refused every other one, quoting a research figure about brand-new
+ * accounts. `warmupOverride` skipped the account warm-up multiplier and left
+ * the identical cold start sitting in this check untouched.
+ */
+describe('day-over-day delta for an explicitly established account', () => {
+  /** 25/day profile views and no safety-band override: exactly the live seat. */
+  function establishedSeat(warmupOverride: boolean) {
+    return upsertSeat(
+      db,
+      WORKSPACE_ID,
+      {
+        label: 'Test seat',
+        timezone: 'UTC',
+        dailyProfileViewLimit: 25,
+        warmupOverride
+      },
+      new Date('2026-01-01T09:00:00.000Z')
+    );
+  }
+
+  const view = () =>
+    guard(
+      { kind: 'profile_view', targetRef: 'https://www.linkedin.com/in/fresh' },
+      { dayShape: FLAT_DAY_SHAPE }
+    );
+
+  it('starts an established account at half its configured ceiling, not at one', async () => {
+    await establishedSeat(true);
+    // The live ledger: one profile view today, nothing on any day before it.
+    await log('profile_view', 'sent', 1);
+    const verdict = await view();
+    // floor(25 x WARMUP_MULTIPLIERS[0]) = 12, against a ramp-only ceiling of 1.
+    expect(check(verdict, 'day-over-day-delta').detail).toContain('ramp alone would allow 1');
+    expect(check(verdict, 'day-over-day-delta').detail).toContain('marked established');
+    expect(check(verdict, 'day-over-day-delta').detail).toContain("today's ceiling is instead 12");
+    expect(check(verdict, 'day-over-day-delta').passed).toBe(true);
+  });
+
+  it('leaves a seat that has NOT been marked established on the cold-start ramp', async () => {
+    await establishedSeat(false);
+    await log('profile_view', 'sent', 1);
+    const verdict = await view();
+    expect(check(verdict, 'day-over-day-delta').detail).not.toContain('marked established');
+    expect(check(verdict, 'day-over-day-delta').detail).toContain("today's ceiling is 1");
+    expect(check(verdict, 'day-over-day-delta').passed).toBe(false);
+  });
+
+  it('never lets the established floor RAISE a ceiling the ramp already cleared', async () => {
+    await establishedSeat(true);
+    for (let index = 0; index < 20; index += 1) await log('profile_view', 'sent', 30);
+    await log('profile_view', 'sent', 1);
+    const verdict = await view();
+    // 20 x 1.35 = 27, which is above the floor of 12, so the ratio binds and
+    // the detail says nothing about being established.
+    expect(check(verdict, 'day-over-day-delta').detail).toContain("today's ceiling is 27");
+    expect(check(verdict, 'day-over-day-delta').detail).not.toContain('marked established');
+  });
+
+  it('still clamps an established account once it is running above the floor', async () => {
+    await establishedSeat(true);
+    for (let index = 0; index < 4; index += 1) await log('profile_view', 'sent', 30);
+    for (let index = 0; index < 12; index += 1) await log('profile_view', 'sent', 1);
+    const verdict = await view();
+    // The floor is 12 and 12 are already used, so the 13th is refused: an
+    // established account is a paced one, not an unpaced one.
+    expect(check(verdict, 'day-over-day-delta').passed).toBe(false);
+  });
 });
 
 describe('acceptance rate', () => {

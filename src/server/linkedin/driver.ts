@@ -828,6 +828,16 @@ export async function sendInvite(
           `The invite composer for ${url} opened but ${SELECTORS.noteTextarea} did not match, so the approved note could not be typed. Nothing was sent${hadAddNoteControl ? '.' : ' that Trevra can prove.'}`
         );
       }
+      // Typed, not pasted -- and byte for byte either way. See `typeLike`.
+      //
+      // THIS LINE IS LOAD-BEARING AND WAS ONCE DELETED. Commit 1d480cd widened the
+      // composer selectors for LinkedIn's `#interop-outlet` shadow root and
+      // removed this call with them. The result was not a crash: the modal
+      // opened, the textarea matched, Send was clicked, and an invite the
+      // operator had approved WITH a message went out -- or stalled -- with an
+      // empty one. An approved note that is not typed is a different invite
+      // from the one that was approved, so nothing below may run until it is.
+      await typeLike(page, textarea.first(), note, `${url}#note`, CLICK_TIMEOUT_MS);
       const send = page.locator(SELECTORS.sendInviteButton);
       if ((await send.count()) === 0)
         return fail(

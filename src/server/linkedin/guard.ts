@@ -5,16 +5,18 @@ import type { Skill, SkillContext } from '../skills/types.js';
 import type { SeatRef } from './actions.js';
 import {
   ACCEPTANCE_WINDOW_DAYS,
+  DAY_OVER_DAY_BASELINE_DAYS,
   INMAIL_MONTHLY_QUOTA,
   MAX_DAY_OVER_DAY_DELTA,
   MAX_OUTSTANDING_INVITES,
   MIN_ACCEPTANCE_RATE,
-  MIN_RAMP_STEP,
   PACED_KIND_VALUES,
   WARMUP_WEEKS,
   WEEKEND_FACTOR,
   bandFor,
+  dayOverDayCeiling,
   effectiveDailyCeiling,
+  establishedDayOverDayFloor,
   isPassiveKind,
   seatOperatorLimit,
   warmupMultiplierFor,
@@ -28,6 +30,7 @@ import {
   localDateOf,
   previousBusinessDayCount,
   resolveSkillSeatKey,
+  sustainedBusinessDayCount,
   weekdayOf,
   weekdayVolumeFactor,
   workWindowOf,
@@ -856,17 +859,38 @@ export async function evaluateLinkedInSafety(
 
   // The anti-"slide and spike" check, and the reason this module exists at all
   // (plan 1.3): a day-over-day jump is the signal, not the daily total.
+  //
+  // RAMPED FROM A WINDOW, NOT FROM YESTERDAY. Reading only the previous
+  // business day meant a single day that carried nothing -- a paused seat, an
+  // offline companion, a holiday -- handed the next day a ceiling of
+  // `MIN_RAMP_STEP` and a ten-day climb back to where the seat already was.
+  // `DAY_OVER_DAY_BASELINE_DAYS` in `limits.ts` carries the full argument; the
+  // short version is that the one-day seed was generating the sawtooth this
+  // check is here to refuse. A real 5-10 day decline still fills the window and
+  // still lowers the ceiling, which is the case the research actually names.
   const history = ledger.dailyCounts;
-  const previous = previousBusinessDayCount(history, localDateOf(now, timezone), window);
-  const deltaCeiling = Math.max(
-    previous + MIN_RAMP_STEP,
-    Math.floor(previous * (1 + MAX_DAY_OVER_DAY_DELTA))
-  );
+  const todayLocal = localDateOf(now, timezone);
+  const baseline = sustainedBusinessDayCount(history, todayLocal, window);
+  // An operator who marked this account established asserted that its real
+  // history is older than Trevra. `warmupOverride` already skips the account
+  // warm-up multiplier; without this it did NOT skip the identical cold start
+  // hiding in this check, which is how a seat configured for 25 profile
+  // views/day was refused its second one. See `establishedDayOverDayFloor`.
+  const establishedFloor = seat?.warmupOverride
+    ? establishedDayOverDayFloor(effectiveDailyLimit)
+    : 0;
+  // The same ceiling WITHOUT the established floor, so the detail below can say
+  // what the ramp alone would have allowed rather than only what it allowed.
+  const rampOnlyCeiling = dayOverDayCeiling(baseline);
+  const deltaCeiling = dayOverDayCeiling(baseline, establishedFloor);
+  const previous = previousBusinessDayCount(history, todayLocal, window);
   checks.push({
     check: 'day-over-day-delta',
     passed: pacingPass(used24 + 1 <= deltaCeiling),
     detail: pacingDetail(
-      `Previous business day carried ${previous} ${input.kind}(s), so today's ceiling is ${deltaCeiling} (+${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%); ${used24} used so far.`
+      deltaCeiling > rampOnlyCeiling
+        ? `The last ${DAY_OVER_DAY_BASELINE_DAYS} business days carried at most ${baseline} ${input.kind}(s) (the most recent one carried ${previous}), so the +${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}% ramp alone would allow ${rampOnlyCeiling}. This account is marked established, so today's ceiling is instead ${deltaCeiling} -- an empty Trevra ledger is not evidence of a cold LinkedIn account. ${used24} used so far.`
+        : `The last ${DAY_OVER_DAY_BASELINE_DAYS} business days carried at most ${baseline} ${input.kind}(s) (the most recent one carried ${previous}), so today's ceiling is ${deltaCeiling} (+${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%); ${used24} used so far.`
     )
   });
 

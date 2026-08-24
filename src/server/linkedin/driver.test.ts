@@ -151,6 +151,69 @@ describe('connection request composer', () => {
     expect(SELECTORS.noteTextarea).toContain('#interop-outlet textarea');
     expect(SELECTORS.sendInviteButton).toContain('#interop-outlet');
   });
+
+  /**
+   * THE REGRESSION THIS TEST EXISTS FOR, and it shipped.
+   *
+   * Commit 1d480cd widened the composer selectors for LinkedIn's
+   * `#interop-outlet` shadow root and deleted the `typeLike` call in the same
+   * hunk. Nothing crashed and nothing was refused: the composer opened, the
+   * textarea matched, Send was clicked, and an invite the operator had approved
+   * WITH a message went out with an empty one. The selector assertion above
+   * passed the whole time, because a selector matching is not the note being
+   * typed. So this asserts the bytes, in order, against the send.
+   */
+  it('types the approved note into the composer before clicking send', async () => {
+    let current = TARGET;
+    const events: string[] = [];
+    const filled: string[] = [];
+    const locator = (selector: string): LinkedInLocator => {
+      const self: LinkedInLocator = {
+        count: async () => {
+          if (selector === SELECTORS.connectButton) return 1;
+          if (selector === SELECTORS.addNoteButton) return 1;
+          if (selector === SELECTORS.noteTextarea) return 1;
+          if (selector === SELECTORS.sendInviteButton) return 1;
+          // The modal is gone after the send click, which is what proves it
+          // left rather than stalling open.
+          return 0;
+        },
+        first: () => self,
+        click: async () => {
+          events.push(`click:${selector}`);
+        },
+        fill: async (value: string) => {
+          events.push(`fill:${selector}`);
+          filled.push(value);
+        },
+        textContent: async () => null
+      };
+      return self;
+    };
+    const page: LinkedInPage = {
+      goto: async (url: string) => {
+        current = url;
+      },
+      url: () => current,
+      locator,
+      waitForTimeout: async () => {}
+    };
+
+    const result = await sendInvite(page, TARGET, 'Hi Audrey, thanks for connecting.');
+
+    expect(result).toMatchObject({ ok: true, failureKind: null });
+    // BYTE FOR BYTE. The note the operator approved, not a trimmed or
+    // templated version of it.
+    expect(filled).toEqual(['Hi Audrey, thanks for connecting.']);
+    // AND BEFORE THE SEND. Typing it after the click would deliver the same
+    // empty invite this test was written to catch.
+    expect(events.indexOf(`fill:${SELECTORS.noteTextarea}`)).toBeGreaterThan(
+      events.indexOf(`click:${SELECTORS.addNoteButton}`)
+    );
+    expect(events.indexOf(`click:${SELECTORS.sendInviteButton}`)).toBeGreaterThan(
+      events.indexOf(`fill:${SELECTORS.noteTextarea}`)
+    );
+  });
 });
 
 describe('isLoggedIn', () => {
