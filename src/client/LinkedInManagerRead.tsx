@@ -2991,6 +2991,16 @@ export function OutreachManagerRead({
                     )}
                   </div>
 
+                  {operations && campaignSteps.length > 0 && (
+                    <WorkflowStepProgress
+                      steps={campaignSteps}
+                      queues={operations.queues}
+                      waves={operations.waves}
+                      timezone={operations.execution?.timezone ?? null}
+                      now={now}
+                    />
+                  )}
+
                   {open && workflow && campaign.status === 'running' && newerWorkflowAvailable && (
                     <p className="mgr-warmup">
                       Workflow v{campaign.workflowVersion ?? '—'} locked
@@ -3235,16 +3245,6 @@ export function OutreachManagerRead({
                               </div>
                             </div>
                           </details>
-
-                          {campaignSteps.length > 0 && (
-                            <WorkflowStepProgress
-                              steps={campaignSteps}
-                              queues={operations.queues}
-                              waves={operations.waves}
-                              timezone={operations.execution?.timezone ?? null}
-                              now={now}
-                            />
-                          )}
 
                           {operationalAnalytics && (
                             <>
