@@ -3459,6 +3459,40 @@ describe.skipIf(!databaseUrl)('a claim has an owner and a deadline', () => {
     ).toEqual([]);
   });
 
+  it('releases a claim immediately when its batch is already finished and no hold or worker remains', async () => {
+    await planned('lact_finished_batch', 'https://www.linkedin.com/in/finished-batch/');
+    await planned('lact_running_batch', 'https://www.linkedin.com/in/running-batch/');
+    await db
+      .prepare(
+        `INSERT INTO linkedin_batches (id,workspace_id,seat_key,status,started_at,finished_at)
+         VALUES ('lbatch_finished',?,'owner','halted',?,?),
+                ('lbatch_still_running',?,'owner','running',?,NULL)`
+      )
+      .run(
+        WORKSPACE_ID,
+        new Date(NOW.getTime() - 60_000).toISOString(),
+        NOW.toISOString(),
+        WORKSPACE_ID,
+        NOW.toISOString()
+      );
+    await db
+      .prepare('UPDATE linkedin_actions SET claimed_at=?, batch_id=? WHERE id=?')
+      .run(NOW.toISOString(), 'lbatch_finished', 'lact_finished_batch');
+    await db
+      .prepare('UPDATE linkedin_actions SET claimed_at=?, batch_id=? WHERE id=?')
+      .run(NOW.toISOString(), 'lbatch_still_running', 'lact_running_batch');
+
+    expect(
+      await reapExpiredActionLeases(db, {
+        now: new Date(NOW.getTime() + 60_000),
+        legacyGraceMs: 86_400_000
+      })
+    ).toBe(1);
+    expect((await row('lact_finished_batch'))?.unclaimed).toBe(true);
+    expect((await row('lact_finished_batch'))?.batch_id).toBeNull();
+    expect((await row('lact_running_batch'))?.unclaimed).toBe(false);
+  });
+
   it('recovers a pre-lease strand but not a pre-lease hold', async () => {
     // Both rows are what this table looked like before migration 054: claimed,
     // no owner, no deadline. The ONLY thing that tells them apart is that the

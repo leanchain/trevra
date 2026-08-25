@@ -2617,15 +2617,31 @@ export async function reapExpiredActionLeases(
     UPDATE linkedin_actions
     SET claimed_at=NULL, claimed_by=NULL, lease_expires_at=NULL, batch_id=NULL
     WHERE id IN (
-      SELECT id FROM linkedin_actions
-      WHERE status='planned' AND claimed_at IS NOT NULL AND settlement_hold_at IS NULL
+      SELECT a.id FROM linkedin_actions a
+      WHERE a.status='planned' AND a.claimed_at IS NOT NULL AND a.settlement_hold_at IS NULL
         AND (
-          (lease_expires_at IS NOT NULL AND lease_expires_at < ?)
-          -- Claimed before leases existed: no deadline to compare, so the
-          -- evidence has to be the absence of a hold's own fingerprint.
-          OR (lease_expires_at IS NULL AND failure_kind IS NULL AND claimed_at < ?)
+          (a.lease_expires_at IS NOT NULL AND a.lease_expires_at < ?)
+          -- A resolved/released hold can leave the old claim timestamp behind.
+          -- When the named batch is already finished and no worker/lease owns
+          -- the row, there is no in-flight side effect left to protect and the
+          -- row is safe to return to the queue immediately. This is distinct
+          -- from a deliberate unknown-outcome hold, which still has
+          -- settlement_hold_at and can never reach this predicate.
+          OR (
+            a.lease_expires_at IS NULL AND a.failure_kind IS NULL AND a.claimed_by IS NULL
+            AND a.batch_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1 FROM linkedin_batches b
+              WHERE b.id=a.batch_id AND b.workspace_id=a.workspace_id
+                AND b.status<>'running' AND b.finished_at IS NOT NULL
+            )
+          )
+          -- Claimed before leases existed: no deadline or batch state to
+          -- compare, so the evidence has to be age plus the absence of a
+          -- hold's own fingerprint.
+          OR (a.lease_expires_at IS NULL AND a.failure_kind IS NULL AND a.claimed_at < ?)
         )
-      ORDER BY claimed_at ASC
+      ORDER BY a.claimed_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT ${limit}
     )
