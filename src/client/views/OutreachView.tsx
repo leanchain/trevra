@@ -120,7 +120,7 @@ export function OutreachView({
             </button>
           </div>
           {messageView === 'conversations' ? (
-            <SharedConversations />
+            <SharedConversations onOpenLinkedInInbox={() => setMessageView('linkedin')} />
           ) : (
             <OutreachInbox setToast={setToast} />
           )}

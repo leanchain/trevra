@@ -34,7 +34,26 @@ function newReplyKey(): string {
   return `conversation-reply-${uuid ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`;
 }
 
-export function SharedConversations() {
+/**
+ * A CONVERSATION THAT CANNOT BE ANSWERED HERE HAS TO SAY SO.
+ *
+ * This screen prepares EMAIL replies, and only in answer to an inbound email
+ * (`canReplyByEmail`). For every other conversation the composer simply did not
+ * render -- no box, no button, no sentence -- and the only clue was a footnote
+ * at the bottom of the page pointing at "the LinkedIn inbox view above". An
+ * operator opening the default tab on a LinkedIn thread was looking at a
+ * transcript with no visible way to answer it and no stated reason, which is
+ * exactly how it was reported.
+ *
+ * So the absence is now explained where the composer would have been, and the
+ * screen that CAN send offers itself as a button rather than as a footnote.
+ */
+export function SharedConversations({
+  onOpenLinkedInInbox
+}: {
+  /** Switches the surrounding view to the LinkedIn inbox. Absent in tests and any host that has no such view. */
+  onOpenLinkedInInbox?: () => void;
+} = {}) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
@@ -283,6 +302,30 @@ export function SharedConversations() {
                   <p>{message.body}</p>
                 </article>
               ))
+            )}
+
+            {!canReplyByEmail && selected && (
+              <div className="shared-reply-composer shared-reply-elsewhere">
+                <div className="shared-reply-heading">
+                  <div>
+                    <strong>Not answerable from this screen</strong>
+                    <span>
+                      {selected.channels.includes('linkedin')
+                        ? 'The last message on this conversation came through LinkedIn. LinkedIn replies are queued in the LinkedIn inbox and sent from the paired browser at paced gaps, so they are written there rather than here.'
+                        : selected.email
+                          ? 'Trevra only prepares an email reply in answer to an inbound email. The most recent message here is not one, so there is nothing to reply to yet.'
+                          : 'This person has no email address on file, so there is no email thread to reply to.'}
+                    </span>
+                  </div>
+                </div>
+                {selected.channels.includes('linkedin') && onOpenLinkedInInbox && (
+                  <div className="shared-reply-actions">
+                    <button className="primary-button" type="button" onClick={onOpenLinkedInInbox}>
+                      Open the LinkedIn inbox
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
 
             {canReplyByEmail && (

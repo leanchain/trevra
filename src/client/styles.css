@@ -12382,6 +12382,15 @@ button:disabled {
   padding-top: 12px;
   border-top: 1px solid var(--line);
 }
+/* The "you cannot answer this here" block. Same box as the composer so it sits
+   where an operator already looks for one, tinted so it does not read as a
+   composer that failed to render. */
+.shared-reply-elsewhere {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
 .shared-reply-heading {
   display: flex;
   align-items: flex-start;
