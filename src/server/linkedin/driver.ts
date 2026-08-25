@@ -880,6 +880,26 @@ export function connectButtonSelector(name: string): string {
  * Not scoped to `main`: the menu is rendered in a portal, and on the measured
  * page it sits outside `main` entirely. The name is what makes it safe.
  */
+/**
+ * The "More" button a person can actually hit.
+ *
+ * Measured on `/in/byronvoorbach/` on 2026-08-25, three matched: one OUTSIDE
+ * `main` in the sticky header, which hit-tests to the `<nav>` sitting on top of
+ * it and is FIRST in the DOM, so `.first()` chose it and the click spent the
+ * full 15s timeout; the real top-card control inside `main`; and a 0x0 ghost.
+ * Identical to the three-anchor case on `connectAnchorSelector`, and fixed the
+ * same way -- `main` drops the covered one, `:visible` drops the ghost.
+ *
+ * Not pinned to a name because it does not need to be: "More" belongs to the
+ * profile, and the rail's cards carry no such control. What it opens IS pinned.
+ */
+export function moreActionsSelector(): string {
+  return SELECTORS.moreActionsButton
+    .split(',')
+    .map((one) => `main ${one.trim()}:visible`)
+    .join(', ');
+}
+
 export function connectInMoreMenuSelector(name: string): string {
   return SELECTORS.connectInMoreMenu
     .split(',')
@@ -1149,7 +1169,7 @@ async function connectViaMoreMenu(
     strangers > 0
       ? ` ${strangers} Connect button(s) on the page belong to other people and were deliberately ignored.`
       : '';
-  const more = page.locator(SELECTORS.moreActionsButton);
+  const more = page.locator(moreActionsSelector());
   if ((await more.count()) === 0) {
     if (await present(page, SELECTORS.messageButton)) {
       return {
@@ -1162,7 +1182,7 @@ async function connectViaMoreMenu(
     return {
       failed: fail(
         'selector_drift',
-        `Nothing on ${url} offers to connect with ${subject}, and no ${SELECTORS.moreActionsButton} matched either.${ignored} Nothing was clicked.`
+        `Nothing on ${url} offers to connect with ${subject}, and no ${moreActionsSelector()} matched either.${ignored} Nothing was clicked.`
       )
     };
   }

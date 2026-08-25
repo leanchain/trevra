@@ -5,6 +5,7 @@ import {
   connectButtonSelector,
   connectInMoreMenuSelector,
   cssSafeName,
+  moreActionsSelector,
   isDegreeRead,
   isLoggedIn,
   parseConnectionDegree,
@@ -543,7 +544,7 @@ describe('connection request composer', () => {
       counts: {
         // Five rail buttons for strangers, and nothing for the subject.
         [SELECTORS.connectButton]: 5,
-        [SELECTORS.moreActionsButton]: 1
+        [moreActionsSelector()]: 1
       },
       clicked,
       url: () => current,
@@ -592,7 +593,7 @@ describe('connection request composer', () => {
     const clicked: string[] = [];
     const page = personPage({
       name: null,
-      counts: { [SELECTORS.connectButton]: 5, [SELECTORS.moreActionsButton]: 1 },
+      counts: { [SELECTORS.connectButton]: 5, [moreActionsSelector()]: 1 },
       clicked,
       url: () => current,
       goto: (url) => {
@@ -615,6 +616,15 @@ describe('connection request composer', () => {
     }
     for (const alternative of connectInMoreMenuSelector('Byron Voorbach').split(', ')) {
       expect(alternative).toContain('[aria-label*="Byron Voorbach"]');
+    }
+    /*
+     * And the More button has the same three-copy problem the anchor has: a
+     * sticky-header duplicate the `<nav>` covers, first in the DOM, which cost
+     * a full 15s click timeout; the real one in `main`; and a 0x0 ghost.
+     */
+    for (const alternative of moreActionsSelector().split(', ')) {
+      expect(alternative.startsWith('main ')).toBe(true);
+      expect(alternative.endsWith(':visible')).toBe(true);
     }
     // A name that cannot be put in a CSS string is no name at all: the caller
     // must refuse rather than compile a selector that matches something else.

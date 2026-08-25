@@ -1033,6 +1033,16 @@ describe('inbox routes (031)', () => {
 });
 
 describe('withdrawal routes (032)', () => {
+  /**
+   * AGED AGAINST THE WALL CLOCK, NOT AGAINST `NOW`, AND THAT IS A BUG FIX.
+   *
+   * The route computes staleness from `new Date()`, so an invite anchored to
+   * the frozen `NOW` gets one day older every real day. `in/fresh` was written
+   * two days before 2026-08-06 and crossed the 21-day default on 2026-08-25 --
+   * a suite that had been green for nineteen days failed on a change that
+   * touched none of this. Anchoring both invites to the same clock the route
+   * reads makes "2 days pending" mean 2 days forever.
+   */
   async function pendingInvite(
     workspaceId: string,
     targetRef: string,
@@ -1041,7 +1051,7 @@ describe('withdrawal routes (032)', () => {
     await recordAction(
       db,
       { workspaceId, kind: 'invite', targetRef, status: 'sent', source: 'export' },
-      new Date(NOW.getTime() - daysAgo * 86_400_000)
+      new Date(Date.now() - daysAgo * 86_400_000)
     );
   }
 
