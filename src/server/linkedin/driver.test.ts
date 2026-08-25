@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   SELECTORS,
   connectAnchorSelector,
+  connectButtonSelector,
+  connectInMoreMenuSelector,
+  cssSafeName,
   isDegreeRead,
   isLoggedIn,
   parseConnectionDegree,
@@ -30,6 +33,60 @@ import {
  */
 
 const TARGET = 'https://www.linkedin.com/in/some-person/';
+
+/**
+ * The name the fake profile shows, and the Connect selector the driver builds
+ * from it. Every Connect control this driver will click is pinned to the
+ * subject's own display name -- see `connectButtonSelector` -- so a fake that
+ * offers a bare `SELECTORS.connectButton` is offering a STRANGER's button and
+ * must not be clicked.
+ */
+const SUBJECT = 'Some Person';
+const CONNECT_FOR_SUBJECT = connectButtonSelector(SUBJECT);
+
+/**
+ * A profile page that answers `count()` from a table and nothing else.
+ *
+ * Every selector not named in `counts` matches nothing, which is what makes
+ * these tests about ONE fact each: what is on the page, and what got clicked.
+ * The display name is served through `SELECTORS.profileHeading` because that is
+ * where the driver reads the pin it scopes its Connect selectors with.
+ */
+function personPage(spec: {
+  name: string | null;
+  counts: Record<string, number>;
+  clicked: string[];
+  filled?: string[];
+  url: () => string;
+  goto: (url: string) => void;
+}): LinkedInPage {
+  const locator = (selector: string): LinkedInLocator => {
+    const self: LinkedInLocator = {
+      count: async () => {
+        if (selector in spec.counts) return spec.counts[selector]!;
+        if (selector === SELECTORS.profileHeading) return spec.name === null ? 0 : 1;
+        return 0;
+      },
+      first: () => self,
+      click: async () => {
+        spec.clicked.push(selector);
+      },
+      fill: async (value: string) => {
+        spec.filled?.push(value);
+      },
+      textContent: async () => (selector === SELECTORS.profileHeading ? spec.name : null)
+    };
+    return self;
+  };
+  return {
+    goto: async (url: string) => {
+      spec.goto(url);
+    },
+    url: spec.url,
+    locator,
+    waitForTimeout: async () => {}
+  };
+}
 
 function fakePage(options: { startAt: string; linkOnPage: boolean }): {
   page: LinkedInPage;
@@ -158,7 +215,8 @@ describe('connection request composer', () => {
     const locator = (selector: string): LinkedInLocator => {
       const self: LinkedInLocator = {
         count: async () => {
-          if (selector === SELECTORS.connectButton) return 1;
+          if (selector === SELECTORS.profileHeading) return 1;
+          if (selector === CONNECT_FOR_SUBJECT) return 1;
           if (selector === SELECTORS.addNoteButton) return 1;
           return 0;
         },
@@ -167,7 +225,7 @@ describe('connection request composer', () => {
           clicked.push(selector);
         },
         fill: async () => {},
-        textContent: async () => null
+        textContent: async () => (selector === SELECTORS.profileHeading ? SUBJECT : null)
       };
       return self;
     };
@@ -183,7 +241,7 @@ describe('connection request composer', () => {
     const result = await sendInvite(page, TARGET, 'Hi there', { appearTimeoutMs: 20 });
 
     expect(result).toMatchObject({ ok: false, failureKind: 'selector_drift' });
-    expect(clicked).toContain(SELECTORS.connectButton);
+    expect(clicked).toContain(CONNECT_FOR_SUBJECT);
     expect(clicked).toContain(SELECTORS.addNoteButton);
     expect(result.detail).toContain('Nothing was sent.');
   });
@@ -225,7 +283,8 @@ describe('connection request composer', () => {
     const locator = (selector: string): LinkedInLocator => {
       const self: LinkedInLocator = {
         count: async () => {
-          if (selector === SELECTORS.connectButton) return 1;
+          if (selector === SELECTORS.profileHeading) return 1;
+          if (selector === CONNECT_FOR_SUBJECT) return 1;
           if (selector === SELECTORS.addNoteButton) {
             looks += 1;
             return looks >= 3 ? 1 : 0;
@@ -241,7 +300,7 @@ describe('connection request composer', () => {
         fill: async (value: string) => {
           filled.push(value);
         },
-        textContent: async () => null
+        textContent: async () => (selector === SELECTORS.profileHeading ? SUBJECT : null)
       };
       return self;
     };
@@ -275,7 +334,8 @@ describe('connection request composer', () => {
     const locator = (selector: string): LinkedInLocator => {
       const self: LinkedInLocator = {
         count: async () => {
-          if (selector === SELECTORS.connectButton) return 1;
+          if (selector === SELECTORS.profileHeading) return 1;
+          if (selector === CONNECT_FOR_SUBJECT) return 1;
           if (selector === '#interop-outlet') return 1;
           if (selector === 'div[role="dialog"]') return 1;
           return 0;
@@ -283,7 +343,7 @@ describe('connection request composer', () => {
         first: () => self,
         click: async () => {},
         fill: async () => {},
-        textContent: async () => null
+        textContent: async () => (selector === SELECTORS.profileHeading ? SUBJECT : null)
       };
       return self;
     };
@@ -323,7 +383,8 @@ describe('connection request composer', () => {
     const locator = (selector: string): LinkedInLocator => {
       const self: LinkedInLocator = {
         count: async () => {
-          if (selector === SELECTORS.connectButton) return 1;
+          if (selector === SELECTORS.profileHeading) return 1;
+          if (selector === CONNECT_FOR_SUBJECT) return 1;
           if (selector === SELECTORS.addNoteButton) return 1;
           if (selector === SELECTORS.noteTextarea) return 1;
           if (selector === SELECTORS.sendInviteButton) return 1;
@@ -339,7 +400,7 @@ describe('connection request composer', () => {
           events.push(`fill:${selector}`);
           filled.push(value);
         },
-        textContent: async () => null
+        textContent: async () => (selector === SELECTORS.profileHeading ? SUBJECT : null)
       };
       return self;
     };
@@ -456,6 +517,114 @@ describe('connection request composer', () => {
     // A target this driver would not navigate to yields no handle, so the
     // caller falls back to the selectors that need none.
     expect(profileHandleFor('https://evil.example/in/some-person/')).toBeNull();
+  });
+
+  /**
+   * THE INCIDENT THIS PINS DOWN: TWO INVITES WENT TO STRANGERS.
+   *
+   * Measured on the live seat on 2026-08-25. `/in/byronvoorbach/` is 3rd degree
+   * and his top card offers only Message and Follow -- his own Connect is
+   * behind "More" -- while the "More profiles for you" rail underneath carries
+   * FIVE `button[aria-label^="Invite"][aria-label*="connect"]`, all for other
+   * people and all inside `main`. The old code saw a non-zero count, skipped
+   * the More menu it needed, clicked `.first()`, and invited Sharon van
+   * Hasselt-Zock. The same run against `/in/martijnhandels/` invited Dmitry
+   * Klebanov. LinkedIn's own sent-invitations list named them both.
+   *
+   * An invite cannot be un-sent, so the assertion that matters here is the
+   * negative one: the stranger's control is on the page, matches the table's
+   * selector, and is NOT clicked.
+   */
+  it('never clicks a Connect button that belongs to somebody else', async () => {
+    let current = TARGET;
+    const clicked: string[] = [];
+    const page = personPage({
+      name: 'Byron Voorbach',
+      counts: {
+        // Five rail buttons for strangers, and nothing for the subject.
+        [SELECTORS.connectButton]: 5,
+        [SELECTORS.moreActionsButton]: 1
+      },
+      clicked,
+      url: () => current,
+      goto: (url) => {
+        current = url;
+      }
+    });
+
+    const result = await sendInvite(page, TARGET, 'Hi Byron, thanks for connecting.');
+
+    expect(result.ok).toBe(false);
+    expect(result.failureKind).toBe('selector_drift');
+    expect(result.detail).toContain('deliberately ignored');
+    expect(clicked).not.toContain(SELECTORS.connectButton);
+    expect(clicked).not.toContain(connectInMoreMenuSelector('Byron Voorbach'));
+  });
+
+  it('clicks the Connect button whose label names the target, when there is one', async () => {
+    let current = TARGET;
+    const clicked: string[] = [];
+    const own = connectButtonSelector('Byron Voorbach');
+    const page = personPage({
+      name: 'Byron Voorbach',
+      counts: {
+        [own]: 1,
+        [SELECTORS.connectButton]: 6,
+        [SELECTORS.addNoteButton]: 1,
+        [SELECTORS.noteTextarea]: 1,
+        [SELECTORS.sendInviteButton]: 1
+      },
+      clicked,
+      url: () => current,
+      goto: (url) => {
+        current = url;
+      }
+    });
+
+    const result = await sendInvite(page, TARGET, 'Hi Byron, thanks for connecting.');
+
+    expect(result).toMatchObject({ ok: true, failureKind: null });
+    expect(clicked).toContain(own);
+  });
+
+  it('refuses to click anything when the page has no readable name to pin to', async () => {
+    let current = TARGET;
+    const clicked: string[] = [];
+    const page = personPage({
+      name: null,
+      counts: { [SELECTORS.connectButton]: 5, [SELECTORS.moreActionsButton]: 1 },
+      clicked,
+      url: () => current,
+      goto: (url) => {
+        current = url;
+      }
+    });
+
+    const result = await sendInvite(page, TARGET, 'Hi there.');
+
+    expect(result.failureKind).toBe('selector_drift');
+    expect(result.detail).toContain('no readable display name');
+    expect(clicked).toEqual([]);
+  });
+
+  it('pins both person-blind Connect selectors to the display name', () => {
+    for (const alternative of connectButtonSelector('Byron Voorbach').split(', ')) {
+      expect(alternative.startsWith('main ')).toBe(true);
+      expect(alternative).toContain('[aria-label*="Byron Voorbach"]');
+      expect(alternative.endsWith(':visible')).toBe(true);
+    }
+    for (const alternative of connectInMoreMenuSelector('Byron Voorbach').split(', ')) {
+      expect(alternative).toContain('[aria-label*="Byron Voorbach"]');
+    }
+    // A name that cannot be put in a CSS string is no name at all: the caller
+    // must refuse rather than compile a selector that matches something else.
+    expect(cssSafeName('Ann "Annie" Lee')).toBeNull();
+    expect(cssSafeName('back\\slash')).toBeNull();
+    expect(cssSafeName(null)).toBeNull();
+    expect(cssSafeName('A')).toBeNull();
+    // Only the first line, whitespace collapsed: a heading that carries a
+    // pronoun or a badge underneath is never a substring of any aria-label.
+    expect(cssSafeName('  Byron   Voorbach \nHe/Him')).toBe('Byron Voorbach');
   });
 
   /**

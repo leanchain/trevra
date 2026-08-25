@@ -815,6 +815,79 @@ export function connectAnchorSelector(handle: string): string {
 }
 
 /**
+ * A DISPLAY NAME THAT IS SAFE TO PUT INSIDE A CSS STRING, or nothing.
+ *
+ * Returning null is the whole point: the callers below use the name to prove a
+ * Connect control belongs to the person the invite was approved for, so a name
+ * that cannot be trusted to compile into the selector it looks like must make
+ * that proof FAIL rather than degrade into a person-blind match.
+ *
+ * Only the first line is kept -- a heading that carries a badge or a pronoun on
+ * a second line would otherwise never be a substring of any `aria-label`.
+ */
+export function cssSafeName(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const name = (raw.split('\n')[0] ?? '').replace(/\s+/g, ' ').trim();
+  if (name.length < 2 || name.length > 120) return null;
+  // A quote, a backslash or a control character would either terminate the
+  // string early or escape into something else. Refusing is cheap; guessing is
+  // an invite to a stranger.
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f"\\]/.test(name)) return null;
+  return name;
+}
+
+/**
+ * THE CONNECT BUTTON FOR ONE NAMED PERSON, AND WHY THE NAME IS NOT OPTIONAL.
+ *
+ * `SELECTORS.connectButton` matches ANY Connect button on the page, and on
+ * 2026-08-25 that stopped meaning "the profile's own". Measured live on
+ * `/in/byronvoorbach/`: the subject is 3rd degree and his top card offers only
+ * Message and Follow -- his own Connect is behind "More" -- while the "More
+ * profiles for you" rail below carries FIVE Connect buttons for strangers:
+ *
+ *   button[aria-label="Invite Sharon van Hasselt- Zock to connect"]  <- .first()
+ *   button[aria-label="Invite Zico Bakker 🔜 Gamescom to connect"]
+ *   ... three more, all inside `main`, all clickable
+ *
+ * The old code read `connectButton.count() === 5 > 0`, skipped the More menu it
+ * needed, and clicked `.first()`. TWO INVITATIONS WENT TO PEOPLE NOBODY
+ * APPROVED before this was caught -- LinkedIn's own sent list named them. An
+ * invite cannot be un-sent, so no code path below may ever click a Connect
+ * control that is not provably the target's.
+ *
+ * The `aria-label` carries the member's display name in EVERY language
+ * ("Invite Byron Voorbach to connect", "Byron Voorbach als Kontakt einladen"),
+ * which is why the name is the pin and the English words are not. `main` drops
+ * the sticky-header duplicate and `:visible` drops the 0x0 collapsed one, for
+ * the same measured reasons spelled out on `connectAnchorSelector`.
+ *
+ * A SEAT WHOSE BUTTON LABELS ARE TRANSLATED WILL MATCH NOTHING HERE and report
+ * that nothing was clicked. That is the intended trade: this driver reaches
+ * such a seat through `connectAnchorSelector`, and a clean "no control for this
+ * person" is worth more than a click that might land on somebody else.
+ */
+export function connectButtonSelector(name: string): string {
+  return SELECTORS.connectButton
+    .split(',')
+    .map((one) => `main ${one.trim()}[aria-label*="${name}"]:visible`)
+    .join(', ');
+}
+
+/**
+ * The same pin for the entry inside an opened "More" menu.
+ *
+ * Not scoped to `main`: the menu is rendered in a portal, and on the measured
+ * page it sits outside `main` entirely. The name is what makes it safe.
+ */
+export function connectInMoreMenuSelector(name: string): string {
+  return SELECTORS.connectInMoreMenu
+    .split(',')
+    .map((one) => `${one.trim()}[aria-label*="${name}"]`)
+    .join(', ');
+}
+
+/**
  * Reach a profile by CLICKING A LINK TO IT, when the page already shows one.
  *
  * WHY THIS IS NOT COSMETIC, and why it is the last structural difference
@@ -1054,6 +1127,69 @@ function isResult(value: { url: string } | LinkedInDriverResult): value is Linke
 }
 
 /**
+ * The target's own Connect entry from behind "More", or the reason there is none.
+ *
+ * Split out of `sendInvite` because every branch here is a REFUSAL: this runs
+ * only once the profile has been searched for a control belonging to the named
+ * person and none was found in the open, and it must end either with that
+ * person's own menu entry or with nothing clicked. It never widens the search.
+ *
+ * The stranger count goes into the sentence deliberately. "No Connect control
+ * for Byron Voorbach" reads like drift until you know the page had five Connect
+ * buttons on it -- all for other people -- which is precisely the shape that
+ * made the old person-blind selector look like it was working.
+ */
+async function connectViaMoreMenu(
+  page: LinkedInPage,
+  url: string,
+  subject: string
+): Promise<{ control: LinkedInLocator } | { failed: LinkedInDriverResult }> {
+  const strangers = await page.locator(SELECTORS.connectButton).count();
+  const ignored =
+    strangers > 0
+      ? ` ${strangers} Connect button(s) on the page belong to other people and were deliberately ignored.`
+      : '';
+  const more = page.locator(SELECTORS.moreActionsButton);
+  if ((await more.count()) === 0) {
+    if (await present(page, SELECTORS.messageButton)) {
+      return {
+        failed: fail(
+          'already_connected',
+          `${url} offers no Connect control and does offer Message, which is what a 1st-degree profile looks like.`
+        )
+      };
+    }
+    return {
+      failed: fail(
+        'selector_drift',
+        `Nothing on ${url} offers to connect with ${subject}, and no ${SELECTORS.moreActionsButton} matched either.${ignored} Nothing was clicked.`
+      )
+    };
+  }
+  try {
+    await hoverClick(page, more.first(), `${url}#more`, CLICK_TIMEOUT_MS);
+    await settle(page, `${url}#more-open`);
+  } catch (cause) {
+    return {
+      failed: fail(
+        'selector_drift',
+        `Opening the More menu on ${url} failed: ${cause instanceof Error ? cause.message : String(cause)}`
+      )
+    };
+  }
+  const inMenu = page.locator(connectInMoreMenuSelector(subject));
+  if ((await inMenu.count()) === 0) {
+    return {
+      failed: fail(
+        'selector_drift',
+        `The More menu on ${url} contains no Connect entry for ${subject}.${ignored} Nothing was clicked.`
+      )
+    };
+  }
+  return { control: inMenu };
+}
+
+/**
  * Send a connection invite, with the approved note if there is one.
  *
  * The note is passed through byte for byte or not at all. LinkedIn caps invite
@@ -1088,51 +1224,43 @@ export async function sendInvite(
   }
 
   /*
-   * Connect is the person's own anchor, or the action bar, or behind "More",
-   * in that order. All of them are read before anything is clicked, so a miss
-   * on every one is unambiguously "nothing happened".
+   * Connect is the person's own anchor, or their own button, or their own
+   * entry behind "More", in that order. All of them are read before anything
+   * is clicked, so a miss on every one is unambiguously "nothing happened".
    *
-   * THE ANCHOR IS TRIED FIRST BECAUSE IT IS THE ONLY ONE THAT NAMES WHO IT
-   * INVITES. `connectAnchorSelector` is scoped to this target's own handle, so
-   * it cannot match the "People also viewed" rail; `connectButton` and the
-   * More menu are person-blind and take `.first()`, which is safe only while
-   * LinkedIn keeps the profile's own control first in the DOM. They stay as
-   * fallbacks -- an English seat on the older markup still works exactly as it
-   * did -- but they are no longer what this reaches for.
+   * EVERY ONE OF THEM NAMES WHO IT INVITES, and that is a repair, not a
+   * refinement. The anchor is pinned to this target's handle; the other two
+   * are pinned to the display name read off this very page. The previous
+   * version left those two person-blind and took `.first()`, on the stated
+   * assumption that LinkedIn keeps the profile's own control first in the DOM.
+   * On 2026-08-25 that assumption broke -- see `connectButtonSelector` -- and
+   * two invitations went to strangers from the "More profiles for you" rail.
+   *
+   * NO NAME MEANS NO CLICK. If neither the heading nor the document title
+   * yields a usable name, there is no way to prove a button belongs to the
+   * target, so this refuses rather than falls back.
    */
   const handle = profileHandleFor(target);
-  let connect = page.locator(SELECTORS.connectButton);
   const ownAnchor = handle ? page.locator(connectAnchorSelector(handle)) : null;
-  if (ownAnchor && (await ownAnchor.count()) > 0) connect = ownAnchor;
-  else if ((await connect.count()) === 0) {
-    const more = page.locator(SELECTORS.moreActionsButton);
-    if ((await more.count()) === 0) {
-      if (await present(page, SELECTORS.messageButton)) {
-        return fail(
-          'already_connected',
-          `${url} offers no Connect control and does offer Message, which is what a 1st-degree profile looks like.`
-        );
-      }
+  let connect = ownAnchor && (await ownAnchor.count()) > 0 ? ownAnchor : null;
+  if (!connect) {
+    // Read only when the anchor missed: on a seat where the anchor is there,
+    // this is a DOM read the invite does not need.
+    const subject = cssSafeName(
+      (await readFirstText(page, [SELECTORS.profileHeading], 1)) ?? (await readNameFromTitle(page))
+    );
+    if (!subject) {
       return fail(
         'selector_drift',
-        `Neither ${SELECTORS.connectButton} nor ${SELECTORS.moreActionsButton} matched on ${url}. Nothing was clicked.`
+        `${url} has no readable display name, so no Connect control could be proved to belong to this person. Nothing was clicked.`
       );
     }
-    try {
-      await hoverClick(page, more.first(), `${url}#more`, CLICK_TIMEOUT_MS);
-      await settle(page, `${url}#more-open`);
-    } catch (cause) {
-      return fail(
-        'selector_drift',
-        `Opening the More menu on ${url} failed: ${cause instanceof Error ? cause.message : String(cause)}`
-      );
-    }
-    connect = page.locator(SELECTORS.connectInMoreMenu);
-    if ((await connect.count()) === 0) {
-      return fail(
-        'selector_drift',
-        `The More menu on ${url} contains no ${SELECTORS.connectInMoreMenu}. Nothing was clicked.`
-      );
+    const ownButton = page.locator(connectButtonSelector(subject));
+    if ((await ownButton.count()) > 0) connect = ownButton;
+    else {
+      const viaMore = await connectViaMoreMenu(page, url, subject);
+      if ('failed' in viaMore) return viaMore.failed;
+      connect = viaMore.control;
     }
   }
 

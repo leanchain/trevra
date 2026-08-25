@@ -51,7 +51,7 @@ import {
   setSeatRestingUntil
 } from './seat-events.js';
 import { ACTION_GAP_SECONDS, type PacedKind } from './limits.js';
-import { localDateOf, seededUnit, weekdayOf, workWindowOf } from './pacing.js';
+import { dayShapeFor, localDateOf, seededUnit, weekdayOf, workWindowOf } from './pacing.js';
 
 import { clearInboxForSeat, syncThreadMessages, syncThreads } from './inbox.js';
 import { campaignSnapshotSteps } from './managed-campaigns.js';
@@ -772,8 +772,15 @@ export async function autonomousWindowOpen(
   const local = localDateOf(now, seat.timezone);
   const weekday = weekdayOf(local);
   if (!window.days.includes(weekday)) return false;
+
+  // Use the SAME deterministic day shape as the planner and safety gate.
+  // Checking only the outer configured window woke the browser before today's
+  // shaped start, then the gate refused every row and the worker imposed a
+  // cooldown for work that was simply a few minutes early.
+  const shape = dayShapeFor(`${workspaceId}:${seatKey}`, local, window);
+  if (shape.resting) return false;
   const minute = local.hour * 60 + local.minute;
-  return minute >= window.startMinute && minute < window.endMinute;
+  return minute >= shape.startMinute && minute < shape.endMinute;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));

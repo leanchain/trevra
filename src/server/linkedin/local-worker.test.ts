@@ -22,10 +22,11 @@ import {
   type LinkedInSafetyVerdict
 } from './guard.js';
 import { ACTION_GAP_SECONDS } from './limits.js';
-import { FLAT_DAY_SHAPE } from './pacing.js';
+import { dayShapeFor, FLAT_DAY_SHAPE } from './pacing.js';
 import { getSeat, upsertSeat, type SeatPosture } from './seats.js';
 import {
   actionGapSeconds,
+  autonomousWindowOpen,
   claimSeatLease,
   closeIdleBrowsers,
   closeLinkedInBrowser,
@@ -2968,6 +2969,47 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
     // what it accepted at 02:00.
     expect(claimed?.manual).toBe(true);
     expect(claimed?.replyToInbound).toBe(true);
+  });
+
+  /**
+   * THE BROWSER MAY NOT WAKE BEFORE THE GATE WOULD LET IT WORK.
+   *
+   * `autonomousWindowOpen` used to read the OUTER configured window while the
+   * planner and the safety gate both read the SHAPED one -- the same window
+   * moved by a per-day seeded edge shift. On a day shaped to start at 09:11 the
+   * worker therefore opened Chrome at 09:00, offered the gate three rows, had
+   * all three refused as "business-hours", and imposed a batch cooldown for
+   * work that was eleven minutes early rather than wrong.
+   */
+  it('does not open autonomous Chrome before the same shaped start the safety gate enforces', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      {
+        label: 'Pankaj (founder)',
+        timezone: 'UTC',
+        workingDays: [0, 1, 2, 3, 4, 5, 6],
+        workStartMinute: 9 * 60,
+        workEndMinute: 17 * 60
+      },
+      LONG_AGO,
+      'owner'
+    );
+    const day = { year: 2026, month: 8, day: 4 };
+    const window = { days: [0, 1, 2, 3, 4, 5, 6], startMinute: 540, endMinute: 1020 };
+    const shape = dayShapeFor(`${WORKSPACE_ID}:owner`, day, window);
+    // This seed deliberately has a non-zero edge shift, pinning the regression
+    // where the outer 09:00 window opened Chrome before the gate's later start.
+    expect(shape.startMinute).toBeGreaterThan(window.startMinute);
+    const atMinute = (minute: number): Date =>
+      new Date(Date.UTC(2026, 7, 4, Math.floor(minute / 60), minute % 60));
+
+    expect(
+      await autonomousWindowOpen(db, WORKSPACE_ID, 'owner', atMinute(shape.startMinute - 1))
+    ).toBe(false);
+    expect(await autonomousWindowOpen(db, WORKSPACE_ID, 'owner', atMinute(shape.startMinute))).toBe(
+      true
+    );
   });
 
   /**
