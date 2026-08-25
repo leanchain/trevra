@@ -71,11 +71,39 @@ export type CampaignExecutionBlockerKind =
   | 'awaiting-outcome-resolution'
   | 'unclaimed';
 
+/**
+ * WHETHER A PERSON CAN DO ANYTHING ABOUT IT, which is a different question
+ * from whether the queue is moving.
+ *
+ * The campaign card printed "Needs attention" for every rung of the ladder
+ * below, including the ones whose own sentence ends "Nothing is wrong and no
+ * action is needed". At 22:54, on a seat that works 09:00-17:00, that produced
+ * an amber card demanding attention for the fact that it was night -- and the
+ * honest answer to "what can I do here" was "nothing, wait for morning".
+ *
+ * `waiting` means the condition ends on its own clock and no operator action
+ * would shorten it. `attention` means a PERSON is the thing it is waiting for.
+ * A card is amber only if something on it is `attention`.
+ */
+export type CampaignBlockerSeverity = 'waiting' | 'attention';
+
 export interface CampaignExecutionBlocker {
   kind: CampaignExecutionBlockerKind;
+  severity: CampaignBlockerSeverity;
   title: string;
   detail: string;
 }
+
+/**
+ * The safety-gate checks that are purely a clock.
+ *
+ * Everything else the gate refuses with -- a ceiling, a suppression, an
+ * acceptance-rate floor, a full pending backlog -- is a number somebody chose
+ * and can choose differently. These two are the wall clock and the calendar:
+ * the only available action is to widen the account's working window, which is
+ * a settings decision and not an incident.
+ */
+const CLOCK_GATE_CHECKS = new Set(['business-hours', 'weekend']);
 
 export interface CampaignExecutionBlockerInput {
   /** The accounts this campaign sends from. A recovery on another seat is not this campaign's blocker. */
@@ -224,11 +252,13 @@ export function campaignExecutionBlocker(
     return devices.length === 0
       ? {
           kind: 'companion-offline',
+          severity: 'attention',
           title: 'No paired computer',
           detail: `${plural(due, 'planned action')} ${are(due)} due, but no computer is paired with this workspace, so no browser can claim the work.`
         }
       : {
           kind: 'companion-offline',
+          severity: 'attention',
           title: 'Paired computer / companion offline',
           detail: `${plural(due, 'planned action')} ${are(due)} due, but the paired computer is not currently connected to Trevra, so no browser can claim the work.`
         };
@@ -240,6 +270,7 @@ export function campaignExecutionBlocker(
   if (seatRecovery)
     return {
       kind: 'recovery-open',
+      severity: 'attention',
       title:
         seatRecovery.status === 'verified'
           ? 'LinkedIn recovered — recovery window still open'
@@ -253,6 +284,7 @@ export function campaignExecutionBlocker(
   if (seatAttention)
     return {
       kind: 'session-attention',
+      severity: 'attention',
       title:
         seatAttention.kind === 'challenge'
           ? 'LinkedIn needs human verification'
@@ -263,6 +295,7 @@ export function campaignExecutionBlocker(
   if (!workerStatus)
     return {
       kind: 'executor-unknown',
+      severity: 'attention',
       title: 'Executor status unavailable',
       detail: `${plural(due, 'planned action')} ${are(due)} due, but Trevra could not read browser-worker status.`
     };
@@ -270,6 +303,7 @@ export function campaignExecutionBlocker(
   if (!workerStatus.ready)
     return {
       kind: 'executor-not-ready',
+      severity: 'attention',
       title: 'LinkedIn executor not ready',
       detail: `${plural(due, 'planned action')} ${are(due)} due. ${workerStatus.blockers.join(' ') || 'The browser worker is not ready.'}`
     };
@@ -281,6 +315,9 @@ export function campaignExecutionBlocker(
     const until = seatLocalTime(execution.restingUntil, execution.timezone);
     return {
       kind: 'seat-cooldown',
+      // Its own detail ends "Nothing is wrong and no action is needed", which
+      // is exactly the sentence an amber "Needs attention" contradicted.
+      severity: 'waiting',
       title: `Autonomous cooldown until ${until}`,
       detail: `${plural(due, 'planned action')} ${are(due)} due. ${seatLabel} finished a sitting and rests until ${until}${execution.timezone ? ` ${execution.timezone}` : ''} before opening the browser again, so the account is not driven at a constant rate. Nothing is wrong and no action is needed.`
     };
@@ -292,6 +329,7 @@ export function campaignExecutionBlocker(
   if (execution?.gate && !execution.gate.allowed)
     return {
       kind: 'safety-gate',
+      severity: CLOCK_GATE_CHECKS.has(execution.gate.check ?? '') ? 'waiting' : 'attention',
       title: gateTitle(execution.gate.check, execution.gate.kind),
       detail: `${plural(due, 'planned action')} ${are(due)} due, but the safety gate refuses the next one${
         execution.gate.check ? ` (${execution.gate.check})` : ''
@@ -304,6 +342,8 @@ export function campaignExecutionBlocker(
 
   return {
     kind: 'unclaimed',
+    // Every rung above is healthy and the row is simply next in line.
+    severity: 'waiting',
     title: 'Waiting for browser worker',
     detail: `${plural(due, 'planned action')} ${due === 1 ? 'has' : 'have'} reached the scheduled time and ${are(due)} waiting for the LinkedIn executor to claim the work.`
   };
@@ -328,6 +368,8 @@ function parkedBlocker(
   const word = noun(execution?.awaitingResolutionKind ?? null);
   return {
     kind: 'awaiting-outcome-resolution',
+    // The one state in this file named after needing a person.
+    severity: 'attention',
     title: `${plural(parked, word)} awaiting outcome resolution`,
     detail: `These were claimed and their outcome could not be read back, so Trevra parked them for you to resolve rather than risk repeating them. No browser will pick them up, and they are not counted as waiting for the executor.`
   };

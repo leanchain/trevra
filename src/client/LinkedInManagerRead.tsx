@@ -51,7 +51,11 @@ import {
   type LinkedInWorkerStatus,
   type LinkedInCompanionStatus
 } from './api';
-import { awaitingResolutionBlocker, campaignExecutionBlocker } from './LinkedInExecutionBlocker';
+import {
+  awaitingResolutionBlocker,
+  campaignExecutionBlocker,
+  type CampaignBlockerSeverity
+} from './LinkedInExecutionBlocker';
 import type { LinkedInLeadList } from '../server/linkedin/lead-lists';
 import type { LinkedInCampaignExecution } from '../server/linkedin/execution-state';
 import type { LinkedInSeat } from '../server/linkedin/seats';
@@ -615,23 +619,29 @@ function campaignBlockers({
   companionStatus: LinkedInCompanionStatus | null;
   /** Milliseconds. The seat's cooldown is a deadline, so it is judged against a clock. */
   now: number;
-}): Array<{ title: string; detail: string }> {
-  const out: Array<{ title: string; detail: string }> = [];
+}): Array<{ title: string; detail: string; severity: CampaignBlockerSeverity }> {
+  const out: Array<{ title: string; detail: string; severity: CampaignBlockerSeverity }> = [];
   if (campaign.status === 'draft')
     return [
       {
         title: 'Campaign not started',
+        severity: 'attention',
         detail: 'No lead is admitted or planned until you start the campaign.'
       }
     ];
   if (campaign.status === 'paused')
     out.push({
       title: 'Campaign paused',
+      severity: 'attention',
       detail:
         'New planning is paused. Already-started browser work is not created while the campaign is paused.'
     });
   if (report?.seat.pausedReason)
-    out.push({ title: 'LinkedIn account paused', detail: report.seat.pausedReason });
+    out.push({
+      title: 'LinkedIn account paused',
+      severity: 'attention',
+      detail: report.seat.pausedReason
+    });
 
   if (operations && ceilings) {
     const seen = new Set<ManagedKind>();
@@ -655,10 +665,15 @@ function campaignBlockers({
           blockedByAccountWarmup
             ? {
                 title: `${CAPACITY_LABEL[kind]} blocked by account warm-up`,
+                // A ramp that widens on its own schedule. Worth reading, not
+                // worth colouring the card amber.
+                severity: 'waiting' as const,
                 detail: `Campaign warm-up and account warm-up are separate. ${report?.seat.label ?? 'This LinkedIn account'} is in account warm-up week ${report?.seat.warmupWeek ?? 1} of ${report?.seat.warmupWeeks ?? 1}, which currently permits 0 ${CAPACITY_LABEL[kind].toLowerCase()}/day. This campaign cannot receive a slot until the account ramp permits this action. Any already queued action is still safety-checked before execution and will not send against a zero account ceiling.`
               }
             : {
                 title: `${CAPACITY_LABEL[kind]} capacity fully allocated`,
+                // Today's allowance is spent. Tomorrow's arrives by itself.
+                severity: 'waiting' as const,
                 detail: `${plural(backlog.due, 'lead')} ${are(backlog.due)} sequence-eligible at this step, but this campaign's current ramp limit is ${limit} and ${allocated} are already allocated. Remaining planner capacity is 0.`
               }
         );
@@ -685,10 +700,12 @@ function campaignBlockers({
     companionStatus,
     now
   });
-  if (blocker) out.push({ title: blocker.title, detail: blocker.detail });
+  if (blocker)
+    out.push({ title: blocker.title, detail: blocker.detail, severity: blocker.severity });
   if (queues?.scheduledFuture)
     out.push({
       title: 'Waiting for scheduled slots',
+      severity: 'waiting',
       detail: `${plural(queues.scheduledFuture, 'action')} ${are(queues.scheduledFuture)} already allocated but intentionally scheduled for a later time.`
     });
   // Parked rows are listed in their own right even when something else is the
@@ -696,25 +713,31 @@ function campaignBlockers({
   // Skipped when the ladder already led with them.
   const parked = awaitingResolutionBlocker(execution);
   if (parked && blocker?.kind !== 'awaiting-outcome-resolution')
-    out.push({ title: parked.title, detail: parked.detail });
+    out.push({ title: parked.title, detail: parked.detail, severity: parked.severity });
   // What is left of `heldForReview` once the parked rows have their own entry
   // above: rows explicitly held for review, which are a different decision.
   const heldOther = (queues?.heldForReview ?? 0) - (execution?.awaitingResolution ?? 0);
   if (heldOther > 0)
     out.push({
       title: 'Actions held for review',
+      severity: 'attention',
       detail: `${plural(heldOther, 'action')} ${are(heldOther)} held because Trevra cannot safely infer or repeat their outcome.`
     });
   if ((queues?.waitingForConnection ?? 0) + (queues?.waitingForReply ?? 0) > 0)
     out.push({
       title: 'Waiting on prospect outcomes',
+      severity: 'waiting',
       detail: `${plural(queues?.waitingForConnection ?? 0, 'lead')} ${are(queues?.waitingForConnection ?? 0)} waiting for connection evidence and ${queues?.waitingForReply ?? 0} ${are(queues?.waitingForReply ?? 0)} waiting for a reply or timeout.`
     });
   if (
     analytics?.bottlenecks.reason &&
     analytics.bottlenecks.reason !== 'No material campaign bottleneck is currently detected.'
   )
-    out.push({ title: 'Planner diagnosis', detail: analytics.bottlenecks.reason });
+    out.push({
+      title: 'Planner diagnosis',
+      severity: 'attention',
+      detail: analytics.bottlenecks.reason
+    });
 
   return out;
 }
@@ -2751,10 +2774,22 @@ export function OutreachManagerRead({
                 companionStatus,
                 now
               });
+              /*
+               * AMBER MEANS SOMEBODY HAS TO DO SOMETHING, and it used to mean
+               * "a sentence is present". A seat asleep at 22:54 outside its
+               * 09:00-17:00 window is a blocker, is entirely normal, and had
+               * the same amber card as a dead companion -- with no action a
+               * person could take. The headline also leads with the first
+               * ACTIONABLE entry rather than the first entry, so a real
+               * problem is never buried under a clock.
+               */
+              const actionable = blockers.some((entry) => entry.severity === 'attention');
+              const headline =
+                blockers.find((entry) => entry.severity === 'attention') ?? blockers[0] ?? null;
               return (
                 <article
                   className={`mgr-campaign${open ? ' is-open' : ''}${
-                    blockers.length > 0 ? ' has-issues' : ''
+                    actionable ? ' has-issues' : ''
                   }`}
                   key={campaign.id}
                 >
@@ -2964,17 +2999,21 @@ export function OutreachManagerRead({
                   nothing was wrong. Expanding is the way to DETAIL now; it is
                   no longer the way to STATE.
                 */}
-                  <div className={`mgr-campaign-health${blockers.length > 0 ? ' has-issues' : ''}`}>
+                  <div className={`mgr-campaign-health${actionable ? ' has-issues' : ''}`}>
                     <div>
                       <strong>
-                        {blockers.length === 0 ? 'No blockers detected' : 'Needs attention'}
+                        {blockers.length === 0
+                          ? 'No blockers detected'
+                          : actionable
+                            ? 'Needs attention'
+                            : 'Waiting — nothing to do'}
                       </strong>
                       <span>
-                        {blockers.length === 0
-                          ? operations
+                        {headline
+                          ? `${headline.title}: ${headline.detail}`
+                          : operations
                             ? `${operations.queues.queuedReady} queued · ${operations.queues.dueNow} eligible · ${campaign.inSequenceCount} in sequence`
-                            : 'Reading current delivery state…'
-                          : `${blockers[0]!.title}: ${blockers[0]!.detail}`}
+                            : 'Reading current delivery state…'}
                       </span>
                     </div>
                     {blockers.length > 1 && (

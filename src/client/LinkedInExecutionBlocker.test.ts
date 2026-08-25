@@ -250,6 +250,51 @@ describe('campaign execution blocker', () => {
     });
     expect(result?.title).toBe("Outside this account's working hours");
     expect(result?.detail).toContain('21:14');
+    // The point of the severity: at 21:14 on a 08:00-18:00 seat there is
+    // nothing an operator can do, so the card must not demand attention.
+    expect(result?.severity).toBe('waiting');
+  });
+
+  /**
+   * WAITING IS NOT THE SAME AS BROKEN, and the card only has one colour to say
+   * so with.
+   *
+   * Every rung used to render as "Needs attention". A seat asleep at 22:54
+   * outside its own working window got the identical amber treatment as a
+   * companion that had gone offline -- and the honest answer to "what do I do
+   * about this" was "wait until 09:00". So each rung now declares whether a
+   * PERSON is what it is waiting for.
+   */
+  it('separates the states a person can end from the ones only a clock can', () => {
+    const clockGate = (check: NonNullable<LinkedInCampaignExecution['gate']>['check']) =>
+      blocker({
+        execution: execution({
+          restingUntil: null,
+          gate: { kind: 'invite', allowed: false, check, detail: 'it is 22:54 there.' }
+        })
+      })?.severity;
+    expect(clockGate('business-hours')).toBe('waiting');
+    expect(clockGate('weekend')).toBe('waiting');
+    // A ceiling is a number somebody chose and can choose differently, so it
+    // stays actionable even though it too resets on its own.
+    expect(clockGate('rolling-24h')).toBe('attention');
+    expect(clockGate('acceptance-rate')).toBe('attention');
+
+    // Resting says "nothing is wrong and no action is needed" in its own text.
+    expect(blocker()?.severity).toBe('waiting');
+    // And simply being next in line is not a fault either.
+    expect(
+      blocker({ execution: execution({ restingUntil: null, gate: null, awaitingResolution: 0 }) })
+        ?.severity
+    ).toBe('waiting');
+
+    // Everything that is genuinely waiting for a human keeps demanding one.
+    expect(
+      blocker({
+        companionStatus: companion({ devices: [] })
+      })?.severity
+    ).toBe('attention');
+    expect(awaitingResolutionBlocker(execution())?.severity).toBe('attention');
   });
 
   it('does not treat an allowed gate as a blocker', () => {
