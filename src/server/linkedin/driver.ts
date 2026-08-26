@@ -33,6 +33,13 @@
  *   challenge         LinkedIn wants a human (captcha, PIN, checkpoint). STOP.
  *   selector_drift    the control we needed was not on the page. Nothing was
  *                     clicked, so nothing was sent.
+ *   note_quota_exhausted
+ *                     the approved note cannot be attached: this account has
+ *                     spent its month's free personalised invites and LinkedIn
+ *                     answers "Add a note" with a Premium upsell. Definite,
+ *                     and nothing was sent -- deliberately NOT downgraded to a
+ *                     note-less invite, which is a different invite from the
+ *                     one a human approved.
  *   connect_unavailable
  *                     LinkedIn offers this seat no way to connect with THIS
  *                     person -- not from the top card, not from More. Definite,
@@ -107,6 +114,7 @@ export type LinkedInFailureKind =
   | 'unknown'
   | 'compose_unavailable'
   | 'connect_unavailable'
+  | 'note_quota_exhausted'
   | 'paid_credit_required';
 
 export interface LinkedInPostImageUpload {
@@ -472,6 +480,33 @@ export const SELECTORS = {
     '#interop-outlet button[aria-label="Send"], #interop-outlet button:text-is("Send"), button[aria-label="Send invitation"], button[aria-label="Send now"], button:text-is("Send"), button:text-is("Send invitation"), div.send-invite button.artdeco-button--primary',
   sendWithoutNoteButton:
     '#interop-outlet button[aria-label="Send without a note"], button[aria-label="Send without a note"], #interop-outlet button:text-is("Send without a note"), button:text-is("Send without a note"), div.send-invite button.artdeco-button--primary',
+  /**
+   * THE PREMIUM WALL THAT REPLACES THE NOTE FIELD WHEN THE MONTH'S FREE
+   * PERSONALISED INVITES ARE SPENT.
+   *
+   * Measured on the live seat on 2026-08-26. "Add a note" is present and
+   * `disabled === false`; clicking it swaps the invite dialog for:
+   *
+   *   "Send unlimited personalized invites with Premium -- You're out of free
+   *    custom notes. Bypass the limit with Premium, write longer notes..."
+   *
+   * and the note textarea never appears. The driver read that as
+   * `selector_drift` and sent an operator to repair selectors that were fine,
+   * while the real answer -- this account may not attach a note to an invite
+   * until the quota resets -- was on screen in English.
+   *
+   * MATCHED ON THE WORDS, WHICH IS A COMPROMISE AND IS MARKED AS ONE. The
+   * upsell carries no stable class or role of its own, so there is nothing
+   * structural to pin. It is consulted ONLY after the note textarea has
+   * already failed to appear, so a false positive cannot cost a send -- at
+   * worst it renames one failure -- and a seat in another language falls back
+   * to the previous classification rather than to a wrong action.
+   *
+   * lc-debt: locale-bound text match; replace if LinkedIn ever gives the
+   * upsell a stable attribute.
+   */
+  noteQuotaUpsell:
+    'div[role="dialog"]:has-text("custom notes"), dialog:has-text("custom notes"), div[role="dialog"]:has-text("personalized invites"), dialog:has-text("personalized invites"), div[role="dialog"]:has-text("personalisierte Einladungen"), dialog:has-text("personalisierte Einladungen")',
   /** Open modal. Still visible after "send" means the send did not go through. */
   inviteModal: 'div[role="dialog"].send-invite, div.artdeco-modal[role="dialog"]',
   /** An invite already awaiting their answer. */
@@ -1436,6 +1471,16 @@ export async function sendInvite(
       }
       const textarea = page.locator(SELECTORS.noteTextarea);
       if ((await waitForAny(page, SELECTORS.noteTextarea, appearTimeoutMs)) === 0) {
+        // Asked only once the note field has already failed to appear: if
+        // LinkedIn put a Premium upsell where the note should be, the account
+        // is out of free custom notes and no repair to this file will produce
+        // one. Nothing was sent, and nothing may be sent without the note --
+        // an invite without the approved words is a different invite.
+        if (hadAddNoteControl && (await present(page, SELECTORS.noteQuotaUpsell)))
+          return fail(
+            'note_quota_exhausted',
+            `LinkedIn will not attach a note to this invite: this account has used up its free personalised invitations for the month, and "Add a note" now opens a Premium upsell instead of the note field. Nothing was sent, and the approved note was not dropped. The invite can go out with its note once the allowance resets, or without one only if a human decides that.`
+          );
         // Seeing and clicking Add a note is positive evidence that the invite
         // has NOT been sent yet. If the composer then drifts, classify it as a
         // definite selector miss so the claim can be retried after a repair

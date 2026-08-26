@@ -617,6 +617,41 @@ describe('connection request composer', () => {
     expect(clicked).not.toContain(SELECTORS.connectButton);
   });
 
+  it('names the Premium wall for what it is instead of blaming the selectors', async () => {
+    /*
+     * Measured live: "Add a note" is present and enabled, clicking it swaps
+     * the invite dialog for "You're out of free custom notes. Bypass the limit
+     * with Premium", and the note field never appears. The driver used to call
+     * that selector drift and send somebody to repair this file.
+     *
+     * Nothing is sent, and the note is NOT dropped to get the invite out: an
+     * invite without the approved words is a different invite.
+     */
+    let current = TARGET;
+    const clicked: string[] = [];
+    const page = personPage({
+      name: SUBJECT,
+      counts: {
+        [connectAnchorSelector('some-person')]: 1,
+        [SELECTORS.addNoteButton]: 1,
+        [SELECTORS.noteQuotaUpsell]: 1
+      },
+      clicked,
+      url: () => current,
+      goto: (url) => {
+        current = url;
+      }
+    });
+
+    const result = await sendInvite(page, TARGET, 'Hi, thanks for connecting.');
+
+    expect(result.ok).toBe(false);
+    expect(result.failureKind).toBe('note_quota_exhausted');
+    expect(result.detail).toContain('free personalised invitations');
+    expect(clicked).not.toContain(SELECTORS.sendInviteButton);
+    expect(clicked).not.toContain(SELECTORS.sendWithoutNoteButton);
+  });
+
   it('pins the menu entry to the handle and to nothing else', () => {
     const selector = connectAnchorInMenuSelector('byronvoorbach');
     for (const alternative of selector.split(', ')) {

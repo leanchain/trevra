@@ -1201,6 +1201,40 @@ describe('what LinkedIn says stops the batch', () => {
     expect(harness.closed[0]?.haltReason).toMatch(/SELECTORS in driver\.ts/);
   });
 
+  it('keeps the profile views running when the month has no personalised invites left', async () => {
+    /*
+     * LinkedIn answers "Add a note" with a Premium upsell once the account has
+     * spent its month's free personalised invitations. Every queued invite
+     * carries an approved note, so every one of them hits the same wall --
+     * retrying the next is guaranteed waste. The kind is dropped for the pass
+     * and the rest of the queue is untouched by a limit that has nothing to do
+     * with it.
+     */
+    const harness = fakeStore([
+      action({ id: 'lact_1', kind: 'invite' }),
+      action({ id: 'lact_2', kind: 'invite', targetRef: 'https://x.test/in/b/' }),
+      action({ id: 'lact_3', kind: 'profile_view', targetRef: 'https://x.test/in/c/' })
+    ]);
+    const { driver } = fakeDriver((target): LinkedInDriverResult =>
+      target.includes('/in/c/') ? ok : { ok: false, failureKind: 'note_quota_exhausted' }
+    );
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    // ONE invite attempted, not two: the wall is about the account, not the lead.
+    expect(harness.released).toContainEqual({ id: 'lact_1', failureKind: 'note_quota_exhausted' });
+    expect(harness.released).toContainEqual({ id: 'lact_2', failureKind: null });
+    expect(harness.sent).toEqual(['lact_3']);
+    expect(result.halted).toBe(false);
+    expect(harness.closed[0]?.haltReason).toMatch(/free personalised invitations/);
+  });
+
   it('keeps working the kinds that did not drift', async () => {
     /*
      * THE SECOND PRODUCTION DAY THIS COST.

@@ -1504,6 +1504,31 @@ export async function runLinkedInLocalBatch(
       break;
     }
 
+    if (failureKind === 'note_quota_exhausted') {
+      /*
+       * NOT A SELECTOR PROBLEM AND NOT THIS LEAD'S FAULT.
+       *
+       * The account has spent its month's free personalised invitations, so
+       * LinkedIn answers "Add a note" with a Premium upsell and every queued
+       * invite carrying an approved note will hit the same wall. Retrying the
+       * next one is guaranteed waste, so the KIND is dropped for the rest of
+       * the pass exactly as repeated drift drops it -- and the other kinds,
+       * profile views above all, keep running.
+       *
+       * The row is RELEASED, not held and not skipped: nothing was sent, the
+       * note was not dropped, and the invite becomes sendable again by itself
+       * when the allowance resets. What a person decides -- wait, or send
+       * these without their notes -- is a decision about the campaign, and the
+       * `failure_kind` on the row is what puts it in front of them.
+       */
+      await store.releaseClaim(action.id, failureKind);
+      deferred.push(action.id);
+      abandoned.add(action.kind);
+      driftReason = `This account has used up its free personalised invitations for the month: LinkedIn offers a Premium upsell where the note field should be, so no further ${action.kind} actions were attempted in this batch. Nothing was sent and no approved note was dropped.`;
+      log(`LinkedIn seat ${store.workspaceId}/${store.seatKey}: ${driftReason}`);
+      continue;
+    }
+
     if (failureKind === 'selector_drift') {
       /*
        * ONE DRIFTED PROFILE IS NOT A DRIFTED SELECTOR.
