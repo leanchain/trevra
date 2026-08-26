@@ -13,6 +13,7 @@ import {
   deleteManagedCampaign,
   enrolNewContacts,
   getManagedCampaign,
+  limitingAdmissionKind,
   listCampaignMembers,
   managedAnalytics,
   pauseManagedCampaign,
@@ -1066,5 +1067,58 @@ describe('campaign admission forecasting', () => {
     expect(preview.diagnostics.some((item) => item.code === 'missing_variable_coverage')).toBe(
       true
     );
+  });
+});
+
+/**
+ * THE SENTENCE A LIVE CAMPAIGN PUT IN FRONT OF ITS OPERATOR.
+ *
+ * "New admission is constrained by reply_sample capacity." reply_sample is the
+ * number of replies the account has observed, which was zero, which is why it
+ * won a sort over every real capacity in the snapshot. It is not a capacity, it
+ * is not a constraint, and no operator can do anything with it. The kind that
+ * actually bounded the wave -- profile_view -- was two keys away.
+ */
+describe('limiting admission kind', () => {
+  const LIVE_SNAPSHOT = {
+    pending: 83,
+    inSequence: 25,
+    reply_sample: 0,
+    demand_invite: 1,
+    backlog_invite: 12,
+    outcome_sample: 14,
+    available_invite: 17,
+    acceptance_sample: 0,
+    demand_profile_view: 1,
+    backlog_profile_view: 13,
+    outcome_throttle_bps: 10_000,
+    forecast_no_reply_bps: 6000,
+    available_profile_view: 16,
+    forecast_acceptance_bps: 3500
+  };
+
+  it('names the kind that bounded the wave, not the smallest number in the dump', () => {
+    // profile_view: 16 - 13 = 3 free. invite: 17 - 12 = 5. Three is fewer, and
+    // the wave row this snapshot came from says so in its own words too:
+    // "profile_view is the limiting downstream capacity."
+    expect(limitingAdmissionKind(LIVE_SNAPSHOT)).toBe('profile_view');
+  });
+
+  it('ignores every key that is a measurement rather than a capacity', () => {
+    // Zeroed samples used to win outright. They are not eligible at all now.
+    expect(
+      limitingAdmissionKind({ reply_sample: 0, acceptance_sample: 0, outcome_sample: 0 })
+    ).toBeNull();
+  });
+
+  it('ignores a kind the workflow never demands, however little of it is left', () => {
+    expect(
+      limitingAdmissionKind({
+        ...LIVE_SNAPSHOT,
+        demand_dm: 0,
+        available_dm: 0,
+        backlog_dm: 99
+      })
+    ).toBe('profile_view');
   });
 });

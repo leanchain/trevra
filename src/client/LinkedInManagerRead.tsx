@@ -474,6 +474,14 @@ function WorkflowStepProgress({
               {index + 1}. {entry.label}
             </span>
             <strong>{entry.completed} done</strong>
+            {entry.tracksAcceptance && (
+              <span className="mgr-workflow-accepted">
+                {entry.accepted} accepted
+                {entry.completed > 0 && (
+                  <i> ({Math.round((entry.accepted / entry.completed) * 100)}%)</i>
+                )}
+              </span>
+            )}
             {lines.length === 0 ? (
               <small>No leads waiting here</small>
             ) : (

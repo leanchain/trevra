@@ -126,6 +126,8 @@ describe('campaign workflow step progress', () => {
         stepId: 'step-1',
         label: 'View their profile',
         completed: 1,
+        accepted: 0,
+        tracksAcceptance: false,
         pending: 19,
         due: 19,
         dueNow: 19,
@@ -140,6 +142,8 @@ describe('campaign workflow step progress', () => {
         stepId: 'step-2',
         label: 'Send a connection request',
         completed: 0,
+        accepted: 0,
+        tracksAcceptance: true,
         pending: 5,
         due: 5,
         dueNow: 5,
@@ -159,6 +163,8 @@ describe('campaign workflow step progress', () => {
         stepId: 'step-1',
         label: 'View their profile',
         completed: 0,
+        accepted: 0,
+        tracksAcceptance: false,
         pending: 0,
         due: 0,
         dueNow: 0,
@@ -170,6 +176,34 @@ describe('campaign workflow step progress', () => {
         delayBefore: null
       }
     ]);
+  });
+
+  it('carries the yes, not just the send, on the step that can have one', () => {
+    /*
+     * "16 connection requests sent" and "16 sent, 9 accepted" are the same
+     * campaign and completely different news. The screen only ever showed the
+     * first, so the number an operator is actually buying was nowhere on it.
+     *
+     * Acceptance is counted for invite rows only, which is why every other step
+     * says it does not track one: a 0 next to a profile view would be a fact
+     * about nothing.
+     */
+    const waves = [
+      {
+        stepFunnel: [
+          { stepId: 'step-1', sent: 13, accepted: 0 },
+          { stepId: 'step-2', sent: 10, accepted: 4 }
+        ]
+      },
+      {
+        stepFunnel: [{ stepId: 'step-2', sent: 6, accepted: 5 }]
+      }
+    ] as unknown as ManagedCampaignWave[];
+
+    const [step1, step2] = campaignStepProgress(LIVE_STEPS, [], waves);
+    expect(step1).toMatchObject({ completed: 13, accepted: 0, tracksAcceptance: false });
+    // Summed across waves, exactly as the send count already is.
+    expect(step2).toMatchObject({ completed: 16, accepted: 9, tracksAcceptance: true });
   });
 
   it('does not blame a delay for a monitor step, whose wait is the prospect', () => {

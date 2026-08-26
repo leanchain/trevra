@@ -3,9 +3,11 @@ import { COUNTED_MESSAGE_KINDS, recordAction } from './actions.js';
 import type { CampaignStatus } from './action-ledger.js';
 import {
   ADMISSION_FORECAST_MIN_SAMPLE,
+  ADMISSION_KINDS,
   decideAdmission,
   workflowAdmissionDemand,
   type AdmissionDecision,
+  type AdmissionKind,
   type AdmissionPolicy
 } from './admission.js';
 import { getLeadList } from './lead-lists.js';
@@ -4206,6 +4208,54 @@ export interface CampaignOperationalAnalytics {
   admissionForecast: CampaignAdmissionForecast;
 }
 
+/** Each admission kind in the words an operator uses for it. */
+const ADMISSION_KIND_LABEL: Record<AdmissionKind, string> = {
+  profile_view: 'profile view',
+  invite: 'connection request',
+  dm: 'message',
+  inmail: 'InMail',
+  follow: 'follow',
+  like: 'like',
+  endorse: 'skill endorsement'
+};
+
+/**
+ * Which downstream action kind actually bounded the last wave.
+ *
+ * READ BACK OUT OF THE SNAPSHOT USING THE PLANNER'S OWN ARITHMETIC. The wave
+ * row stores `decideAdmission`'s `capacitySnapshot`, which is a diagnostic dump
+ * and not a table of capacities: alongside `available_invite` and
+ * `backlog_profile_view` it carries `reply_sample`, `acceptance_sample`,
+ * `outcome_throttle_bps`, `pending` and `inSequence`. This used to sort every
+ * numeric entry in it and call the smallest one the bottleneck, so a live
+ * campaign told its operator "New admission is constrained by reply_sample
+ * capacity" -- reply_sample being the number of replies observed so far, zero,
+ * which is not a capacity, is not a constraint, and named nothing they could
+ * act on. The real answer sat two keys away and was `profile_view`.
+ *
+ * So this recomputes what `decideAdmission` computed: for every kind the
+ * workflow actually demands, how many leads its free headroom would admit, and
+ * the smallest wins. Same inputs, same rule, same answer -- and a key that is
+ * not a capacity can no longer win by being small.
+ */
+export function limitingAdmissionKind(capacity: Record<string, number>): AdmissionKind | null {
+  let limiting: AdmissionKind | null = null;
+  let fewest = Number.POSITIVE_INFINITY;
+  for (const kind of ADMISSION_KINDS) {
+    const demand = Number(capacity[`demand_${kind}`] ?? 0);
+    if (!Number.isFinite(demand) || demand <= 0) continue;
+    const available = Number(capacity[`available_${kind}`] ?? 0);
+    const backlog = Number(capacity[`backlog_${kind}`] ?? 0);
+    if (!Number.isFinite(available) || !Number.isFinite(backlog)) continue;
+    const admits = Math.floor(Math.max(0, available - backlog) / Math.max(0.05, demand));
+    if (admits < fewest) {
+      fewest = admits;
+      limiting = kind;
+    }
+  }
+  return limiting;
+}
+
 /**
  * One server-side read model for operating a wave campaign. The campaign page
  * should not reconstruct this from thousands of members in React: every count
@@ -4405,10 +4455,7 @@ export async function campaignOperationalAnalytics(
   const queues = await campaignQueueSummary(db, workspaceId, campaignId, now);
   const latestWave = waveRows[0] ?? null;
   const capacity = latestWave?.capacitySnapshot ?? {};
-  const limitingEntry = Object.entries(capacity)
-    .filter(([, value]) => Number.isFinite(value))
-    .sort((left, right) => left[1] - right[1])[0];
-  const limitingKind = limitingEntry?.[0] ?? null;
+  const limitingKind = limitingAdmissionKind(capacity);
   const recentBatchHalt =
     latestBatch?.status === 'halted' &&
     now.getTime() - new Date(latestBatch.started_at).getTime() <= 24 * 60 * 60_000
@@ -4431,7 +4478,7 @@ export async function campaignOperationalAnalytics(
               : queues.waitingForConnection + queues.waitingForReply > 0
                 ? `${queues.waitingForConnection + queues.waitingForReply} lead(s) are waiting on an outcome.`
                 : queues.pending > 0 && limitingKind
-                  ? `New admission is constrained by ${limitingKind} capacity.`
+                  ? `New leads are admitted no faster than this account's remaining daily ${ADMISSION_KIND_LABEL[limitingKind]} capacity allows.`
                   : queues.pending > 0
                     ? `${queues.pending} lead(s) remain in the pending pool until downstream capacity clears.`
                     : 'No material campaign bottleneck is currently detected.';

@@ -636,6 +636,17 @@ export interface LocalBatchDeps {
 const DEFAULT_MAX_ACTIONS = 25;
 
 /**
+ * How many leads may drift in one pass before the pass stops believing it is
+ * the leads and starts believing it is the selectors.
+ *
+ * Two, because one is the ordinary case -- a single profile whose controls sit
+ * somewhere LinkedIn does not usually put them -- and a genuine selector break
+ * misses on the very next lead as well. Raising this buys nothing: a broken
+ * selector is already proven by the second miss.
+ */
+const DRIFT_HALT_THRESHOLD = 2;
+
+/**
  * How many conversations deep a `dm` send looks for the thread it just
  * opened, right after sending -- never the full rail `syncRail` walks.
  * LinkedIn sorts the rail by recency, so the conversation a message just
@@ -1063,6 +1074,16 @@ export async function runLinkedInLocalBatch(
    */
   const deferred: string[] = [];
 
+  /**
+   * Rows this pass drifted on, in order.
+   *
+   * Separate from {@link deferred} because it means something different -- a
+   * deferral is "not yet", a drift is "a control we needed was not usable" --
+   * and because its LENGTH is the batch's evidence for whether one profile is
+   * odd or the selectors are broken. See the drift branch below.
+   */
+  const drifted: string[] = [];
+
   // Checked before a batch is even opened. A seat that is paused or cooling
   // down is a decision a human (or a limit wall) made, and opening a batch
   // against it would be the loop asking the question again until it liked the
@@ -1460,13 +1481,46 @@ export async function runLinkedInLocalBatch(
     }
 
     if (failureKind === 'selector_drift') {
-      // Nothing was clicked (driver.ts guarantees it), so the action goes back
-      // in the queue untouched. The batch still ends: if one selector has
-      // drifted, the next action would load a page for nothing, and hammering
-      // LinkedIn with pointless profile loads is its own risk.
+      /*
+       * ONE DRIFTED PROFILE IS NOT A DRIFTED SELECTOR.
+       *
+       * Nothing was clicked (driver.ts guarantees it), so the row goes back in
+       * the queue untouched either way. What changed is WHEN the batch gives
+       * up. It used to end on the first drift, reasoning that a moved selector
+       * makes every following page load pointless -- true for a real selector
+       * break, and catastrophic for the case production actually produced.
+       *
+       * On 2026-08-25 one profile (yannickdelange) rendered its Connect control
+       * behind a More button that a nav bar covered. Every five minutes a batch
+       * claimed that row first -- it carried the highest `queue_priority`, so
+       * the claim order handed it back every time -- drifted, and stopped. Four
+       * consecutive batches, `executed_count` 0, while 28 perfectly healthy
+       * actions sat behind it. A whole working day of the account's queue was
+       * spent on one person's page furniture.
+       *
+       * So a drift now costs the batch ONE action, not the batch. The row is
+       * released with its `failure_kind` recorded (the campaign card reads that
+       * and says a lead needs attention) and excluded from this pass, exactly
+       * as a deferred branch is, and the loop moves to the next action.
+       *
+       * THE ORIGINAL REASONING IS KEPT, JUST PRICED PROPERLY: a genuine
+       * selector break drifts on every profile, so the second drift in the same
+       * batch still halts it with the same sentence. A systemic break costs two
+       * page loads per batch instead of one -- the difference between two and
+       * one is not a LinkedIn risk; the difference between one bad profile and
+       * an idle account is a product that does not work.
+       */
       await store.releaseClaim(action.id, failureKind);
+      drifted.push(action.id);
+      if (drifted.length < DRIFT_HALT_THRESHOLD) {
+        deferred.push(action.id);
+        log(
+          `LinkedIn local worker skipped action ${action.id} on ${action.targetRef}: a control it needed did not match, nothing was clicked, and the batch continues to the next lead.${detail}`
+        );
+        continue;
+      }
       result.halted = true;
-      result.haltReason = `A selector no longer matches, so this batch stopped rather than reloading profiles for nothing. Repair SELECTORS in driver.ts.${detail}`;
+      result.haltReason = `A selector no longer matches on ${drifted.length} separate leads, so this batch stopped rather than reloading profiles for nothing. Repair SELECTORS in driver.ts.${detail}`;
       break;
     }
 

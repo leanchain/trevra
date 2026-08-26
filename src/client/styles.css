@@ -9398,6 +9398,19 @@ button:disabled {
   color: var(--muted);
   font-size: var(--t-text-chip);
 }
+/* "16 done" is not what an operator is buying on an invite step -- the yes is.
+   Its own row under the send count, muted, because it is the outcome of that
+   number rather than a competing one. */
+.mgr-workflow-accepted {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  font-variant-numeric: tabular-nums;
+}
+.mgr-workflow-accepted i {
+  font-style: normal;
+  opacity: 0.75;
+}
 .mgr-workflow-stage.is-pending > small {
   display: none;
 }

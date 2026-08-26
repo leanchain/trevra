@@ -71,6 +71,18 @@ export interface CampaignStepProgress {
   label: string;
   /** Completed work. The card's headline number, unchanged. */
   completed: number;
+  /**
+   * Of that completed work, how much the other person said yes to.
+   *
+   * Only invites have an acceptance, so this is 0 on every other step and
+   * {@link tracksAcceptance} says which steps it means anything on. Sending is
+   * not the outcome an operator is buying -- "16 connection requests sent" and
+   * "16 sent, 9 accepted" are the same campaign and completely different news,
+   * and until this existed the screen only ever showed the first one.
+   */
+  accepted: number;
+  /** True when this step is one whose sends can be accepted, so 0 is worth printing. */
+  tracksAcceptance: boolean;
   /** Every lead sitting on this step, whatever it is waiting for. */
   pending: number;
   /** Sequence-eligible, including leads that are parked. Kept for callers that ask about planner demand. */
@@ -103,11 +115,16 @@ export function campaignStepProgress(
 ): CampaignStepProgress[] {
   const byStep = new Map(backlog.map((entry) => [entry.stepId, entry]));
   const completedByStep = new Map<string, number>();
+  const acceptedByStep = new Map<string, number>();
   for (const wave of waves) {
     for (const funnel of wave.stepFunnel ?? []) {
       completedByStep.set(
         funnel.stepId,
         (completedByStep.get(funnel.stepId) ?? 0) + Number(funnel.sent ?? 0)
+      );
+      acceptedByStep.set(
+        funnel.stepId,
+        (acceptedByStep.get(funnel.stepId) ?? 0) + Number(funnel.accepted ?? 0)
       );
     }
   }
@@ -126,6 +143,10 @@ export function campaignStepProgress(
       stepId: step.id,
       label: ACTION_LABEL[step.action],
       completed: completedByStep.get(step.id) ?? 0,
+      accepted: acceptedByStep.get(step.id) ?? 0,
+      // The server counts acceptance for `kind='invite'` rows only, so this is
+      // the one step whose 0 is a fact rather than an absence of one.
+      tracksAcceptance: step.action === 'connection_request',
       pending,
       due: entry?.due ?? 0,
       dueNow,

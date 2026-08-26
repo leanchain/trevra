@@ -1178,6 +1178,8 @@ describe('what LinkedIn says stops the batch', () => {
   });
 
   it('puts a drifted selector back in the queue and stops reloading profiles', async () => {
+    // A SELECTOR THAT HAS REALLY MOVED MISSES ON THE SECOND LEAD TOO, and the
+    // second miss is what proves it. Two page loads, then the batch is over.
     const harness = fakeStore(threeActions);
     const { driver, calls } = fakeDriver(() => ({ ok: false, failureKind: 'selector_drift' }));
 
@@ -1189,9 +1191,51 @@ describe('what LinkedIn says stops the batch', () => {
       evaluate: async () => verdict()
     });
 
-    expect(calls).toHaveLength(1);
-    expect(harness.released).toEqual([{ id: 'lact_1', failureKind: 'selector_drift' }]);
+    expect(calls).toHaveLength(2);
+    expect(harness.released).toEqual([
+      { id: 'lact_1', failureKind: 'selector_drift' },
+      { id: 'lact_2', failureKind: 'selector_drift' }
+    ]);
     expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
+  });
+
+  it('does not let one unusual profile take down the rest of the queue', async () => {
+    /*
+     * THE PRODUCTION DAY THIS TEST IS WRITTEN FROM.
+     *
+     * One lead's profile put its Connect control behind a More button that a
+     * nav bar covered. The row carried the highest queue priority, so every
+     * five minutes a batch claimed it first, drifted, and stopped -- four
+     * consecutive halted batches with `executed_count` 0 while 28 healthy
+     * actions sat behind it, and an operator watching a campaign that had not
+     * moved in a day.
+     *
+     * The drifting lead still costs one page load per pass and still records
+     * its `failure_kind` for the operator. It no longer costs the account its
+     * day.
+     */
+    const harness = fakeStore(threeActions);
+    const { driver, calls } = fakeDriver((target): LinkedInDriverResult =>
+      target === 'https://www.linkedin.com/in/a/'
+        ? { ok: false, failureKind: 'selector_drift' }
+        : ok
+    );
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(harness.released).toEqual([{ id: 'lact_1', failureKind: 'selector_drift' }]);
+    expect(harness.sent).toEqual(['lact_2', 'lact_3']);
+    expect(result.executed).toBe(2);
+    expect(result.halted).toBe(false);
+    // The drifted row was claimed once and then left alone for this pass: it is
+    // excluded exactly as a deferred branch is, so it cannot be handed back.
+    expect(calls).toHaveLength(3);
   });
 
   it('stops on a lost browser session without accusing the selectors', async () => {
@@ -1275,8 +1319,15 @@ describe('what LinkedIn says stops the batch', () => {
   it('still halts on a missing Message control when no unaccepted invite explains it', async () => {
     // The narrowing is evidence-based on BOTH sides. A profile this seat never
     // invited has no innocent explanation for a missing Message control, so it
-    // is drift and the batch stops exactly as before.
-    const harness = fakeStore([action({ kind: 'dm', body: 'hello' })], { unacceptedInvite: false });
+    // is drift and the batch stops exactly as before -- on the second lead,
+    // which is where a drift that is really a drift proves itself.
+    const harness = fakeStore(
+      [
+        action({ kind: 'dm', body: 'hello' }),
+        action({ id: 'lact_2', kind: 'dm', body: 'hello', targetRef: 'https://x.test/in/b/' })
+      ],
+      { unacceptedInvite: false }
+    );
     const { driver } = fakeDriver(() => ({
       ok: false,
       failureKind: 'selector_drift',
@@ -1292,12 +1343,18 @@ describe('what LinkedIn says stops the batch', () => {
     });
 
     expect(result.halted).toBe(true);
-    expect(result.failed).toBe(1);
+    expect(result.failed).toBe(2);
     expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
   });
 
   it('still halts on drift in any other control, even with an unaccepted invite on file', async () => {
-    const harness = fakeStore([action({ kind: 'dm', body: 'hello' })], { unacceptedInvite: true });
+    const harness = fakeStore(
+      [
+        action({ kind: 'dm', body: 'hello' }),
+        action({ id: 'lact_2', kind: 'dm', body: 'hello', targetRef: 'https://x.test/in/b/' })
+      ],
+      { unacceptedInvite: true }
+    );
     const { driver } = fakeDriver(() => ({
       ok: false,
       failureKind: 'selector_drift',
