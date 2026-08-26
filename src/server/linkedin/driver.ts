@@ -33,6 +33,14 @@
  *   challenge         LinkedIn wants a human (captcha, PIN, checkpoint). STOP.
  *   selector_drift    the control we needed was not on the page. Nothing was
  *                     clicked, so nothing was sent.
+ *   connect_unavailable
+ *                     LinkedIn offers this seat no way to connect with THIS
+ *                     person -- not from the top card, not from More. Definite,
+ *                     and deliberately not drift: it is claimed only with
+ *                     positive proof that the Connect markup is still the
+ *                     markup we look for, which is other people's Connect
+ *                     buttons matching the same selector elsewhere on the very
+ *                     same page. Without that proof the miss stays drift.
  *   session_lost      the browser, context or page this seat was driving is
  *                     gone -- the companion relay dropped, the member's Chrome
  *                     exited, the CDP tunnel died. Nothing was clicked, so this
@@ -98,6 +106,7 @@ export type LinkedInFailureKind =
   | 'session_lost'
   | 'unknown'
   | 'compose_unavailable'
+  | 'connect_unavailable'
   | 'paid_credit_required';
 
 export interface LinkedInPostImageUpload {
@@ -908,6 +917,39 @@ export function connectInMoreMenuSelector(name: string): string {
 }
 
 /**
+ * THE CONNECT ENTRY AS THE LIVE MENU ACTUALLY RENDERS IT.
+ *
+ * Measured on `/in/byronvoorbach/` on 2026-08-26, with the More menu open:
+ *
+ *   <a role="menuitem" tabindex="0"
+ *      href="/preload/custom-invite/?vanityName=byronvoorbach"
+ *      componentkey="ConnectButtonstate:invitation:urn:li:member:35587845_connect"
+ *   >Connect</a>
+ *
+ * NO `aria-label` AT ALL, which is why `connectInMoreMenuSelector` above -- a
+ * name pinned into an `aria-label` on a `div[role="button"]` -- matched nothing
+ * on any profile, ever. Three consecutive leads reported "the More menu
+ * contains no Connect entry" while the entry was sitting in the menu, and the
+ * account sent one invite in two days because of it.
+ *
+ * The href is a BETTER pin than a display name would have been: `vanityName`
+ * is the profile handle, it is the same string the invite was approved
+ * against, and it survives every locale (the visible word was "Vernetzen" on
+ * this seat one day and "Connect" the next; the href never changed). Counted
+ * live: zero matches before the menu opens, exactly one after, and a
+ * deliberately wrong handle matches zero.
+ *
+ * NOT scoped to `main`: the menu is a portal and the anchor is measurably
+ * outside `main` -- `closest('main')` is null, `closest('[role=menu]')` is not.
+ * That is the one difference from {@link connectAnchorSelector}, which pins the
+ * identical href on the top card, where `main` is what excludes the sticky
+ * header's duplicate.
+ */
+export function connectAnchorInMenuSelector(handle: string): string {
+  return `a[href*="/preload/custom-invite/"][href$="vanityName=${handle}"]:visible, a[href*="/preload/custom-invite/"][href*="vanityName=${handle}&"]:visible`;
+}
+
+/**
  * Reach a profile by CLICKING A LINK TO IT, when the page already shows one.
  *
  * WHY THIS IS NOT COSMETIC, and why it is the last structural difference
@@ -1162,7 +1204,8 @@ function isResult(value: { url: string } | LinkedInDriverResult): value is Linke
 async function connectViaMoreMenu(
   page: LinkedInPage,
   url: string,
-  subject: string
+  subject: string,
+  handle: string | null
 ): Promise<{ control: LinkedInLocator } | { failed: LinkedInDriverResult }> {
   const strangers = await page.locator(SELECTORS.connectButton).count();
   const ignored =
@@ -1181,7 +1224,7 @@ async function connectViaMoreMenu(
     }
     return {
       failed: fail(
-        'selector_drift',
+        strangers > 0 ? 'connect_unavailable' : 'selector_drift',
         `Nothing on ${url} offers to connect with ${subject}, and no ${moreActionsSelector()} matched either.${ignored} Nothing was clicked.`
       )
     };
@@ -1197,12 +1240,50 @@ async function connectViaMoreMenu(
       )
     };
   }
+  /*
+   * THE HANDLE FIRST, BECAUSE THE MENU ENTRY HAS NO NAME ON IT.
+   *
+   * The live entry is an `<a role="menuitem" href="/preload/custom-invite/
+   * ?vanityName=...">` with no `aria-label` -- see
+   * `connectAnchorInMenuSelector`. The name-pinned selector below is kept as
+   * the fallback for a rendering that does carry one, but on every profile
+   * measured it is the href that identifies the person, and it identifies them
+   * more exactly than a display name ever could.
+   */
+  const byHandle = handle ? page.locator(connectAnchorInMenuSelector(handle)) : null;
+  if (byHandle && (await byHandle.count()) > 0) return { control: byHandle };
   const inMenu = page.locator(connectInMoreMenuSelector(subject));
   if ((await inMenu.count()) === 0) {
+    /*
+     * "NO CONNECT FOR THIS PERSON" IS NOT "OUR SELECTORS BROKE", AND THE PAGE
+     * ITSELF SAYS WHICH.
+     *
+     * Reporting this as drift cost a production account two working days. Two
+     * leads on a live campaign had no Connect control anywhere -- LinkedIn
+     * simply does not offer one for them from this seat -- and both invites
+     * carry the campaign's top queue priority, so every five-minute batch
+     * claimed them first, called it drift, and stopped. Twenty-six healthy
+     * actions never got reached, twice, and the operator was sent to repair
+     * selectors that were provably fine.
+     *
+     * PROVABLY: `strangers` is how many controls matched
+     * `SELECTORS.connectButton` on this same page -- the "More profiles for
+     * you" rail carries other members' Connect buttons, and there were six of
+     * them. A selector that matches six live controls has not drifted. The one
+     * thing missing is a Connect control for THIS member, which is a fact about
+     * the member and not about the code, so the worker skips the row (no send,
+     * no limit consumed) instead of ending the account's batch.
+     *
+     * With nothing on the page matching, there is no such proof and the miss
+     * stays drift: a genuine LinkedIn markup change must still stop the batch
+     * and still name this file.
+     */
     return {
       failed: fail(
-        'selector_drift',
-        `The More menu on ${url} contains no Connect entry for ${subject}.${ignored} Nothing was clicked.`
+        strangers > 0 ? 'connect_unavailable' : 'selector_drift',
+        strangers > 0
+          ? `LinkedIn offers no way to connect with ${subject} on ${url}: neither the top card nor the More menu has a Connect control for them.${ignored} The Connect selector itself still matches, so this is their profile and not selector drift. Nothing was clicked.`
+          : `The More menu on ${url} contains no Connect entry for ${subject}.${ignored} Nothing was clicked.`
       )
     };
   }
@@ -1278,7 +1359,7 @@ export async function sendInvite(
     const ownButton = page.locator(connectButtonSelector(subject));
     if ((await ownButton.count()) > 0) connect = ownButton;
     else {
-      const viaMore = await connectViaMoreMenu(page, url, subject);
+      const viaMore = await connectViaMoreMenu(page, url, subject, handle);
       if ('failed' in viaMore) return viaMore.failed;
       connect = viaMore.control;
     }

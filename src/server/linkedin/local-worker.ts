@@ -1447,6 +1447,12 @@ export async function runLinkedInLocalBatch(
       failureKind === 'already_connected' ||
       failureKind === 'already_pending' ||
       failureKind === 'compose_unavailable' ||
+      // LinkedIn offers no Connect control for this person and the page proved
+      // the selector still matches (driver.ts only claims this kind with that
+      // proof in hand). Nothing was clicked, nothing will ever be clickable
+      // here without a person deciding what to do about this lead, and it is
+      // emphatically not a reason to stop the account's batch.
+      failureKind === 'connect_unavailable' ||
       failureKind === 'paid_credit_required'
     ) {
       // Definite no-side-effect failure. The row is `skipped` so it consumes

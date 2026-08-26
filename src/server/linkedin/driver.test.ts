@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   SELECTORS,
+  connectAnchorInMenuSelector,
   connectAnchorSelector,
   connectButtonSelector,
   connectInMoreMenuSelector,
@@ -556,9 +557,99 @@ describe('connection request composer', () => {
     const result = await sendInvite(page, TARGET, 'Hi Byron, thanks for connecting.');
 
     expect(result.ok).toBe(false);
-    expect(result.failureKind).toBe('selector_drift');
+    // Five live Connect controls on the page are proof the selector still
+    // matches what LinkedIn renders, so the one thing missing is a Connect for
+    // Byron -- a fact about Byron, not about this file.
+    expect(result.failureKind).toBe('connect_unavailable');
     expect(result.detail).toContain('deliberately ignored');
     expect(clicked).not.toContain(SELECTORS.connectButton);
+    expect(clicked).not.toContain(connectInMoreMenuSelector('Byron Voorbach'));
+  });
+
+  it('takes the Connect entry out of the More menu by the handle in its href', async () => {
+    /*
+     * THE BUG THAT COST THE ACCOUNT TWO DAYS, AS A TEST.
+     *
+     * A 3rd-degree profile puts Connect only behind More, and the live entry is
+     * an `<a role="menuitem" href="/preload/custom-invite/?vanityName=...">`
+     * carrying NO aria-label. The driver looked for a name pinned into an
+     * aria-label, found nothing, and reported "the More menu contains no
+     * Connect entry" on lead after lead while the entry sat in the menu.
+     *
+     * The href is the pin now, and it is a stronger one than a display name:
+     * it is the profile handle the invite was approved against, and it does not
+     * translate.
+     */
+    let current = TARGET;
+    const clicked: string[] = [];
+    const menuEntry = connectAnchorInMenuSelector('some-person');
+    const page = personPage({
+      name: SUBJECT,
+      counts: {
+        // Six strangers' Connect buttons in the rail, none for the subject.
+        [SELECTORS.connectButton]: 6,
+        [moreActionsSelector()]: 1,
+        [menuEntry]: 1,
+        [SELECTORS.addNoteButton]: 1,
+        [SELECTORS.noteTextarea]: 1,
+        [SELECTORS.sendInviteButton]: 1
+      },
+      clicked,
+      url: () => current,
+      goto: (url) => {
+        current = url;
+      }
+    });
+
+    const result = await sendInvite(page, TARGET, 'Hi, thanks for connecting.');
+
+    expect(result.ok).toBe(true);
+    expect(clicked).toContain(menuEntry);
+    // The strangers' buttons stay untouched, which is the property the whole
+    // person-pinning exists for.
+    expect(clicked).not.toContain(SELECTORS.connectButton);
+  });
+
+  it('pins the menu entry to the handle and to nothing else', () => {
+    const selector = connectAnchorInMenuSelector('byronvoorbach');
+    for (const alternative of selector.split(', ')) {
+      // Deliberately NOT scoped to `main`: measured live, the open menu is a
+      // portal and the anchor's closest('main') is null.
+      expect(alternative.startsWith('main ')).toBe(false);
+      expect(alternative).toContain('vanityName=byronvoorbach');
+      expect(alternative.endsWith(':visible')).toBe(true);
+    }
+    expect(connectAnchorInMenuSelector('byronvoorbach')).not.toContain('somebodyelse');
+  });
+
+  it('still calls it drift when nothing on the page proves the selector works', async () => {
+    /*
+     * THE OTHER HALF OF THE SAME EVIDENCE RULE.
+     *
+     * `connect_unavailable` is only claimable while a Connect control -- any
+     * Connect control, on anyone -- matches on the page. With none matching
+     * there is nothing to distinguish "LinkedIn will not let us connect with
+     * this person" from "LinkedIn renamed the button", and the second must
+     * still stop the batch and still name SELECTORS in driver.ts. Guessing in
+     * the operator's favour here would turn a real markup change into a
+     * campaign that quietly skips everybody.
+     */
+    let current = TARGET;
+    const clicked: string[] = [];
+    const page = personPage({
+      name: 'Byron Voorbach',
+      counts: { [moreActionsSelector()]: 1 },
+      clicked,
+      url: () => current,
+      goto: (url) => {
+        current = url;
+      }
+    });
+
+    const result = await sendInvite(page, TARGET, 'Hi Byron, thanks for connecting.');
+
+    expect(result.ok).toBe(false);
+    expect(result.failureKind).toBe('selector_drift');
     expect(clicked).not.toContain(connectInMoreMenuSelector('Byron Voorbach'));
   });
 

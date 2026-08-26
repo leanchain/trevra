@@ -3585,6 +3585,13 @@ export async function resumeManagedCampaignMemberAtStep(
 const RETRYABLE_LINKEDIN_FAILURES = [
   'not_found',
   'compose_unavailable',
+  // Retryable because LinkedIn's answer can change: today's "no Connect for
+  // this person" becomes a Connect button the moment they share a group, a
+  // company page or a mutual connection with the seat. Deliberately absent
+  // from the campaign-health counters below, for the same reason `not_found`
+  // is: a lead this account cannot reach is a fact about the lead, and
+  // throttling admission over it would punish the campaign for the audience.
+  'connect_unavailable',
   'paid_credit_required',
   'selector_drift',
   // A relay that dropped between two actions never clicked anything, exactly as
@@ -4191,6 +4198,8 @@ export interface CampaignOperationalAnalytics {
     failedMembers: number;
     limitingKind: string | null;
     reason: string;
+    /** True when the thing `reason` is waiting for is a person, not a clock. */
+    needsPerson: boolean;
   };
   channels: {
     emailSent: number;
@@ -4464,24 +4473,61 @@ export async function campaignOperationalAnalytics(
   const allSendersPaused =
     seatPostures.length > 0 &&
     seatPostures.every((posture) => posture === 'paused' || posture === 'cooldown');
-  const reason =
+  /*
+   * THE SENTENCE, AND WHETHER A PERSON IS WHAT IT IS WAITING FOR.
+   *
+   * Every branch below used to arrive on the campaign card under one heading,
+   * "Needs attention" -- including the ones that describe a queue behaving
+   * exactly as designed. A campaign whose only news was "new leads are admitted
+   * no faster than this account's daily profile view capacity allows" flew a
+   * red flag at its operator, who could do nothing about it, next to campaigns
+   * that really were stuck. A warning that is always on is not a warning.
+   *
+   * So the branch says which it is, here, where the branch is taken. Only the
+   * first three are a person's to fix; a clock, a prospect and a daily ceiling
+   * all resolve themselves, and the card can say "waiting" and mean it.
+   */
+  const bottleneck: { reason: string; needsPerson: boolean } =
     queues.held > 0
-      ? `${queues.held} action(s) are held for operator review.`
+      ? { reason: `${queues.held} action(s) are held for operator review.`, needsPerson: true }
       : queues.failed > 0
-        ? `${queues.failed} lead(s) have failed and need operator action.`
+        ? {
+            reason: `${queues.failed} lead(s) have failed and need operator action.`,
+            needsPerson: true
+          }
         : queues.dueNow > 0 && allSendersPaused
-          ? 'All assigned LinkedIn senders are paused or cooling down; no browser work can execute until a sender recovers.'
+          ? {
+              reason:
+                'All assigned LinkedIn senders are paused or cooling down; no browser work can execute until a sender recovers.',
+              needsPerson: true
+            }
           : queues.dueNow > 0 && !anySenderWindowOpen
-            ? `Due work is waiting for an assigned sender's allowed working window (${assignedSeats.map((seat) => `${seat.label}: ${seat.timezone}`).join(', ') || 'no usable sender'}).`
+            ? {
+                reason: `Due work is waiting for an assigned sender's allowed working window (${assignedSeats.map((seat) => `${seat.label}: ${seat.timezone}`).join(', ') || 'no usable sender'}).`,
+                needsPerson: false
+              }
             : queues.dueNow > 0 && recentBatchHalt
-              ? `The latest browser batch halted: ${recentBatchHalt}`
+              ? { reason: `The latest browser batch halted: ${recentBatchHalt}`, needsPerson: true }
               : queues.waitingForConnection + queues.waitingForReply > 0
-                ? `${queues.waitingForConnection + queues.waitingForReply} lead(s) are waiting on an outcome.`
+                ? {
+                    reason: `${queues.waitingForConnection + queues.waitingForReply} lead(s) are waiting on an outcome.`,
+                    needsPerson: false
+                  }
                 : queues.pending > 0 && limitingKind
-                  ? `New leads are admitted no faster than this account's remaining daily ${ADMISSION_KIND_LABEL[limitingKind]} capacity allows.`
+                  ? {
+                      reason: `New leads are admitted no faster than this account's remaining daily ${ADMISSION_KIND_LABEL[limitingKind]} capacity allows.`,
+                      needsPerson: false
+                    }
                   : queues.pending > 0
-                    ? `${queues.pending} lead(s) remain in the pending pool until downstream capacity clears.`
-                    : 'No material campaign bottleneck is currently detected.';
+                    ? {
+                        reason: `${queues.pending} lead(s) remain in the pending pool until downstream capacity clears.`,
+                        needsPerson: false
+                      }
+                    : {
+                        reason: 'No material campaign bottleneck is currently detected.',
+                        needsPerson: false
+                      };
+  const reason = bottleneck.reason;
 
   const totalSenderExecuted = senderRows.reduce((sum, row) => sum + Number(row.executed), 0);
   const n = (key: string) => Number(funnel?.[key] ?? 0);
@@ -4571,7 +4617,8 @@ export async function campaignOperationalAnalytics(
       heldActions: queues.held,
       failedMembers: queues.failed,
       limitingKind,
-      reason
+      reason,
+      needsPerson: bottleneck.needsPerson
     },
     channels: {
       emailSent: Number(channelStats?.email_sent ?? 0),

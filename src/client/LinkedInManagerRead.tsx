@@ -743,7 +743,10 @@ function campaignBlockers({
   )
     out.push({
       title: 'Planner diagnosis',
-      severity: 'attention',
+      // The server took the branch, so the server says whether a person is what
+      // it waits for. An older server that does not send the flag keeps the old
+      // behaviour rather than quietly downgrading a real blocker to "waiting".
+      severity: analytics.bottlenecks.needsPerson === false ? 'waiting' : 'attention',
       detail: analytics.bottlenecks.reason
     });
 
