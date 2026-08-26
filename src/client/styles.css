@@ -12278,12 +12278,27 @@ button:disabled {
   grid-template-columns: minmax(16rem, 0.85fr) minmax(0, 1.6fr);
   gap: 14px;
   margin-top: 14px;
+  /* Both panes take the row's full height rather than each shrinking to its own
+     content, so a two-message transcript does not leave the right-hand column
+     floating beside a full-length list. */
+  align-items: stretch;
+  /* HOW TALL THE TWO PANES ARE, AND IT IS THE VIEWPORT THAT DECIDES.
+
+     The list was a flat 36rem: a laptop's worth of conversations on every
+     screen, so a tall monitor showed the list stopping two-thirds of the way
+     down with dead space under it. `.li-inbox` next door had already been
+     fixed this way and this one was missed. The subtraction is the chrome above
+     these panes -- app header, the Conversations/LinkedIn switch, and the
+     section heading with its Refresh button -- and the clamp keeps it honest at
+     both ends: never shorter than a readable list, never taller than a line of
+     text can be tracked across. */
+  --shared-pane-h: clamp(420px, calc(100vh - 260px), 1200px);
 }
 .shared-conversation-list {
   display: grid;
   align-content: start;
   gap: 8px;
-  max-height: 36rem;
+  max-height: var(--shared-pane-h);
   overflow: auto;
 }
 .shared-conversation-row {
@@ -12330,6 +12345,9 @@ button:disabled {
   align-content: start;
   gap: 10px;
   min-width: 0;
+  /* Scrolls on its own, so a long thread never pushes the list off the page. */
+  max-height: var(--shared-pane-h);
+  overflow-y: auto;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--t-r-md);
@@ -12640,8 +12658,13 @@ button:disabled {
   .shared-conversation-grid {
     grid-template-columns: 1fr;
   }
+  /* Stacked: the list is a chooser above the transcript, not a column beside
+     it, so it keeps its short cap and the transcript gets the rest. */
   .shared-conversation-list {
     max-height: 18rem;
+  }
+  .shared-transcript {
+    max-height: none;
   }
   .shared-message.is-outbound,
   .shared-message.is-inbound {
