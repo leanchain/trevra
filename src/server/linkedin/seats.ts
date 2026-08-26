@@ -141,6 +141,23 @@ export interface LinkedInSeat {
     premium: boolean;
     salesNavigator: boolean;
     recruiter: boolean;
+    /**
+     * MAY AN INVITE GO OUT WITHOUT THE NOTE A HUMAN APPROVED, when LinkedIn
+     * refuses to attach one?
+     *
+     * Off by default, and the default is the whole point: an invite without
+     * the approved words is a different invite, and no driver, worker or
+     * screen may decide that on an operator's behalf. LinkedIn caps free
+     * personalised invitations per month and answers "Add a note" with a
+     * Premium upsell once they are spent, at which point a queued invite is
+     * unsendable AS APPROVED until the allowance resets.
+     *
+     * Turning this on says: I would rather the invite went out bare than not
+     * at all. It lives on the SEAT because the allowance is the account's, not
+     * the campaign's, and every campaign that account sends for hits the same
+     * wall on the same day.
+     */
+    sendInviteWithoutNoteWhenBlocked: boolean;
   };
   /** Operator budget for InMail sends in one rolling month. Null uses the researched hard monthly ceiling. */
   inmailMonthlyBudget: number | null;
@@ -357,7 +374,8 @@ function parsedCapabilities(value: unknown): LinkedInSeat['capabilities'] {
     inmail,
     premium: object.premium === true,
     salesNavigator: object.salesNavigator === true,
-    recruiter: object.recruiter === true
+    recruiter: object.recruiter === true,
+    sendInviteWithoutNoteWhenBlocked: object.sendInviteWithoutNoteWhenBlocked === true
   };
 }
 
@@ -923,6 +941,7 @@ export async function setSeatCapabilities(
     premium?: boolean;
     salesNavigator?: boolean;
     recruiter?: boolean;
+    sendInviteWithoutNoteWhenBlocked?: boolean;
     inmailMonthlyBudget?: number | null;
     inmailPaidCreditCap?: number | null;
   },
@@ -934,6 +953,20 @@ export async function setSeatCapabilities(
     throw new Error('InMail monthly budget must be a whole number from 0 to 10000.');
   if (paid != null && (!Number.isInteger(paid) || paid < 0 || paid > 10000))
     throw new Error('InMail paid credit cap must be a whole number from 0 to 10000.');
+  /*
+   * MERGED, NOT OVERWRITTEN, FOR THE FIELDS THIS CALL DID NOT MENTION.
+   *
+   * This statement rewrites the whole `capabilities_json` document, so every
+   * flag it does not name is silently cleared. That was harmless while the
+   * only fields were the four the InMail dialog sends together. It stopped
+   * being harmless the moment a capability got its own screen: a caller
+   * saving InMail availability would turn off a completely unrelated setting
+   * the operator had chosen elsewhere, and nothing anywhere would say so.
+   *
+   * `?? current` is the rule: absent means "leave it alone", false means
+   * "turn it off".
+   */
+  const current = (await getSeat(db, workspaceId, seatKey))?.capabilities ?? null;
   const result = await db
     .prepare(
       `
@@ -944,9 +977,12 @@ export async function setSeatCapabilities(
     .run(
       JSON.stringify({
         inmail: input.inmail,
-        premium: input.premium === true,
-        salesNavigator: input.salesNavigator === true,
-        recruiter: input.recruiter === true
+        premium: input.premium ?? current?.premium === true,
+        salesNavigator: input.salesNavigator ?? current?.salesNavigator === true,
+        recruiter: input.recruiter ?? current?.recruiter === true,
+        sendInviteWithoutNoteWhenBlocked:
+          input.sendInviteWithoutNoteWhenBlocked ??
+          current?.sendInviteWithoutNoteWhenBlocked === true
       }),
       monthly ?? null,
       paid ?? null,

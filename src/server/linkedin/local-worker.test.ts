@@ -157,6 +157,8 @@ interface StoreHarness {
   claimed: string[];
   released: Array<{ id: string; failureKind: string | null }>;
   sent: string[];
+  /** What each `settleSent` carried, in the same order as {@link StoreHarness.sent}. */
+  sentMetadata: Array<Record<string, unknown> | undefined>;
   inviteStates: Array<{ id: string; state: 'accepted' | 'pending' }>;
   skipped: Array<{ id: string; failureKind: string }>;
   branchSkipped: Array<{ id: string; reason: string }>;
@@ -201,6 +203,7 @@ function fakeStore(
     claimed: [],
     released: [],
     sent: [],
+    sentMetadata: [],
     inviteStates: [],
     skipped: [],
     branchSkipped: [],
@@ -247,8 +250,9 @@ function fakeStore(
       actionExecutionState: async (entry) =>
         options.executionState ? await options.executionState(entry) : 'execute',
       hasUnacceptedInvite: async () => options.unacceptedInvite === true,
-      settleSent: async (id) => {
+      settleSent: async (id, _externalRef, _now, metadata) => {
         harness.sent.push(id);
+        harness.sentMetadata.push(metadata);
       },
       settleExistingInvite: async (id, state) => {
         harness.inviteStates.push({ id, state });
@@ -1199,6 +1203,61 @@ describe('what LinkedIn says stops the batch', () => {
     ]);
     // Recorded on the batch, which is where an operator reads it.
     expect(harness.closed[0]?.haltReason).toMatch(/SELECTORS in driver\.ts/);
+  });
+
+  it('sends the invite bare only when the account has been set to allow it', async () => {
+    /*
+     * The operator's standing answer to "bare, or not at all?", and the only
+     * place it may be given. `driver.ts` refuses to decide: it proves the note
+     * field is unreachable, sends nothing, and says so.
+     *
+     * The retry passes no note, so LinkedIn's composer takes its "Send without
+     * a note" branch, and the row is filed with `noteDropped` -- an invite
+     * that went out bare must never read back as the approved one.
+     */
+    const harness = fakeStore([action({ id: 'lact_1', kind: 'invite' })]);
+    harness.store.allowsNotelessInvite = async () => true;
+    let attempts = 0;
+    const { driver } = fakeDriver((): LinkedInDriverResult => {
+      attempts += 1;
+      return attempts === 1 ? { ok: false, failureKind: 'note_quota_exhausted' } : ok;
+    });
+
+    const result = await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(harness.sent).toEqual(['lact_1']);
+    expect(harness.sentMetadata[0]).toMatchObject({ noteDropped: true });
+    expect(result.executed).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
+  it('never drops the approved note on a store that has no opinion', async () => {
+    // A fake, or an older store, simply has no `allowsNotelessInvite`. Absence
+    // of an answer is NOT consent to send different bytes from the approved
+    // ones, so the invite is not sent and the kind is dropped for the pass.
+    const harness = fakeStore([action({ id: 'lact_1', kind: 'invite' })]);
+    const { driver, calls } = fakeDriver(() => ({
+      ok: false,
+      failureKind: 'note_quota_exhausted' as const
+    }));
+
+    await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(harness.sent).toEqual([]);
+    expect(calls).toHaveLength(1);
+    expect(harness.released).toEqual([{ id: 'lact_1', failureKind: 'note_quota_exhausted' }]);
   });
 
   it('keeps the profile views running when the month has no personalised invites left', async () => {

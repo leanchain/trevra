@@ -485,6 +485,16 @@ export interface LocalWorkerStore {
   readonly seatKey: string;
   /** The EFFECTIVE posture (seats.ts derives warmup/steady). Null means no seat. */
   seatPosture(now: Date): Promise<SeatPosture | null>;
+  /**
+   * Has this account's operator said an invite may go out WITHOUT the note
+   * they approved, when LinkedIn refuses to attach one?
+   *
+   * Optional, and a store that does not implement it means NO. The default has
+   * to be the strict one: sending different bytes from the ones a human
+   * approved is a decision only that human may take, and a fake or an older
+   * store that simply has no answer must not be read as consent.
+   */
+  allowsNotelessInvite?(): Promise<boolean>;
   /** Open a stoppable batch and return its id. */
   openBatch(now: Date): Promise<string>;
   closeBatch(
@@ -1504,7 +1514,34 @@ export async function runLinkedInLocalBatch(
       break;
     }
 
-    if (failureKind === 'note_quota_exhausted') {
+    if (failureKind === 'note_quota_exhausted' && action.kind === 'invite') {
+      /*
+       * THE OPERATOR'S STANDING ANSWER TO "BARE, OR NOT AT ALL?"
+       *
+       * Only ever reached because `driver.ts` refused to decide: it proved the
+       * note field is unreachable, sent nothing, and said so. This is the one
+       * place that knows the seat's policy, and the policy is off unless a
+       * person turned it on.
+       *
+       * The retry passes NO note, so it takes the composer's "Send without a
+       * note" branch, and the send is filed with `noteDropped` on the row --
+       * an invite that went out bare must never read back as the approved one.
+       */
+      if ((await store.allowsNotelessInvite?.()) === true) {
+        const bare = await deps.driver.sendInvite(deps.page, action.targetRef);
+        if (bare.ok) {
+          await store.settleSent(action.id, bare.externalRef ?? null, at, {
+            noteDropped: true,
+            noteDropReason: 'note_quota_exhausted'
+          });
+          result.failed -= 1;
+          result.executed += 1;
+          log(
+            `LinkedIn local worker sent the invite to ${action.targetRef} WITHOUT its approved note: LinkedIn has no free personalised invitations left on this account this month, and this account is set to send bare rather than not at all.`
+          );
+          continue;
+        }
+      }
       /*
        * NOT A SELECTOR PROBLEM AND NOT THIS LEAD'S FAULT.
        *
@@ -1959,6 +1996,11 @@ export function postgresLocalWorkerStore(
       // would happily keep sending while its own seat was paused, or refuse
       // while its own seat was fine.
       return getSeatPosture(db, workspaceId, now, seatKey);
+    },
+
+    async allowsNotelessInvite() {
+      const seat = await getSeat(db, workspaceId, seatKey);
+      return seat?.capabilities.sendInviteWithoutNoteWhenBlocked === true;
     },
 
     async openBatch(now) {
