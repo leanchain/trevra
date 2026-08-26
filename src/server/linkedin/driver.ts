@@ -1206,7 +1206,9 @@ async function connectViaMoreMenu(
   url: string,
   subject: string,
   handle: string | null
-): Promise<{ control: LinkedInLocator } | { failed: LinkedInDriverResult }> {
+): Promise<
+  { control: LinkedInLocator } | { navigateTo: string } | { failed: LinkedInDriverResult }
+> {
   const strangers = await page.locator(SELECTORS.connectButton).count();
   const ignored =
     strangers > 0
@@ -1251,7 +1253,36 @@ async function connectViaMoreMenu(
    * more exactly than a display name ever could.
    */
   const byHandle = handle ? page.locator(connectAnchorInMenuSelector(handle)) : null;
-  if (byHandle && (await byHandle.count()) > 0) return { control: byHandle };
+  if (byHandle && (await byHandle.count()) > 0) {
+    /*
+     * FOLLOW THE LINK. CLICKING IT DOES NOTHING.
+     *
+     * Measured on the live seat, `/in/yannickdelange/`, menu open, the anchor
+     * matched and hover-clicked: the menu closes and NOTHING opens. Polled
+     * every 500ms for eight seconds -- `#interop-outlet` stays empty, no
+     * dialog gains height, the URL does not change. The driver then reported
+     * "the invite composer opened but the textarea did not match", which was
+     * wrong twice over: no composer had opened, and the selectors it accused
+     * were fine.
+     *
+     * Navigating to that same anchor's own href opens the real thing:
+     *
+     *   "Add a note to your invitation? | Personalize your invitation to
+     *    Yannick de Lange by adding a note. | Add a note | Send without a note"
+     *
+     * with `button[aria-label="Add a note"]` and
+     * `button[aria-label="Send without a note"]` both present -- exactly what
+     * SELECTORS below already names.
+     *
+     * THE URL IS NOT INVENTED AND IT IS NOT A SHORTCUT PAST ANYTHING. It is
+     * the href of the entry LinkedIn just offered in this person's own More
+     * menu, and this runs only after that entry matched -- the selector pins
+     * `vanityName=<handle>`, so the anchor that matched IS this URL. A profile
+     * LinkedIn offers no Connect entry for never reaches this line; it takes
+     * the `connect_unavailable` branch below instead.
+     */
+    return { navigateTo: `https://www.linkedin.com/preload/custom-invite/?vanityName=${handle}` };
+  }
   const inMenu = page.locator(connectInMoreMenuSelector(subject));
   if ((await inMenu.count()) === 0) {
     /*
@@ -1344,6 +1375,8 @@ export async function sendInvite(
   const handle = profileHandleFor(target);
   const ownAnchor = handle ? page.locator(connectAnchorSelector(handle)) : null;
   let connect = ownAnchor && (await ownAnchor.count()) > 0 ? ownAnchor : null;
+  /** Set instead of `connect` when the control is a link to follow, not a button to click. */
+  let openComposerAt: string | null = null;
   if (!connect) {
     // Read only when the anchor missed: on a seat where the anchor is there,
     // this is a DOM read the invite does not need.
@@ -1361,15 +1394,25 @@ export async function sendInvite(
     else {
       const viaMore = await connectViaMoreMenu(page, url, subject, handle);
       if ('failed' in viaMore) return viaMore.failed;
-      connect = viaMore.control;
+      if ('navigateTo' in viaMore) openComposerAt = viaMore.navigateTo;
+      else connect = viaMore.control;
     }
   }
+  if (!connect && !openComposerAt)
+    return fail(
+      'selector_drift',
+      `No Connect control on ${url} could be proved to belong to this person. Nothing was clicked.`
+    );
 
   // EVERYTHING BELOW THIS LINE IS POST-CLICK. An error from here on cannot
   // prove the invite did not go out, so it reports `unknown` and the worker
   // holds the claim instead of retrying it into a duplicate.
   try {
-    await hoverClick(page, connect.first(), `${url}#connect`, CLICK_TIMEOUT_MS);
+    if (openComposerAt) {
+      await page.goto(openComposerAt, { waitUntil: 'domcontentloaded' });
+    } else {
+      await hoverClick(page, connect!.first(), `${url}#connect`, CLICK_TIMEOUT_MS);
+    }
     await settle(page, `${url}#connect-modal`);
 
     const wall = await detectWall(page);

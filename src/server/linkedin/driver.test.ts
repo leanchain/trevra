@@ -582,6 +582,7 @@ describe('connection request composer', () => {
      */
     let current = TARGET;
     const clicked: string[] = [];
+    const navigations: string[] = [];
     const menuEntry = connectAnchorInMenuSelector('some-person');
     const page = personPage({
       name: SUBJECT,
@@ -597,6 +598,7 @@ describe('connection request composer', () => {
       clicked,
       url: () => current,
       goto: (url) => {
+        navigations.push(url);
         current = url;
       }
     });
@@ -604,7 +606,12 @@ describe('connection request composer', () => {
     const result = await sendInvite(page, TARGET, 'Hi, thanks for connecting.');
 
     expect(result.ok).toBe(true);
-    expect(clicked).toContain(menuEntry);
+    // FOLLOWED, NOT CLICKED. Clicking that anchor is a measured no-op on the
+    // live page; its own href is what opens the composer.
+    expect(navigations).toContain(
+      'https://www.linkedin.com/preload/custom-invite/?vanityName=some-person'
+    );
+    expect(clicked).not.toContain(menuEntry);
     // The strangers' buttons stay untouched, which is the property the whole
     // person-pinning exists for.
     expect(clicked).not.toContain(SELECTORS.connectButton);

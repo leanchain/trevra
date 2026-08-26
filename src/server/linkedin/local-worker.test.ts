@@ -1177,11 +1177,52 @@ describe('what LinkedIn says stops the batch', () => {
     expect(result.halted).toBe(true);
   });
 
-  it('puts a drifted selector back in the queue and stops reloading profiles', async () => {
+  it('puts a drifted selector back in the queue and stops reloading profiles of that kind', async () => {
     // A SELECTOR THAT HAS REALLY MOVED MISSES ON THE SECOND LEAD TOO, and the
-    // second miss is what proves it. Two page loads, then the batch is over.
+    // second miss is what proves it. Two page loads for that kind, no more --
+    // and every one of these three actions is an invite, so the pass is over.
     const harness = fakeStore(threeActions);
     const { driver, calls } = fakeDriver(() => ({ ok: false, failureKind: 'selector_drift' }));
+
+    await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(harness.released.slice(0, 2)).toEqual([
+      { id: 'lact_1', failureKind: 'selector_drift' },
+      { id: 'lact_2', failureKind: 'selector_drift' }
+    ]);
+    // Recorded on the batch, which is where an operator reads it.
+    expect(harness.closed[0]?.haltReason).toMatch(/SELECTORS in driver\.ts/);
+  });
+
+  it('keeps working the kinds that did not drift', async () => {
+    /*
+     * THE SECOND PRODUCTION DAY THIS COST.
+     *
+     * The invite composer became unreachable. Invites carry a higher
+     * `queue_priority` than profile views, so two of them drifted at the head
+     * of every five-minute batch and the batch ended -- and fifteen profile
+     * views, which share not one selector with the invite composer, went
+     * nowhere for a day. A miss on one kind is evidence about that kind.
+     */
+    const harness = fakeStore([
+      action({ id: 'lact_1', kind: 'invite' }),
+      action({ id: 'lact_2', kind: 'invite', targetRef: 'https://x.test/in/b/' }),
+      action({ id: 'lact_3', kind: 'invite', targetRef: 'https://x.test/in/c/' }),
+      action({ id: 'lact_4', kind: 'profile_view', targetRef: 'https://x.test/in/d/' }),
+      action({ id: 'lact_5', kind: 'profile_view', targetRef: 'https://x.test/in/e/' })
+    ]);
+    const { driver } = fakeDriver((target): LinkedInDriverResult =>
+      target.includes('/in/d/') || target.includes('/in/e/')
+        ? ok
+        : { ok: false, failureKind: 'selector_drift' }
+    );
 
     const result = await runLinkedInLocalBatch(harness.store, {
       driver,
@@ -1191,12 +1232,14 @@ describe('what LinkedIn says stops the batch', () => {
       evaluate: async () => verdict()
     });
 
-    expect(calls).toHaveLength(2);
-    expect(harness.released).toEqual([
-      { id: 'lact_1', failureKind: 'selector_drift' },
-      { id: 'lact_2', failureKind: 'selector_drift' }
-    ]);
-    expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
+    expect(harness.sent).toEqual(['lact_4', 'lact_5']);
+    expect(result.executed).toBe(2);
+    // The third invite was never attempted: its kind had been dropped, so it
+    // was released without opening a page.
+    expect(harness.released).toContainEqual({ id: 'lact_3', failureKind: null });
+    expect(result.halted).toBe(false);
+    expect(harness.closed[0]?.status).toBe('completed');
+    expect(harness.closed[0]?.haltReason).toMatch(/SELECTORS in driver\.ts/);
   });
 
   it('does not let one unusual profile take down the rest of the queue', async () => {
@@ -1342,9 +1385,8 @@ describe('what LinkedIn says stops the batch', () => {
       evaluate: async () => verdict()
     });
 
-    expect(result.halted).toBe(true);
     expect(result.failed).toBe(2);
-    expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
+    expect(harness.closed[0]?.haltReason).toMatch(/SELECTORS in driver\.ts/);
   });
 
   it('still halts on drift in any other control, even with an unaccepted invite on file', async () => {
@@ -1370,8 +1412,8 @@ describe('what LinkedIn says stops the batch', () => {
       evaluate: async () => verdict()
     });
 
-    expect(result.halted).toBe(true);
-    expect(result.haltReason).toMatch(/SELECTORS in driver\.ts/);
+    expect(result.failed).toBe(2);
+    expect(harness.closed[0]?.haltReason).toMatch(/SELECTORS in driver\.ts/);
   });
 });
 

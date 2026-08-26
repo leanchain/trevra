@@ -1075,14 +1075,24 @@ export async function runLinkedInLocalBatch(
   const deferred: string[] = [];
 
   /**
-   * Rows this pass drifted on, in order.
+   * Rows this pass drifted on, counted PER ACTION KIND.
    *
    * Separate from {@link deferred} because it means something different -- a
    * deferral is "not yet", a drift is "a control we needed was not usable" --
-   * and because its LENGTH is the batch's evidence for whether one profile is
-   * odd or the selectors are broken. See the drift branch below.
+   * and keyed by kind because that is the only scope the evidence covers. A
+   * flat count spent a whole production day proving it: the invite composer
+   * was unreachable, invites carry a higher `queue_priority` than profile
+   * views, so two invites drifted at the head of every batch and the batch
+   * ended -- and fifteen profile views, which share not one selector with the
+   * invite composer and were never in any doubt, went nowhere for a day. A
+   * miss on one kind is evidence about that kind.
    */
-  const drifted: string[] = [];
+  const drifted = new Map<string, string[]>();
+
+  /** Kinds this pass has stopped attempting after repeated drift. */
+  const abandoned = new Set<string>();
+  /** What to record on the batch when a kind was dropped but the batch still worked. */
+  let driftReason: string | null = null;
 
   // Checked before a batch is even opened. A seat that is paused or cooling
   // down is a decision a human (or a limit wall) made, and opening a batch
@@ -1116,6 +1126,14 @@ export async function runLinkedInLocalBatch(
     }
     const action = await store.claimNextDueAction(batchId, now(), deferred);
     if (!action) break;
+
+    // A kind this pass gave up on after repeated drift. Released and skipped
+    // here, before any page is opened, so the rest of the queue still runs.
+    if (abandoned.has(action.kind)) {
+      await store.releaseClaim(action.id, null);
+      deferred.push(action.id);
+      continue;
+    }
 
     // A managed queue row can become obsolete after it was planned: the member can
     // reply, finish, pause, or move to another workflow node. That is queue
@@ -1517,17 +1535,37 @@ export async function runLinkedInLocalBatch(
        * an idle account is a product that does not work.
        */
       await store.releaseClaim(action.id, failureKind);
-      drifted.push(action.id);
-      if (drifted.length < DRIFT_HALT_THRESHOLD) {
-        deferred.push(action.id);
+      const ofKind = drifted.get(action.kind) ?? [];
+      ofKind.push(action.id);
+      drifted.set(action.kind, ofKind);
+      deferred.push(action.id);
+      if (ofKind.length < DRIFT_HALT_THRESHOLD) {
         log(
           `LinkedIn local worker skipped action ${action.id} on ${action.targetRef}: a control it needed did not match, nothing was clicked, and the batch continues to the next lead.${detail}`
         );
         continue;
       }
-      result.halted = true;
-      result.haltReason = `A selector no longer matches on ${drifted.length} separate leads, so this batch stopped rather than reloading profiles for nothing. Repair SELECTORS in driver.ts.${detail}`;
-      break;
+      /*
+       * THE KIND IS DROPPED FOR THIS PASS. THE BATCH IS NOT.
+       *
+       * Two misses on the same kind is enough to stop loading pages for it --
+       * that was always the point of ending on drift, and it still holds. What
+       * does not hold is ending the whole batch, which is what actually
+       * happened in production: the invite composer was unreachable, invites
+       * outrank profile views in the claim order, so two invites drifted at the
+       * head of every five-minute batch and fifteen profile views that share no
+       * selector with the invite composer sat untouched for a day.
+       *
+       * `abandoned` is checked at the top of the loop, where a row of a dropped
+       * kind is released and skipped BEFORE anything opens a page, so dropping
+       * a kind costs SQL and nothing else. The reason is still recorded on the
+       * batch and every drifted row still carries its `failure_kind`, so the
+       * operator is told exactly as loudly as before.
+       */
+      abandoned.add(action.kind);
+      driftReason = `A selector no longer matches on ${ofKind.length} separate ${action.kind} actions, so no more of them were attempted in this batch. Repair SELECTORS in driver.ts.${detail}`;
+      log(`LinkedIn seat ${store.workspaceId}/${store.seatKey}: ${driftReason}`);
+      continue;
     }
 
     // `unknown`: we clicked and lost the thread. HOLD the claim -- a retry
@@ -1543,7 +1581,11 @@ export async function runLinkedInLocalBatch(
     batchId,
     {
       status: result.halted ? 'halted' : 'completed',
-      haltReason: result.haltReason,
+      // A batch that dropped a kind and still executed other work is COMPLETED,
+      // and keeps the drift sentence anyway: the screen that reads `halted`
+      // should not call a working account stuck, and the operator should still
+      // be told which selectors to repair.
+      haltReason: result.haltReason ?? driftReason,
       executed: result.executed
     },
     now()
