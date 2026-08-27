@@ -5,7 +5,11 @@ import type {
 } from '../server/linkedin/managed-campaigns';
 import type { WorkflowStep } from '../server/linkedin/workflows';
 import type { LinkedInLimitsReport } from './api';
-import { campaignStepProgress, campaignStepStateLines } from './LinkedInManagerProgress';
+import {
+  campaignStepProgress,
+  campaignStepStateLines,
+  memberAwaitsDecision
+} from './LinkedInManagerProgress';
 import { accountWarmupLabel } from './LinkedInWarmup';
 
 function report(patch: Partial<LinkedInLimitsReport['seat']> = {}): LinkedInLimitsReport {
@@ -344,5 +348,37 @@ describe('campaign workflow step state lines', () => {
     expect(lines(step1!, 0)).toEqual([
       '4 scheduled from 20:00 — this step waits 6 hours after a lead joins the campaign'
     ]);
+  });
+});
+
+/**
+ * "1 AWAITING YOUR DECISION" WITH NOWHERE TO GO.
+ *
+ * The card counted the parked leads and stopped there. The operator asked
+ * where the decision was made, and the honest answer was: expand rows in a
+ * 108-lead table until you hit the one whose recorded history carries the
+ * buttons. This is the predicate the lead filter and the step card now share,
+ * so they cannot disagree about which leads that line means.
+ */
+describe('leads awaiting a decision', () => {
+  const member = (settlementHoldAt: string | null, status = 'planned') =>
+    ({
+      lastAction: { id: 'lact_1', kind: 'invite', status, settlementHoldAt, failureKind: null }
+    }) as unknown as Parameters<typeof memberAwaitsDecision>[0];
+
+  it('names the lead whose last action is parked for a person', () => {
+    expect(memberAwaitsDecision(member('2026-08-26T19:22:11.897Z'))).toBe(true);
+  });
+
+  it('leaves a lead whose action is merely planned out of it', () => {
+    expect(memberAwaitsDecision(member(null))).toBe(false);
+  });
+
+  it('leaves a lead with no action at all out of it', () => {
+    expect(
+      memberAwaitsDecision({ lastAction: null } as unknown as Parameters<
+        typeof memberAwaitsDecision
+      >[0])
+    ).toBe(false);
   });
 });

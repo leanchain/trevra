@@ -9435,6 +9435,44 @@ button:disabled {
   color: var(--amber);
   font-weight: var(--t-w-bold);
 }
+/* ...and because it is a to-do, it is the only line that is a control. It
+   inherits the amber so the card still reads as one sentence, and underlines
+   so it does not depend on colour alone to say it can be clicked. */
+.mgr-state-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.mgr-state-link:hover {
+  color: var(--ink);
+}
+.mgr-state-link:focus-visible {
+  outline: 2px solid var(--t-focus);
+  outline-offset: 2px;
+  border-radius: var(--t-r-xs);
+}
+/* The filter that gets an operator from that line to the lead. Sits in the
+   filter row beside the selects, so it reads as one of them. */
+.mgr-decision-filter {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  color: var(--amber);
+  font-size: var(--t-text-chip);
+  font-weight: var(--t-w-bold);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mgr-decision-filter input {
+  margin: 0;
+}
 
 /* Expanding a campaign should answer the operator's immediate question before
    exposing the full execution console. One compact health row stays visible;

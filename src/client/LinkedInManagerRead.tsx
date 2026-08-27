@@ -84,7 +84,8 @@ import {
 import {
   ACTION_LABEL,
   campaignStepProgress,
-  campaignStepStateLines
+  campaignStepStateLines,
+  memberAwaitsDecision
 } from './LinkedInManagerProgress';
 import { NOT_ENOUGH_DATA, RATE_MIN_SAMPLE, ratePercent } from './analytics';
 import { useActiveSeatKey } from './LinkedInActiveAccount';
@@ -454,13 +455,20 @@ function WorkflowStepProgress({
   queues,
   waves,
   timezone,
-  now
+  now,
+  onReviewDecisions
 }: {
   steps: readonly WorkflowStep[];
   queues: CampaignQueueSummary;
   waves: readonly ManagedCampaignWave[];
   timezone: string | null;
   now: number;
+  /**
+   * Opens the lead table on exactly the leads this card says are waiting for a
+   * person. Optional so the card still renders as plain text where there is
+   * nowhere to send the operator.
+   */
+  onReviewDecisions?: () => void;
 }) {
   const progress = campaignStepProgress(steps, queues.backlogByStep, waves);
   if (steps.length === 0) return null;
@@ -488,7 +496,21 @@ function WorkflowStepProgress({
               <ul className="mgr-workflow-states">
                 {lines.map((line) => (
                   <li key={line.kind} className={line.attention ? 'is-attention' : undefined}>
-                    {line.text}
+                    {/*
+                     * THE ONE LINE THAT IS A TO-DO IS THE ONE LINE YOU CAN ACT
+                     * ON. "1 awaiting your decision" was inert text, and the
+                     * control it refers to lives inside one lead's expanded
+                     * timeline -- unreachable without opening rows until you
+                     * find it. Every other line here is a machine's queue and
+                     * stays text, because there is nothing for a person to do.
+                     */}
+                    {line.kind === 'awaiting-decision' && onReviewDecisions ? (
+                      <button type="button" className="mgr-state-link" onClick={onReviewDecisions}>
+                        {line.text} — review
+                      </button>
+                    ) : (
+                      line.text
+                    )}
                   </li>
                 ))}
               </ul>
@@ -1364,7 +1386,8 @@ function CampaignMembers({
   onResolveUnknown,
   followUpCampaigns,
   onBulkRetry,
-  onMoveSelected
+  onMoveSelected,
+  decisionFocus
 }: {
   members: readonly ManagedCampaignMember[];
   steps: readonly WorkflowStep[];
@@ -1387,6 +1410,12 @@ function CampaignMembers({
   followUpCampaigns: readonly ManagedCampaign[];
   onBulkRetry: (memberIds: string[]) => void;
   onMoveSelected: (targetCampaignId: string, memberIds: string[]) => void;
+  /**
+   * A token that changes each time the operator asks, from the step card, to
+   * see the leads waiting on a decision. Not a boolean: they can clear the
+   * filter and ask again, and a boolean would already be true.
+   */
+  decisionFocus: number;
 }) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState<'all' | MemberStatus>('all');
@@ -1396,14 +1425,52 @@ function CampaignMembers({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [targetCampaignId, setTargetCampaignId] = useState('');
   const [removeCandidate, setRemoveCandidate] = useState<ManagedCampaignMember | null>(null);
+  const [onlyDecisions, setOnlyDecisions] = useState(false);
+  const [handledFocus, setHandledFocus] = useState(0);
+  const [pendingFocus, setPendingFocus] = useState(0);
 
   useEffect(() => {
     setLimit(50);
-  }, [query, status, sort]);
+  }, [query, status, sort, onlyDecisions]);
+
+  const decisionCount = useMemo(() => members.filter(memberAwaitsDecision).length, [members]);
+
+  /*
+   * ARRIVING FROM "N AWAITING YOUR DECISION". The click opens the campaign,
+   * which is what loads this member list, so the leads are usually not here
+   * yet on the render that receives the token: the filter is applied now and
+   * the row is opened in a second pass once the list arrives.
+   */
+  useEffect(() => {
+    if (!decisionFocus || decisionFocus === handledFocus) return;
+    setHandledFocus(decisionFocus);
+    setQuery('');
+    setStatus('all');
+    setOnlyDecisions(true);
+    setPendingFocus(decisionFocus);
+  }, [decisionFocus, handledFocus]);
+
+  useEffect(() => {
+    if (!pendingFocus || members.length === 0) return;
+    setPendingFocus(0);
+    const first = members.find(memberAwaitsDecision);
+    if (!first) return;
+    // Expanding the row is not enough: the decision buttons live in the
+    // recorded history, which is fetched separately.
+    setOpenId(first.id);
+    onLoadTimeline(first);
+  }, [pendingFocus, members, onLoadTimeline]);
+
+  // Resolving the last one must not leave the operator staring at an empty
+  // table that says no lead matches their search.
+  useEffect(() => {
+    if (onlyDecisions && !pendingFocus && decisionCount === 0) setOnlyDecisions(false);
+  }, [onlyDecisions, pendingFocus, decisionCount]);
 
   const shown = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const filtered = members.filter((member) => {
+      if (onlyDecisions && !memberAwaitsDecision(member)) return false;
       if (status !== 'all' && member.status !== status) return false;
       if (!needle) return true;
       return `${member.firstName} ${member.lastName} ${member.company}`
@@ -1421,7 +1488,7 @@ function CampaignMembers({
       const right = b.nextEligibleAt ? Date.parse(b.nextEligibleAt) : Number.POSITIVE_INFINITY;
       return left - right || byName(a, b);
     });
-  }, [members, query, status, sort]);
+  }, [members, query, status, sort, onlyDecisions]);
 
   useEffect(() => {
     const live = new Set(members.map((member) => member.id));
@@ -1465,6 +1532,16 @@ function CampaignMembers({
             <option value="step">Furthest through the sequence</option>
           </Select>
         </label>
+        {decisionCount > 0 && (
+          <label className="mgr-decision-filter">
+            <input
+              type="checkbox"
+              checked={onlyDecisions}
+              onChange={(event) => setOnlyDecisions(event.target.checked)}
+            />
+            Needs your decision ({decisionCount})
+          </label>
+        )}
         <p className="li-hint">
           Showing {shown.length} of {plural(members.length, 'lead')}.
         </p>
@@ -2029,6 +2106,15 @@ export function OutreachManagerRead({
   const [companionStatus, setCompanionStatus] = useState<LinkedInCompanionStatus | null>(null);
   const [openCampaignId, setOpenCampaignId] = useState(initialCampaignId ?? '');
   const [openCampaignSection, setOpenCampaignSection] = useState('');
+  /*
+   * WHICH CAMPAIGN'S DECISIONS THE OPERATOR JUST ASKED TO SEE, and a token
+   * that changes on every ask so a second click after they cleared the filter
+   * still does something.
+   */
+  const [decisionFocus, setDecisionFocus] = useState<{ campaignId: string; token: number }>({
+    campaignId: '',
+    token: 0
+  });
   const [waveFilterByCampaign, setWaveFilterByCampaign] = useState<Record<string, number | null>>(
     {}
   );
@@ -2893,7 +2979,11 @@ export function OutreachManagerRead({
                           className="secondary-button"
                           type="button"
                           disabled={busyHere}
-                          title="Only pending, unadmitted leads change. Existing waves keep their original workflow snapshot."
+                          title={
+                            campaign.sequenceCustomized
+                              ? `This campaign's steps were edited for it alone. Applying v${workflow!.version} replaces them with the saved workflow's steps and discards those edits. Only pending, unadmitted leads change; existing waves keep their original snapshot.`
+                              : 'Only pending, unadmitted leads change. Existing waves keep their original workflow snapshot.'
+                          }
                           onClick={() => void applyLatestWorkflow(campaign)}
                         >
                           <RefreshCw size={14} /> Apply workflow v{workflow!.version}
@@ -2905,7 +2995,11 @@ export function OutreachManagerRead({
                           ...(workflow
                             ? [
                                 {
-                                  label: 'Edit workflow',
+                                  // Not "Edit workflow": this opens THIS campaign's own
+                                  // steps. It used to open the shared library row, so a
+                                  // one-campaign change edited a template every other
+                                  // campaign draws from and left this one untouched.
+                                  label: 'Edit steps for this campaign',
                                   icon: <WorkflowIcon size={14} />,
                                   disabled: busyHere,
                                   onSelect: () =>
@@ -3048,16 +3142,35 @@ export function OutreachManagerRead({
                       waves={operations.waves}
                       timezone={operations.execution?.timezone ?? null}
                       now={now}
+                      onReviewDecisions={() => {
+                        setOpenCampaignId(campaign.id);
+                        setOpenCampaignSection(`${campaign.id}:leads`);
+                        setDecisionFocus((current) => ({
+                          campaignId: campaign.id,
+                          token: current.token + 1
+                        }));
+                      }}
                     />
+                  )}
+
+                  {open && campaign.sequenceCustomized && (
+                    <p className="mgr-warmup">
+                      Steps edited for this campaign
+                      <Hint label="What does editing steps for this campaign mean?">
+                        These steps belong to this campaign and are no longer the saved workflow's.
+                        The workflow library is unchanged and no other campaign was affected.
+                        Applying a newer workflow version here would replace them.
+                      </Hint>
+                    </p>
                   )}
 
                   {open && workflow && campaign.status === 'running' && newerWorkflowAvailable && (
                     <p className="mgr-warmup">
                       Workflow v{campaign.workflowVersion ?? '—'} locked
                       <Hint label="Why is this workflow version locked?">
-                        Running leads keep the workflow version they entered with. Editing the saved
-                        workflow does not change admitted waves; an explicit workflow upgrade only
-                        updates pending, unadmitted leads.
+                        Running leads keep the workflow version they entered with. Neither editing
+                        the saved workflow nor pausing and resuming this campaign changes admitted
+                        waves; an explicit workflow upgrade only updates pending, unadmitted leads.
                       </Hint>
                     </p>
                   )}
@@ -3661,6 +3774,9 @@ export function OutreachManagerRead({
                       onBulkRetry={(memberIds) => void retrySelectedFailures(campaign, memberIds)}
                       onMoveSelected={(targetCampaignId, memberIds) =>
                         void moveSelectedMembers(campaign, targetCampaignId, memberIds)
+                      }
+                      decisionFocus={
+                        decisionFocus.campaignId === campaign.id ? decisionFocus.token : 0
                       }
                     />
                   )}

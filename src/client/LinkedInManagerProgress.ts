@@ -1,6 +1,7 @@
 import type { WorkflowDelay, WorkflowStep } from '../server/linkedin/workflows';
 import type {
   CampaignQueueSummary,
+  ManagedCampaignMember,
   ManagedCampaignWave
 } from '../server/linkedin/managed-campaigns';
 import { seatLocalTime } from './LinkedInExecutionBlocker';
@@ -278,4 +279,21 @@ export function campaignStepStateLines(
   if (entry.other > 0)
     lines.push({ kind: 'other', text: `${entry.other} in another state`, attention: false });
   return lines;
+}
+
+/**
+ * THE LEADS BEHIND "N AWAITING YOUR DECISION".
+ *
+ * The step card counted them and then left the operator to find them: 108
+ * leads in the table, no filter for this, and the only place the decision can
+ * actually be made is inside one lead's expanded timeline. Asked where the
+ * decision was, the honest answer was "open rows until you hit it".
+ *
+ * This is the same fact the server counts for `awaitingDecision` -- a parked
+ * action row, `settlement_hold_at` set -- read off the member the table already
+ * has, so the filter and the step card cannot disagree about which leads they
+ * mean.
+ */
+export function memberAwaitsDecision(member: Pick<ManagedCampaignMember, 'lastAction'>): boolean {
+  return member.lastAction?.settlementHoldAt != null;
 }
