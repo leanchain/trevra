@@ -1,5 +1,8 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { getLinkedInManagedCampaigns, getLinkedInManagerWorkflows } from '../api';
+import { errorMessage } from '../LinkedInSafety';
+import type { ManagedCampaign } from '../../server/linkedin/managed-campaigns';
 import { AccountsScreen } from '../AccountsScreen';
 import { LinkedInCompanionAttention } from '../LinkedInCompanion';
 import { OutreachInbox } from '../LinkedInInbox';
@@ -13,6 +16,119 @@ import { InboundPeople } from '../InboundPeople';
 import { Opportunities } from '../Opportunities';
 import { ActionMenu } from '../ui/action-menu';
 import type { Route } from '../ui/route';
+
+/**
+ * `/outreach/workflow/<workflowId>/<campaignId>`.
+ *
+ * WITH A CAMPAIGN IN THE PATH THIS EDITS THAT CAMPAIGN'S OWN STEPS. It used to
+ * open the shared library workflow and tell the operator that saving "updates
+ * the reusable workflow", and that a running campaign would pick the change up
+ * once it was paused and resumed. Both halves were wrong in the same
+ * direction: the edit rewrote a template every other campaign draws from, and
+ * it never reached this campaign at all -- the runner walks the campaign's own
+ * snapshot, and resuming does not rewrite that. Only an explicit "Apply
+ * workflow vN" ever did.
+ *
+ * Without a campaign in the path it is still the library builder, which is what
+ * the Advanced builder's "Manage workflows" opens.
+ */
+function OutreachStepsRoute({
+  workflowId,
+  campaignId,
+  setToast,
+  onNavigate
+}: {
+  workflowId: string;
+  campaignId: string;
+  setToast: (message: string) => void;
+  onNavigate: (path: string) => void;
+}) {
+  const [campaign, setCampaign] = useState<ManagedCampaign | null>(null);
+  const [workflowName, setWorkflowName] = useState<string | null>(null);
+  const [loading, setLoading] = useState(Boolean(campaignId));
+  const [error, setError] = useState('');
+
+  const load = useCallback(async () => {
+    if (!campaignId) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      const [campaigns, workflows] = await Promise.all([
+        getLinkedInManagedCampaigns(),
+        getLinkedInManagerWorkflows()
+      ]);
+      const found = campaigns.find((candidate) => candidate.id === campaignId) ?? null;
+      setCampaign(found);
+      setWorkflowName(
+        workflows.find((candidate) => candidate.id === (found?.workflowId ?? workflowId))?.name ??
+          null
+      );
+      setError(found ? '' : 'That campaign no longer exists.');
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to read this campaign.'));
+    } finally {
+      setLoading(false);
+    }
+  }, [campaignId, workflowId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div className="page-stack">
+      <div className="builder-back">
+        <button
+          className="ghost-button"
+          type="button"
+          onClick={() =>
+            onNavigate(
+              campaignId ? '/outreach/campaign/' + encodeURIComponent(campaignId) : '/outreach'
+            )
+          }
+        >
+          {campaignId ? 'Back to campaign' : 'Back to campaigns'}
+        </button>
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+      {loading && <p className="empty-copy">Reading this campaign…</p>}
+
+      {campaignId && campaign && (
+        <>
+          <p className="li-hint">
+            {campaign.sequenceCustomized
+              ? `These steps were edited for this campaign${workflowName ? ` and no longer track “${workflowName}”` : ''}. The workflow library is unchanged.`
+              : `These steps came from ${workflowName ? `“${workflowName}”` : 'a saved workflow'}. Editing them here changes this campaign only — the saved workflow and every other campaign using it stay as they are.`}
+          </p>
+          <LinkedInManagerWorkflowConfig
+            campaign={campaign}
+            setToast={setToast}
+            onChanged={async () => undefined}
+            onCampaignSaved={(next) => setCampaign(next)}
+          />
+        </>
+      )}
+
+      {!campaignId && (
+        <>
+          <p className="li-hint">
+            This is the reusable workflow every campaign built from it draws on. Campaigns already
+            running keep the steps they started with; to change one campaign alone, edit its steps
+            from the campaign itself.
+          </p>
+          <LinkedInManagerWorkflowConfig
+            initialWorkflowId={workflowId}
+            setToast={setToast}
+            onChanged={async () => undefined}
+          />
+        </>
+      )}
+    </div>
+  );
+}
 
 const OUTREACH_TABS: ReadonlyArray<{
   sub: string;
@@ -137,30 +253,12 @@ export function OutreachView({
         />
       )}
       {sub === 'workflow' && workflowId && (
-        <div className="page-stack">
-          <div className="builder-back">
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={() =>
-                onNavigate(
-                  campaignId ? '/outreach/campaign/' + encodeURIComponent(campaignId) : '/outreach'
-                )
-              }
-            >
-              Back to campaign
-            </button>
-          </div>
-          <p className="li-hint">
-            Saving here updates the reusable workflow. If the campaign is already running, its live
-            steps stay locked until you pause and resume it.
-          </p>
-          <LinkedInManagerWorkflowConfig
-            initialWorkflowId={workflowId}
-            setToast={setToast}
-            onChanged={async () => undefined}
-          />
-        </div>
+        <OutreachStepsRoute
+          workflowId={workflowId}
+          campaignId={campaignId}
+          setToast={setToast}
+          onNavigate={onNavigate}
+        />
       )}
       {sub === '' && (
         <>

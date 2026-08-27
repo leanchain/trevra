@@ -2033,6 +2033,21 @@ export async function applyLatestLinkedInManagedCampaignWorkflow(id: string): Pr
   );
 }
 
+/**
+ * Edit ONE campaign's steps. The workflow library is untouched, which is the
+ * whole point: a one-off sequence for a single campaign no longer has to be
+ * saved as a permanent template every other campaign can pick up.
+ */
+export async function updateLinkedInManagedCampaignSequence(
+  id: string,
+  steps: WorkflowStep[]
+): Promise<{ campaign: ManagedCampaign; pendingAffected: number }> {
+  return request(`/api/linkedin/manager/campaigns/${encodeURIComponent(id)}/sequence`, {
+    method: 'PUT',
+    body: JSON.stringify({ steps })
+  });
+}
+
 export type LinkedInUnknownOutcomeResolution = 'sent' | 'retry' | 'skip';
 
 export async function resolveLinkedInManagedUnknownOutcome(

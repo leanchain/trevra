@@ -184,6 +184,8 @@ function fakeStore(
     seatKey?: string;
     /** What the ledger says about a pending invite to the action's target. */
     unacceptedInvite?: boolean;
+    /** Per-campaign share of the account, as `campaignShareWeights` returns it. */
+    campaignShareWeights?: Record<string, number>;
   } = {}
 ): StoreHarness {
   const queue = [...actions];
@@ -230,16 +232,27 @@ function fakeStore(
         harness.closed.push(outcome);
       },
       stopRequested: async () => stopped,
-      claimNextDueAction: async (_batchId, _now, exclude = []) => {
+      claimNextDueAction: async (_batchId, _now, exclude = [], prefer = []) => {
         // The real store excludes deferred rows in SQL. The fake does it here,
         // because a branch that answers `pending` releases the row and the loop
         // must not be handed it again on the next iteration.
-        const index = queue.findIndex((entry) => !exclude.includes(entry.id));
-        if (index === -1) return null;
-        const [next] = queue.splice(index, 1);
+        const eligible = queue.filter((entry) => !exclude.includes(entry.id));
+        if (eligible.length === 0) return null;
+        /*
+         * And it models the campaign rotation, because that is queue ORDER and
+         * a fake that ignored it would let the interleaving tests pass against
+         * a store that does not interleave. Mirrors the real ORDER BY: a
+         * campaign absent from `prefer` has not been served this pass and
+         * sorts first (-1); ties keep queue order, which is `planned_for ASC`.
+         */
+        const rank = (entry: DueLinkedInAction) => prefer.indexOf(entry.campaignId ?? '');
+        let next = eligible[0]!;
+        for (const entry of eligible) if (rank(entry) < rank(next)) next = entry;
+        queue.splice(queue.indexOf(next), 1);
         harness.claimed.push(next.id);
         return next;
       },
+      campaignShareWeights: async () => options.campaignShareWeights ?? {},
       releaseClaim: async (id, failureKind) => {
         harness.released.push({ id, failureKind });
         // Back to the front: it is the oldest row again, which is exactly what
@@ -1292,6 +1305,94 @@ describe('what LinkedIn says stops the batch', () => {
     expect(harness.sent).toEqual(['lact_3']);
     expect(result.halted).toBe(false);
     expect(harness.closed[0]?.haltReason).toMatch(/free personalised invitations/);
+  });
+
+  it('interleaves two campaigns on one account instead of draining the older one', async () => {
+    /*
+     * THE DAY THE SECOND CAMPAIGN DID NOTHING.
+     *
+     * Both campaigns ran on the seat `Pankaj`, both at `normal` priority. The
+     * older one had been planning rows since 20 Aug and the newer one since
+     * 26 Aug, and the claim was oldest-first, so every pass drained the older
+     * campaign's backlog and never reached the newer one: 7 of its actions sat
+     * past their scheduled time for 29 hours while its card said, truthfully,
+     * that there was nothing to do.
+     */
+    const harness = fakeStore([
+      action({ id: 'old_1', kind: 'profile_view', campaignId: 'licmp_old' }),
+      action({ id: 'old_2', kind: 'profile_view', campaignId: 'licmp_old' }),
+      action({ id: 'old_3', kind: 'profile_view', campaignId: 'licmp_old' }),
+      action({ id: 'new_1', kind: 'profile_view', campaignId: 'licmp_new' }),
+      action({ id: 'new_2', kind: 'profile_view', campaignId: 'licmp_new' })
+    ]);
+    const { driver } = fakeDriver((): LinkedInDriverResult => ok);
+
+    await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(harness.claimed).toEqual(['old_1', 'new_1', 'old_2', 'new_2', 'old_3']);
+  });
+
+  it('gives a high-priority campaign more turns without shutting the other one out', async () => {
+    // The Settings control has always said priority "allocates remaining
+    // sender capacity". Until the rotation existed that was only true of
+    // admission; the executor drained by age and the promise was half a lie.
+    const harness = fakeStore(
+      [
+        action({ id: 'hi_1', kind: 'profile_view', campaignId: 'licmp_hi' }),
+        action({ id: 'hi_2', kind: 'profile_view', campaignId: 'licmp_hi' }),
+        action({ id: 'hi_3', kind: 'profile_view', campaignId: 'licmp_hi' }),
+        action({ id: 'lo_1', kind: 'profile_view', campaignId: 'licmp_lo' }),
+        action({ id: 'lo_2', kind: 'profile_view', campaignId: 'licmp_lo' })
+      ],
+      { campaignShareWeights: { licmp_hi: 4, licmp_lo: 1 } }
+    );
+    const { driver } = fakeDriver((): LinkedInDriverResult => ok);
+
+    await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    // Four-to-one, and the low-priority campaign still moves. Starving it is
+    // the bug this rotation exists to fix, so no weight may reproduce it.
+    expect(harness.claimed.slice(0, 4)).toEqual(['hi_1', 'lo_1', 'hi_2', 'hi_3']);
+    expect(harness.claimed).toContain('lo_2');
+  });
+
+  it('rotates by turns taken, not by sends, so a campaign of stale rows cannot take the pass', async () => {
+    // Every row of the older campaign is obsolete and settles without sending.
+    // Counting only successful sends would leave its share at zero and hand it
+    // every remaining turn in the pass.
+    const harness = fakeStore(
+      [
+        action({ id: 'stale_1', kind: 'profile_view', campaignId: 'licmp_old' }),
+        action({ id: 'stale_2', kind: 'profile_view', campaignId: 'licmp_old' }),
+        action({ id: 'stale_3', kind: 'profile_view', campaignId: 'licmp_old' }),
+        action({ id: 'live_1', kind: 'profile_view', campaignId: 'licmp_new' })
+      ],
+      { executionState: (entry) => (entry.id.startsWith('stale') ? 'retire' : 'execute') }
+    );
+    const { driver } = fakeDriver((): LinkedInDriverResult => ok);
+
+    await runLinkedInLocalBatch(harness.store, {
+      driver,
+      page,
+      sleep: noSleep,
+      log: () => {},
+      evaluate: async () => verdict()
+    });
+
+    expect(harness.claimed).toEqual(['stale_1', 'live_1', 'stale_2', 'stale_3']);
+    expect(harness.sent).toEqual(['live_1']);
   });
 
   it('keeps working the kinds that did not drift', async () => {
@@ -3103,6 +3204,77 @@ describe.skipIf(!databaseUrl)('the claim carries the row facts the gate needs', 
   afterEach(async () => {
     await db?.prepare('DELETE FROM workspaces WHERE id=?').run(WORKSPACE_ID);
     await db?.close();
+  });
+
+  it('lets the pass rotate campaigns instead of always handing back the oldest row', async () => {
+    /*
+     * THE ORDER BY, AGAINST REAL POSTGRES. Two campaigns on one account: the
+     * older one's row is older, so oldest-first hands it back every time and
+     * the newer campaign never runs. `prefer` is the pass's rotation, and a
+     * campaign absent from it has not been served yet and sorts ahead of one
+     * that has -- which is what lets a newly started campaign get a turn
+     * immediately instead of queueing behind a whole backlog.
+     */
+    for (const [id, name] of [
+      ['licmp_older', 'Older'],
+      ['licmp_newer', 'Newer']
+    ]) {
+      await db
+        .prepare(
+          `
+        INSERT INTO linkedin_campaigns (id,workspace_id,name,status,sequence_json,seat_key,priority,started_at,created_at,updated_at)
+        VALUES (?,?,?,'running',?::jsonb,'owner',?,?,?,?)
+      `
+        )
+        .run(
+          id,
+          WORKSPACE_ID,
+          name,
+          JSON.stringify({ steps: [] }),
+          id === 'licmp_newer' ? 1 : 0,
+          NOW.toISOString(),
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+    }
+    for (const [id, campaignId, plannedFor] of [
+      ['lact_older', 'licmp_older', '2026-08-01T08:25:00.000Z'],
+      ['lact_newer', 'licmp_newer', '2026-08-03T19:56:00.000Z']
+    ]) {
+      await db
+        .prepare(
+          `
+        INSERT INTO linkedin_actions (id,workspace_id,seat_key,kind,target_ref,campaign_id,status,planned_for,queue_priority,source,created_at)
+        VALUES (?,?,'owner','profile_view',?,?,'planned',?,50,'campaign',?)
+      `
+        )
+        .run(
+          id,
+          WORKSPACE_ID,
+          `https://www.linkedin.com/in/${id}/`,
+          campaignId,
+          plannedFor,
+          NOW.toISOString()
+        );
+    }
+
+    const store = postgresLocalWorkerStore(db, WORKSPACE_ID);
+    const batchId = await store.openBatch(NOW);
+
+    // No rotation yet: the oldest row, exactly as before.
+    expect((await store.claimNextDueAction(batchId, NOW, [], []))?.id).toBe('lact_older');
+    // Having served the older campaign, its turn is over even though its next
+    // row would still be the oldest one due.
+    expect((await store.claimNextDueAction(batchId, NOW, [], ['licmp_older']))?.id).toBe(
+      'lact_newer'
+    );
+
+    // And the weights the rotation is built from are the campaigns' own
+    // priority, so the screen's promise and the executor's order are one fact.
+    expect(await store.campaignShareWeights?.()).toMatchObject({
+      licmp_older: 2,
+      licmp_newer: 4
+    });
   });
 
   it('returns the campaign, the replay scope and the warm-up override off the row', async () => {

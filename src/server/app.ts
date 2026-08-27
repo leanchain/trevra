@@ -399,6 +399,7 @@ import {
   skipManagedCampaignMemberStep,
   startManagedCampaign,
   stopManagedCampaign,
+  updateCampaignSequence,
   updateManagedCampaignControls,
   type ManagedCampaign
 } from './linkedin/managed-campaigns.js';
@@ -4517,6 +4518,43 @@ export function createApp(db: Db) {
         now
       );
       res.json({ campaign: updated });
+    })
+  );
+
+  app.put(
+    '/api/linkedin/manager/campaigns/:id/sequence',
+    linkedinRoute(async (req, res) => {
+      const campaignId = String(req.params.id);
+      await assertCanManageManagedCampaign(db, req, campaignId, "change one campaign's steps");
+      const input = z
+        .object({ steps: z.array(z.unknown()) })
+        .strict()
+        .parse(req.body ?? {});
+      try {
+        const now = new Date();
+        const result = await updateCampaignSequence(
+          db,
+          req.auth!.workspaceId,
+          campaignId,
+          input.steps as Parameters<typeof updateCampaignSequence>[3],
+          now
+        );
+        await recordManagedCampaignAudit(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            actorId: req.auth!.userId,
+            eventType: 'linkedin_campaign.sequence_updated',
+            entityType: 'linkedin_campaign',
+            entityId: campaignId,
+            metadata: { pendingAffected: result.pendingAffected }
+          },
+          now
+        );
+        res.json(result);
+      } catch (error) {
+        rethrowLinkedInManagerError(error);
+      }
     })
   );
 

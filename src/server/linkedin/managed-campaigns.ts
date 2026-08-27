@@ -26,6 +26,7 @@ import {
   parseWorkflowSteps,
   renderWorkflowTemplate,
   workflowMergeVariables,
+  workflowStepsSchema,
   type WorkflowDiagnostic,
   type WorkflowMergeLead,
   type WorkflowStep,
@@ -84,6 +85,8 @@ export interface ManagedCampaign {
   workflowId: string;
   workflowVersion: number | null;
   steps: WorkflowStep[];
+  /** These steps were edited for this campaign alone and no longer track the library workflow. */
+  sequenceCustomized: boolean;
   priority: CampaignPriority;
   admissionPolicy: AdmissionPolicy;
   exclusionPolicy: CampaignExclusionPolicy;
@@ -382,21 +385,16 @@ const CAMPAIGN_SELECT = `
  * whose workflow was deleted has always been able to have no steps.
  */
 export function campaignSnapshotSteps(sequenceJson: unknown): WorkflowStep[] {
-  const raw =
-    typeof sequenceJson === 'string'
-      ? (() => {
-          try {
-            return JSON.parse(sequenceJson) as unknown;
-          } catch {
-            return null;
-          }
-        })()
-      : sequenceJson;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
-  return parseWorkflowSteps((raw as Record<string, unknown>).steps);
+  return parseWorkflowSteps(readSnapshot(sequenceJson)?.steps);
 }
 
-function snapshotVersion(sequenceJson: unknown): number | null {
+/**
+ * The object form of a `sequence_json` column, or null.
+ *
+ * NEVER THROWS, for the reason spelled out on `campaignSnapshotSteps` above:
+ * one legacy row of a foreign shape must not take a campaign list down.
+ */
+function readSnapshot(sequenceJson: unknown): Record<string, unknown> | null {
   const raw =
     typeof sequenceJson === 'string'
       ? (() => {
@@ -408,8 +406,21 @@ function snapshotVersion(sequenceJson: unknown): number | null {
         })()
       : sequenceJson;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const version = (raw as Record<string, unknown>).workflowVersion;
+  return raw as Record<string, unknown>;
+}
+
+function snapshotVersion(sequenceJson: unknown): number | null {
+  const version = readSnapshot(sequenceJson)?.workflowVersion;
   return typeof version === 'number' && Number.isFinite(version) ? version : null;
+}
+
+/**
+ * Has this campaign's snapshot been edited away from the library workflow it
+ * was built from? `workflowId`/`workflowVersion` remain on a customized
+ * snapshot as provenance, so they cannot answer this on their own.
+ */
+function snapshotCustomized(sequenceJson: unknown): boolean {
+  return readSnapshot(sequenceJson)?.custom === true;
 }
 
 function parseJsonObject(value: unknown): Record<string, unknown> {
@@ -479,6 +490,7 @@ function toCampaign(row: CampaignRow): ManagedCampaign {
     workflowId: row.workflow_id,
     workflowVersion: snapshotVersion(row.sequence_json),
     steps: campaignSnapshotSteps(row.sequence_json),
+    sequenceCustomized: snapshotCustomized(row.sequence_json),
     priority: priorityOf(Number(row.priority)),
     admissionPolicy: parseJsonObject(row.admission_policy_json) as AdmissionPolicy,
     exclusionPolicy: parseJsonObject(row.exclusion_policy_json) as CampaignExclusionPolicy,
@@ -1495,12 +1507,15 @@ export async function campaignWorkflowSteps(
 /**
  * Start -- or resume -- a managed campaign.
  *
- * STARTING IS THE OPERATOR'S ACT OF CHOOSING A WORKFLOW VERSION, so this is
- * where the snapshot in `sequence_json` is (re)written. The runner executes
- * that snapshot and never the live workflow row, which is what makes the
- * campaign screen's promise -- "editing one does not change campaigns already
- * running on it" -- true: an edit reaches a running campaign when, and only
- * when, somebody restarts it.
+ * STARTING DOES NOT CHOOSE A WORKFLOW VERSION. It once did, and this comment
+ * went on saying so long after that stopped being true, which is how the
+ * campaign screen came to promise operators that a workflow edit reaches a
+ * running campaign "when you pause and resume it". It does not. `sequence_json`
+ * is written at creation and rewritten only by `updateCampaignSequence` (this
+ * campaign's own steps) or `applyLatestWorkflowToPendingMembers` (an explicit
+ * upgrade to the library row). The runner executes that snapshot and never the
+ * live workflow row, which is what makes the other half of the promise --
+ * "editing one does not change campaigns already running on it" -- true.
  *
  * IT ALSO RELEASES THE WORK A PAUSE PARKED. `pauseManagedCampaign` moves this
  * campaign's unclaimed `planned` rows to 'held' (migration 051), which is the
@@ -2829,6 +2844,66 @@ export async function duplicateManagedCampaign(
     },
     now
   );
+}
+
+/**
+ * Rewrite THIS campaign's own step snapshot, touching no library row.
+ *
+ * A campaign has always carried its own `sequence_json` copy of the steps, and
+ * the runner has always executed that copy rather than the live
+ * `linkedin_workflows` row -- but until now nothing could write it except
+ * campaign creation and an explicit version upgrade. The only editable object
+ * the screen could offer was therefore the shared library workflow, so
+ * adjusting the steps of one campaign bumped a template every other campaign
+ * draws from AND left the campaign the operator started from unchanged.
+ *
+ * This is the missing writer, and it is what makes a one-off sequence possible
+ * without parking a single-use row in the workflow library. `workflowId` and
+ * `workflowVersion` stay on the snapshot as provenance -- the base this edit
+ * started from -- and `custom` marks it diverged, which is what lets the screen
+ * name that base and warn that applying a newer library version discards these
+ * edits.
+ *
+ * SCOPE MATCHES applyLatestWorkflowToPendingMembers: pending, unadmitted
+ * members walk the new steps; anyone already admitted to a wave keeps the
+ * immutable snapshot they were admitted on.
+ */
+export async function updateCampaignSequence(
+  db: Db,
+  workspaceId: string,
+  campaignId: string,
+  steps: readonly WorkflowStep[],
+  now: Date = new Date()
+): Promise<{ campaign: ManagedCampaign; pendingAffected: number }> {
+  const campaign = await getManagedCampaign(db, workspaceId, campaignId);
+  if (!campaign) throw new Error('Campaign not found.');
+  if (campaign.status === 'stopped' || campaign.status === 'completed')
+    throw new Error(`A ${campaign.status} campaign cannot have its steps changed.`);
+  const parsed = workflowStepsSchema.parse(steps);
+  const snapshot = JSON.stringify({
+    manager: true,
+    workflowId: campaign.workflowId,
+    workflowVersion: campaign.workflowVersion,
+    custom: true,
+    steps: parsed
+  });
+  const timestamp = now.toISOString();
+  const pending = await db
+    .prepare(
+      `SELECT COUNT(*)::int AS total FROM linkedin_campaign_members
+       WHERE workspace_id=? AND campaign_id=? AND admitted_at IS NULL AND status='pending'`
+    )
+    .get<{ total: number }>(workspaceId, campaignId);
+  await db
+    .prepare(
+      `UPDATE linkedin_campaigns SET sequence_json=?::jsonb,updated_at=?::timestamptz
+       WHERE workspace_id=? AND id=?`
+    )
+    .run(snapshot, timestamp, workspaceId, campaignId);
+  return {
+    campaign: (await getManagedCampaign(db, workspaceId, campaignId)) as ManagedCampaign,
+    pendingAffected: Number(pending?.total ?? 0)
+  };
 }
 
 export async function applyLatestWorkflowToPendingMembers(

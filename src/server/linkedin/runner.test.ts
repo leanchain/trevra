@@ -16,7 +16,8 @@ import {
   retryManagedCampaignFailures,
   setCampaignMemberPaused,
   skipManagedCampaignMemberStep,
-  startManagedCampaign
+  startManagedCampaign,
+  updateCampaignSequence
 } from './managed-campaigns.js';
 import {
   allocateCampaignCapacity,
@@ -25,7 +26,7 @@ import {
 } from './runner.js';
 import { postgresLocalWorkerStore } from './local-worker.js';
 import { upsertSeat } from './seats.js';
-import { saveWorkflow } from './workflows.js';
+import { getWorkflow, saveWorkflow } from './workflows.js';
 
 let db: Db;
 const WORKSPACE = 'ws_linkedin_runner_test';
@@ -2010,6 +2011,79 @@ describe('managed campaign runner', () => {
       )
       .all<{ workflow_version: number | null }>(WORKSPACE, made.campaign.id);
     expect(versions.map((row) => Number(row.workflow_version))).toEqual([1, 2]);
+  });
+
+  /*
+    THE EDIT THAT MUST NOT REACH ANYBODY ELSE.
+
+    A campaign's steps used to be editable only through the shared library
+    workflow, which meant a one-off change to how a single campaign reaches its
+    people rewrote a template every other campaign draws from -- and, since the
+    runner reads the campaign's own snapshot, did not reach the edited campaign
+    at all. Both halves are pinned here: the library row keeps its version and
+    its steps, and the campaign's next wave walks the new ones.
+  */
+  it('edits one campaign without touching the library workflow other campaigns share', async () => {
+    const listId = await seededList('Campaign local edit', [
+      { first: 'Ada', last: 'One', company: 'Acme', slug: 'local-edit-one' },
+      { first: 'Grace', last: 'Two', company: 'Beta', slug: 'local-edit-two' }
+    ]);
+    const shared = await saveWorkflow(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Shared starter',
+        steps: [
+          {
+            id: 'touch',
+            action: 'profile_view',
+            delayBefore: { amount: 0, unit: 'hours' },
+            config: {}
+          }
+        ]
+      },
+      NOW
+    );
+    const made = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Campaign local edit',
+        leadListId: listId,
+        workflowId: shared.id,
+        admissionPolicy: { maxWaveSize: 1 }
+      },
+      NOW
+    );
+    await startManagedCampaign(db, WORKSPACE, made.campaign.id, NOW);
+    expect((await runManagedCampaigns(db, WORKSPACE, NOW)).actionsPlanned).toBe(1);
+
+    const edited = await updateCampaignSequence(
+      db,
+      WORKSPACE,
+      made.campaign.id,
+      [
+        {
+          id: 'touch',
+          action: 'follow',
+          delayBefore: { amount: 0, unit: 'hours' },
+          config: {}
+        }
+      ],
+      at(HOUR)
+    );
+    expect(edited.pendingAffected).toBe(1);
+    expect(edited.campaign.sequenceCustomized).toBe(true);
+    // Provenance survives the divergence; it is what names the base on screen.
+    expect(edited.campaign.workflowId).toBe(shared.id);
+
+    const library = await getWorkflow(db, WORKSPACE, shared.id);
+    expect(library?.version).toBe(1);
+    expect(library?.steps.map((step) => step.action)).toEqual(['profile_view']);
+
+    expect((await runManagedCampaigns(db, WORKSPACE, at(2 * HOUR))).actionsPlanned).toBe(1);
+    // The admitted member kept profile_view; only the pending one walked the edit.
+    expect((await actions()).map((row) => row.kind).sort()).toEqual(['follow', 'profile_view']);
   });
 
   it('resumes by stable step id without replaying an already-run step after edits or reordering', async () => {

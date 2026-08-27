@@ -55,6 +55,7 @@ import { dayShapeFor, localDateOf, seededUnit, weekdayOf, workWindowOf } from '.
 
 import { clearInboxForSeat, syncThreadMessages, syncThreads } from './inbox.js';
 import { campaignSnapshotSteps } from './managed-campaigns.js';
+import { campaignPriorityWeight } from './runner.js';
 import { delayMilliseconds } from './workflows.js';
 import {
   OWNER_SEAT_KEY,
@@ -515,8 +516,15 @@ export interface LocalWorkerStore {
   claimNextDueAction(
     batchId: string,
     now: Date,
-    exclude?: readonly string[]
+    exclude?: readonly string[],
+    prefer?: readonly string[]
   ): Promise<DueLinkedInAction | null>;
+  /**
+   * How much of this account's day each campaign may take, keyed by campaign
+   * id (`''` for work that belongs to no campaign). Absent on stores that do
+   * not know about campaigns, which is read as "every campaign is equal".
+   */
+  campaignShareWeights?(): Promise<Record<string, number>>;
   /**
    * Re-check a claimed managed-campaign action at the last possible moment.
    * `defer` is reversible state (campaign/member pause); `retire` means the
@@ -655,6 +663,14 @@ const DEFAULT_MAX_ACTIONS = 25;
  * selector is already proven by the second miss.
  */
 const DRIFT_HALT_THRESHOLD = 2;
+
+/**
+ * The share a campaign gets when nothing says otherwise -- the same number
+ * `campaignPriorityWeight` gives a `normal` campaign. Used for work that
+ * belongs to no campaign, and on stores that cannot answer the question at
+ * all, where it makes the rotation a plain round-robin.
+ */
+const DEFAULT_CAMPAIGN_SHARE_WEIGHT = 2;
 
 /**
  * How many conversations deep a `dm` send looks for the thread it just
@@ -1115,6 +1131,55 @@ export async function runLinkedInLocalBatch(
   const batchId = await store.openBatch(now());
   result.batchId = batchId;
 
+  /* ------------------------------------------------------------------------
+   * ONE ACCOUNT, TWO CAMPAIGNS, AND THE SECOND ONE NEVER RAN.
+   *
+   * The claim was strictly oldest-first within a kind, which on one seat is
+   * not an order, it is a queue: the campaign that was started first keeps
+   * planning new rows every day, and its backlog is always older than the
+   * newer campaign's, so the newer campaign is reached only if the older one
+   * runs dry. The live pair looked like this -- both 'running', both 'normal'
+   * priority, one account:
+   *
+   *   NL Contacts (started 20 Aug)   10 invites + 15 profile views today
+   *   Prepared outreach (26 Aug)      7 profile views planned, 0 ever claimed
+   *
+   * and the second campaign's card truthfully said "nothing to do" for 29
+   * hours while 7 of its actions sat past their scheduled time.
+   *
+   * So a pass rotates between campaigns instead of draining them in order.
+   * The weight is the campaign's own priority (`campaignPriorityWeight`), so
+   * the Settings control that always claimed to "allocate remaining sender
+   * capacity" finally does at execution time too, and a campaign this pass has
+   * not taken from yet sorts ahead of every campaign that has.
+   *
+   * NOTHING HERE RAISES A CEILING. Rotation decides only which of the actions
+   * the planner already allowed goes next; the daily caps, the warm-up ramp,
+   * the posture check and the pre-send gate are all downstream of it and
+   * unchanged. Kind still outranks campaign, so invites are still attempted
+   * before profile views -- the rotation happens within a kind.
+   * --------------------------------------------------------------------- */
+  const shareWeights = (await store.campaignShareWeights?.()) ?? {};
+  const claimsByCampaign = new Map<string, number>();
+  /** Which turn of the pass each campaign last took, so ties go to whoever has waited longest. */
+  const lastTurnByCampaign = new Map<string, number>();
+  const shareOf = (key: string) => shareWeights[key] ?? DEFAULT_CAMPAIGN_SHARE_WEIGHT;
+  // Campaigns this pass has already taken from, least-served first. Campaigns
+  // absent from the list are unserved and the claim puts them ahead of it.
+  // Equal shares are broken by who went longest ago rather than by name, or
+  // the same campaign would win every tie and the interleave would come in
+  // runs instead of alternating.
+  const campaignRotation = () =>
+    [...claimsByCampaign.keys()].sort((left, right) => {
+      const a = (claimsByCampaign.get(left) ?? 0) / shareOf(left);
+      const b = (claimsByCampaign.get(right) ?? 0) / shareOf(right);
+      return (
+        a - b ||
+        (lastTurnByCampaign.get(left) ?? 0) - (lastTurnByCampaign.get(right) ?? 0) ||
+        left.localeCompare(right)
+      );
+    });
+
   for (let index = 0; index < maxActions; index += 1) {
     // THE KILL SWITCH, read from Postgres between every action. The process
     // that receives the stop (the API) is not the process running this loop,
@@ -1134,8 +1199,14 @@ export async function runLinkedInLocalBatch(
       result.haltReason = current;
       break;
     }
-    const action = await store.claimNextDueAction(batchId, now(), deferred);
+    const action = await store.claimNextDueAction(batchId, now(), deferred, campaignRotation());
     if (!action) break;
+    // Counted the moment it is claimed, not when it sends: a campaign whose
+    // rows all turn out to be stale still spent its turns, and counting only
+    // successes would let it take every turn in the pass.
+    const shareKey = action.campaignId ?? '';
+    claimsByCampaign.set(shareKey, (claimsByCampaign.get(shareKey) ?? 0) + 1);
+    lastTurnByCampaign.set(shareKey, index);
 
     // A kind this pass gave up on after repeated drift. Released and skipped
     // here, before any page is opened, so the rest of the queue still runs.
@@ -2051,7 +2122,18 @@ export function postgresLocalWorkerStore(
       return row === undefined;
     },
 
-    async claimNextDueAction(batchId, now, exclude = []) {
+    async campaignShareWeights() {
+      // Not filtered by seat: a campaign can send from a seat other than its
+      // own `seat_key`, and an extra entry in this map costs nothing while a
+      // missing one would silently give that campaign the default share.
+      const rows = await db
+        .prepare(`SELECT id, priority FROM linkedin_campaigns WHERE workspace_id=?`)
+        .all<{ id: string; priority: number | null }>(workspaceId);
+      return Object.fromEntries(
+        rows.map((row) => [row.id, campaignPriorityWeight(Number(row.priority ?? 0))])
+      );
+    },
+    async claimNextDueAction(batchId, now, exclude = [], prefer = []) {
       // CLAIM AND SELECT IN ONE STATEMENT. `FOR UPDATE SKIP LOCKED` means two
       // workers on the same box take different rows instead of the same one,
       // THE CLAIM NOW CARRIES A NAME AND A DEADLINE. `claimed_at` alone said
@@ -2096,6 +2178,13 @@ export function postgresLocalWorkerStore(
           ORDER BY
             (CASE WHEN sla_deadline_at IS NOT NULL AND sla_deadline_at <= ?::timestamptz THEN 1 ELSE 0 END) DESC,
             queue_priority DESC,
+            -- The campaign rotation for THIS pass. A campaign the pass has not
+            -- taken from yet is not in the list and sorts first (-1), so a
+            -- newly started campaign gets a turn immediately instead of
+            -- queueing behind an older campaign's whole backlog. Below
+            -- queue_priority on purpose: kind still decides what is attempted
+            -- first, rotation decides whose turn it is within that kind.
+            COALESCE(array_position(?::text[], COALESCE(campaign_id, '')), -1) ASC,
             planned_for ASC
           FOR UPDATE SKIP LOCKED
           LIMIT 1
@@ -2117,7 +2206,8 @@ export function postgresLocalWorkerStore(
           seatKey,
           now.toISOString(),
           [...exclude],
-          now.toISOString()
+          now.toISOString(),
+          [...prefer]
         );
       if (!row) return null;
       return {

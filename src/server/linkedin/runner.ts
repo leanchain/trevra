@@ -833,7 +833,15 @@ function workflowStepsForMember(
   return snapshot.length > 0 ? snapshot : [...fallback];
 }
 
-function campaignPriorityWeight(priority: number): number {
+/**
+ * A campaign's share of one account, as a weight.
+ *
+ * Used twice, and it has to be the same number in both places or the screen
+ * would promise a share the executor does not honour: the planner spends
+ * admission capacity by it, and `local-worker` rotates the execution claim by
+ * it so two running campaigns on one seat both move in a day.
+ */
+export function campaignPriorityWeight(priority: number): number {
   return priority > 0 ? 4 : priority < 0 ? 1 : 2;
 }
 

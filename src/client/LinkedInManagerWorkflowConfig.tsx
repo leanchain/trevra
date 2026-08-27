@@ -20,9 +20,11 @@ import {
   createLinkedInManagerWorkflow,
   deleteLinkedInManagerWorkflow,
   getLinkedInManagerWorkflows,
+  updateLinkedInManagedCampaignSequence,
   updateLinkedInManagerWorkflow,
   validateLinkedInManagerWorkflow
 } from './api';
+import type { ManagedCampaign } from '../server/linkedin/managed-campaigns';
 import type { LinkedInWorkflow, WorkflowDelay, WorkflowStep } from '../server/linkedin/workflows';
 import { errorMessage } from './LinkedInSafety';
 import { useIsWorkspaceOwner } from './auth-client';
@@ -1179,7 +1181,9 @@ export function LinkedInManagerWorkflowConfig({
   setToast,
   compact = false,
   onCreated,
-  initialWorkflowId
+  initialWorkflowId,
+  campaign = null,
+  onCampaignSaved
 }: {
   onChanged: () => Promise<void>;
   setToast: (message: string) => void;
@@ -1195,6 +1199,22 @@ export function LinkedInManagerWorkflowConfig({
   onCreated?: (workflow: LinkedInWorkflow) => void;
   /** Full editor only: immediately open this saved workflow for editing. */
   initialWorkflowId?: string | null;
+  /**
+   * CAMPAIGN MODE: edit the steps of ONE campaign and nothing else.
+   *
+   * A campaign has always carried its own copy of the steps -- it is the copy
+   * the runner actually executes -- but the only editor the screen offered was
+   * this library builder, so adjusting a single campaign meant editing a
+   * template every other campaign draws from, and the edit did not reach the
+   * campaign it was opened from at all. Given a campaign here, the same editor
+   * saves to that campaign's snapshot instead. The library is untouched unless
+   * the operator explicitly asks for a reusable copy, which is what finally
+   * makes a one-off sequence possible without parking a single-use row in the
+   * workflow list every future campaign has to scroll past.
+   */
+  campaign?: ManagedCampaign | null;
+  /** Campaign mode only: fires with the campaign after its steps are saved. */
+  onCampaignSaved?: (campaign: ManagedCampaign) => void;
 }) {
   const isOwner = useIsWorkspaceOwner();
   const [library, setLibrary] = useState<LinkedInWorkflow[]>([]);
@@ -1215,6 +1235,9 @@ export function LinkedInManagerWorkflowConfig({
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
   const openedInitialWorkflowId = useRef<string | null>(null);
+  const openedCampaignId = useRef<string | null>(null);
+  /** Campaign mode: the name field appears only when a reusable copy is being asked for. */
+  const [copying, setCopying] = useState(false);
 
   /**
    * Step ids, minted once per edit session and never handed out twice.
@@ -1242,9 +1265,11 @@ export function LinkedInManagerWorkflowConfig({
 
   const refresh = async () => setLibrary(await getLinkedInManagerWorkflows());
   useEffect(() => {
-    if (compact) return;
+    // Campaign mode edits one snapshot and offers no library table, so it does
+    // not read the library either.
+    if (compact || campaign) return;
     void refresh().catch(() => undefined);
-  }, [compact]);
+  }, [compact, campaign]);
 
   /** Compact mode's whole job: build a starter's steps, save it under its own label, hand it back. No shared mutable id-minting state needed -- this is one save, not an editing session. */
   const createFromStarter = async (starter: Starter) => {
@@ -1279,6 +1304,9 @@ export function LinkedInManagerWorkflowConfig({
       setServerValidating(false);
       return undefined;
     }
+    // Campaign mode validates against the same server graph rules; a snapshot
+    // the runner cannot walk is no more acceptable than a library row that
+    // cannot be saved.
     let live = true;
     setServerValidating(true);
     const timer = window.setTimeout(() => {
@@ -1504,7 +1532,20 @@ export function LinkedInManagerWorkflowConfig({
   };
 
   useEffect(() => {
-    if (compact || !initialWorkflowId || openedInitialWorkflowId.current === initialWorkflowId)
+    if (!campaign || openedCampaignId.current === campaign.id) return;
+    openedCampaignId.current = campaign.id;
+    claimIds(campaign.steps);
+    setSteps(campaign.steps);
+    setError('');
+  }, [campaign]);
+
+  useEffect(() => {
+    if (
+      compact ||
+      campaign ||
+      !initialWorkflowId ||
+      openedInitialWorkflowId.current === initialWorkflowId
+    )
       return;
     if (library.length === 0) return;
     const workflow = library.find((candidate) => candidate.id === initialWorkflowId);
@@ -1599,12 +1640,63 @@ export function LinkedInManagerWorkflowConfig({
         setId(saved.id);
         setName(saved.name);
         setSteps(saved.steps);
+      } else if (campaign) {
+        // A reusable copy was asked for, not a new editing session. The steps on
+        // screen still belong to the campaign, and the campaign is still what
+        // the primary button saves; only the name field is done with.
+        setCopying(false);
+        setName('');
       } else {
         reset();
       }
-      await Promise.all([refresh(), onChanged()]);
+      await Promise.all([campaign ? Promise.resolve() : refresh(), onChanged()]);
     } catch (err) {
       setError(errorMessage(err, 'Unable to save that workflow.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * CAMPAIGN MODE'S PRIMARY SAVE: this campaign's own steps, nothing else.
+   *
+   * No name, no scope, no library row -- the campaign already has an identity
+   * and a snapshot, and this overwrites that snapshot. The same step validation
+   * the library builder runs still gates it, because a snapshot the runner
+   * cannot walk is exactly as broken as a template that will not save.
+   */
+  const saveCampaignSteps = async () => {
+    if (!campaign) return;
+    if (steps.length === 0) {
+      setError('A campaign needs at least one step.');
+      return;
+    }
+    if (brokenCount > 0) {
+      setError('Some steps still have problems. They are marked below.');
+      return;
+    }
+    if (serverIssues.length > 0) {
+      setError(
+        `Server validation still reports ${serverIssues.length} issue${serverIssues.length === 1 ? '' : 's'}. Fix them before saving.`
+      );
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const result = await updateLinkedInManagedCampaignSequence(
+        campaign.id,
+        serializeSteps(steps)
+      );
+      setToast(
+        `Steps saved for “${result.campaign.name}”. ${result.pendingAffected} ${
+          result.pendingAffected === 1 ? 'person' : 'people'
+        } not yet in a wave will walk them; anyone already in a wave keeps the steps they started on. Nothing was sent.`
+      );
+      onCampaignSaved?.(result.campaign);
+      await onChanged();
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to save these steps for this campaign.'));
     } finally {
       setBusy(false);
     }
@@ -1663,13 +1755,16 @@ export function LinkedInManagerWorkflowConfig({
     <section className="page-panel li-polished">
       <div className="section-heading">
         <div>
-          <h3 aria-level={2}>Reusable workflow builder</h3>
+          <h3 aria-level={2}>
+            {campaign ? `Steps for ${campaign.name}` : 'Reusable workflow builder'}
+          </h3>
           <p>
-            A workflow is a ladder of LinkedIn actions, each waiting its own delay. Definitions are
-            versioned and validated. Saving one never creates a LinkedIn action.
+            {campaign
+              ? 'These steps belong to this campaign alone. Saving them changes no workflow in the library and no other campaign. Anyone already in a wave keeps the steps they started on.'
+              : 'A workflow is a ladder of LinkedIn actions, each waiting its own delay. Definitions are versioned and validated. Saving one never creates a LinkedIn action.'}
           </p>
         </div>
-        {(id || steps.length > 0) && (
+        {!campaign && (id || steps.length > 0) && (
           <button className="ghost-button" type="button" onClick={reset}>
             New workflow
           </button>
@@ -1694,35 +1789,46 @@ export function LinkedInManagerWorkflowConfig({
         </div>
       )}
 
-      <label className="li-block-label">
-        Workflow name
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="Founder connect + follow-up"
-        />
-      </label>
+      {/*
+        In campaign mode these two fields describe a LIBRARY ROW, and campaign
+        mode does not write one unless it is asked to. They appear when the
+        operator asks for a reusable copy, and not before -- naming and filing
+        something nobody wanted saved is what filled the workflow list with
+        one-off rows in the first place.
+      */}
+      {(!campaign || copying) && (
+        <label className="li-block-label">
+          {campaign ? 'Name for the reusable copy' : 'Workflow name'}
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Founder connect + follow-up"
+          />
+        </label>
+      )}
 
-      <label className="li-block-label">
-        Template library
-        {isOwner ? (
-          <Select
-            value={scope}
-            disabled={Boolean(id)}
-            onChange={(event) => setScope(event.target.value as 'workspace' | 'personal')}
-          >
-            <option value="workspace">Workspace — visible to everyone</option>
-            <option value="personal">Personal — visible only to me</option>
-          </Select>
-        ) : (
-          <span className="li-hint">Personal — visible only to you</span>
-        )}
-        {id && (
-          <small className="li-hint">
-            Scope is fixed for an existing workflow. Duplicate it to move it between libraries.
-          </small>
-        )}
-      </label>
+      {(!campaign || copying) && (
+        <label className="li-block-label">
+          Template library
+          {isOwner ? (
+            <Select
+              value={scope}
+              disabled={Boolean(id)}
+              onChange={(event) => setScope(event.target.value as 'workspace' | 'personal')}
+            >
+              <option value="workspace">Workspace — visible to everyone</option>
+              <option value="personal">Personal — visible only to me</option>
+            </Select>
+          ) : (
+            <span className="li-hint">Personal — visible only to you</span>
+          )}
+          {id && (
+            <small className="li-hint">
+              Scope is fixed once a workflow exists. A new workflow can be filed in either library.
+            </small>
+          )}
+        </label>
+      )}
 
       {steps.length === 0 ? (
         <div className="empty-state li-wf-empty">
@@ -1852,20 +1958,53 @@ export function LinkedInManagerWorkflowConfig({
               : serverIssues.length > 0
                 ? `${serverIssues.length} server validation issue${serverIssues.length === 1 ? '' : 's'} remain.`
                 : steps.length === 0
-                  ? 'A workflow needs at least one step. Pick the first one above.'
-                  : !name.trim()
-                    ? 'Give the workflow a name and it can be saved.'
-                    : 'Saving stores this definition. It queues no LinkedIn action.'}
+                  ? campaign
+                    ? 'A campaign needs at least one step. Pick the first one above.'
+                    : 'A workflow needs at least one step. Pick the first one above.'
+                  : campaign
+                    ? copying && !name.trim()
+                      ? 'Name the reusable copy and it can be saved.'
+                      : 'Saving changes this campaign only. It queues no LinkedIn action.'
+                    : !name.trim()
+                      ? 'Give the workflow a name and it can be saved.'
+                      : 'Saving stores this definition. It queues no LinkedIn action.'}
         </span>
-        <button
-          className="primary-button"
-          type="button"
-          disabled={busy}
-          onClick={() => void save()}
-        >
-          {busy ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{' '}
-          {id ? 'Update workflow' : 'Save workflow'}
-        </button>
+        {campaign ? (
+          <>
+            {/*
+              The opt-in that keeps the library clean. Editing a campaign no
+              longer files anything; a template appears in the workflow list
+              when, and only when, somebody says this sequence is worth reusing.
+            */}
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={busy}
+              onClick={() => (copying ? void save() : setCopying(true))}
+            >
+              <Save size={14} /> {copying ? 'Save reusable copy' : 'Save as reusable workflow'}
+            </button>
+            <button
+              className="primary-button"
+              type="button"
+              disabled={busy}
+              onClick={() => void saveCampaignSteps()}
+            >
+              {busy ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />} Save steps
+              for this campaign
+            </button>
+          </>
+        ) : (
+          <button
+            className="primary-button"
+            type="button"
+            disabled={busy}
+            onClick={() => void save()}
+          >
+            {busy ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{' '}
+            {id ? 'Update workflow' : 'Save workflow'}
+          </button>
+        )}
       </div>
 
       {library.length > 0 && (

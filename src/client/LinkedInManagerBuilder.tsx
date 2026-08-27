@@ -30,6 +30,7 @@ interface Readiness {
 const EMPTY: Readiness = { seats: 0, lists: 0, workflows: 0 };
 
 type Seats = Awaited<ReturnType<typeof getLinkedInManagerSeats>>;
+type LeadLists = Awaited<ReturnType<typeof getLinkedInManagerLeadLists>>;
 
 function newPreparationKey(): string {
   return (
@@ -41,7 +42,8 @@ function newPreparationKey(): string {
 /**
  * `/outreach/new` defaults to the founder job, not the implementation objects.
  *
- * The ordinary path is people.csv -> safe Trevra defaults -> DRAFT campaign.
+ * The ordinary path is a saved people list (or an uploaded people.csv) -> safe
+ * Trevra defaults -> DRAFT campaign.
  * Existing list/workflow construction remains available below under Advanced;
  * simplification hides machinery, it never deletes the precise state model.
  */
@@ -202,10 +204,48 @@ function SimplePrepareOutreach({
   const [idempotencyKey, setIdempotencyKey] = useState(newPreparationKey);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState('');
+  /*
+    THE PEOPLE THIS WORKSPACE ALREADY HAS.
+
+    `/api/outreach/prepare` has always taken either an uploaded CSV or an
+    `existingLeadListId`, and validates that exactly one is given. Only the CSV
+    half was ever on screen, so a workspace with lead lists full of people had
+    to re-export and re-upload them to start a campaign here. Lists are
+    seat-scoped, hence the refetch when the sending account changes: offering a
+    list the chosen sender cannot use would just be a 400 with extra steps.
+  */
+  const [leadLists, setLeadLists] = useState<LeadLists>([]);
+  const [source, setSource] = useState<'list' | 'csv'>('list');
+  const [leadListId, setLeadListId] = useState('');
 
   useEffect(() => {
     if (seats.length === 1) setSenderKey(seats[0]!.seatKey);
   }, [seats]);
+
+  useEffect(() => {
+    let live = true;
+    if (!senderKey) {
+      setLeadLists([]);
+      return () => {
+        live = false;
+      };
+    }
+    void getLinkedInManagerLeadLists(senderKey)
+      .then((lists) => {
+        if (!live) return;
+        setLeadLists(lists);
+        setLeadListId((current) =>
+          lists.some((list) => list.id === current) ? current : (lists[0]?.id ?? '')
+        );
+        setSource(lists.length > 0 ? 'list' : 'csv');
+      })
+      .catch(() => {
+        if (live) setLeadLists([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [senderKey]);
 
   const changeIntent = () => setIdempotencyKey(newPreparationKey());
 
@@ -222,9 +262,14 @@ function SimplePrepareOutreach({
     }
   };
 
+  const usingList = source === 'list';
+  const ready = usingList ? Boolean(leadListId) : Boolean(csv.trim());
+
   const prepare = async () => {
-    if (!csv.trim()) {
-      setProblem('Add a CSV of people first.');
+    if (!ready) {
+      setProblem(
+        usingList ? 'Choose which saved list of people to reach.' : 'Add a CSV of people first.'
+      );
       return;
     }
     if (seats.length > 1 && !senderKey) {
@@ -233,11 +278,12 @@ function SimplePrepareOutreach({
     }
     setBusy(true);
     try {
+      // Exactly one source, because the server accepts exactly one.
       const result = await prepareOutreach({
         idempotencyKey,
         name: name.trim() || 'Prepared outreach',
         senderKey: senderKey || undefined,
-        uploadedPeopleCsv: csv
+        ...(usingList ? { existingLeadListId: leadListId } : { uploadedPeopleCsv: csv })
       });
       setProblem('');
       setToast(
@@ -298,16 +344,74 @@ function SimplePrepareOutreach({
         )}
       </div>
 
-      <label className="import-dropzone">
-        <Upload size={18} />
-        <span>{fileName || 'Drop or choose a people CSV'}</span>
-        <small>Use the same people CSV Trevra already accepts in lead lists.</small>
-        <input
-          type="file"
-          accept=".csv,text/csv"
-          onChange={(event) => void readFile(event.target.files?.[0])}
-        />
-      </label>
+      {leadLists.length > 0 && (
+        <div
+          className="outreach-message-switch"
+          role="group"
+          aria-label="Where the people come from"
+        >
+          <button
+            type="button"
+            className={`li-range${usingList ? ' is-active' : ''}`}
+            aria-pressed={usingList}
+            onClick={() => {
+              setSource('list');
+              setProblem('');
+              changeIntent();
+            }}
+          >
+            Saved list
+          </button>
+          <button
+            type="button"
+            className={`li-range${usingList ? '' : ' is-active'}`}
+            aria-pressed={!usingList}
+            onClick={() => {
+              setSource('csv');
+              setProblem('');
+              changeIntent();
+            }}
+          >
+            Upload a CSV
+          </button>
+        </div>
+      )}
+
+      {usingList ? (
+        <label className="li-block-label">
+          People
+          <Select
+            value={leadListId}
+            onChange={(event) => {
+              setLeadListId(event.target.value);
+              changeIntent();
+            }}
+          >
+            <option value="">Choose a saved list</option>
+            {leadLists.map((list) => (
+              <option key={list.id} value={list.id}>
+                {list.name} — {list.leadCount} {list.leadCount === 1 ? 'person' : 'people'}
+              </option>
+            ))}
+          </Select>
+          <small className="li-hint">
+            {senderKey
+              ? 'Lists belong to the sending account chosen above.'
+              : 'Choose a LinkedIn account to see its saved lists.'}
+          </small>
+        </label>
+      ) : (
+        <label className="import-dropzone">
+          <Upload size={18} />
+          <span>{fileName || 'Drop or choose a people CSV'}</span>
+          <small>Use the same people CSV Trevra already accepts in lead lists.</small>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(event) => void readFile(event.target.files?.[0])}
+          />
+        </label>
+      )}
 
       {problem && <div className="error-banner">{problem}</div>}
 
@@ -315,7 +419,7 @@ function SimplePrepareOutreach({
         <button
           className="primary-button"
           type="button"
-          disabled={busy || !csv.trim()}
+          disabled={busy || !ready}
           onClick={() => void prepare()}
         >
           {busy ? <LoaderCircle className="spin" size={15} /> : null}
