@@ -2193,11 +2193,50 @@ export function OutreachManagerRead({
           )
         )
       );
+      /*
+       * THE STEP CARD IS NOT BEHIND A CLICK.
+       *
+       * Queues, waves and execution state used to be read only for the
+       * campaign that was open. That is what the step progress, the "done"
+       * and "accepted" counts and the blocker sentence are all built from, so
+       * a collapsed card carried none of them -- and once you had expanded a
+       * campaign it kept showing them, because the read was cached and never
+       * pruned. The operator's question was the obvious one: why do I have to
+       * expand a campaign to see how it is doing?
+       *
+       * Members deliberately stay per-campaign. They are the expensive read --
+       * one row per lead, hundreds of them -- and nothing on the collapsed
+       * card is made of them.
+       *
+       * lc-debt: one operations read per campaign, so this screen is O(n) HTTP
+       * requests in campaign count; upgrade path: return the per-step backlog
+       * and step funnel for every campaign on GET /manager/campaigns, which is
+       * one GROUP BY campaign_id over the same rows.
+       */
+      const operations = await Promise.all(
+        nextCampaigns.map(async (campaign) => {
+          try {
+            const read = await getLinkedInCampaignOperations(campaign.id);
+            return [
+              campaign.id,
+              {
+                queues: read.queues,
+                waves: read.waves,
+                ...(read.execution ? { execution: read.execution } : {})
+              }
+            ] as const;
+          } catch {
+            // One unreadable campaign must not blank the other cards.
+            return [campaign.id, null] as const;
+          }
+        })
+      );
       setOperationsByCampaign((current) =>
         Object.fromEntries(
-          Object.entries(current).filter(([id]) =>
-            nextCampaigns.some((campaign) => campaign.id === id)
-          )
+          operations.flatMap(([id, next]) => {
+            const kept = next ?? current[id];
+            return kept ? [[id, kept] as const] : [];
+          })
         )
       );
       // lc-debt: one limits read per account, so the ceilings this screen prints
