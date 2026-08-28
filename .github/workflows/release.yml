@@ -192,13 +192,27 @@ jobs:
           APP_IP: ${{ vars.ORACLE_APP_IP }}
           DB_IP: ${{ vars.ORACLE_DB_IP }}
           DB_PRIVATE_IP: ${{ vars.ORACLE_DB_PRIVATE_IP }}
+          DEPLOY_TOPOLOGY: ${{ vars.ORACLE_DEPLOY_TOPOLOGY || 'split-micro' }}
           SHA: ${{ needs.prepare.outputs.sha }}
           COMPANION_VERSION: ${{ steps.companion.outputs.version }}
         run: |
           set -euo pipefail
-          SSH_KEY="$RUNNER_TEMP/ssh/oracle" \
-            ./infra/oracle/deploy-micro.sh \
-              "$APP_IP" "$DB_IP" "$DB_PRIVATE_IP" "sha-${SHA}" "$COMPANION_VERSION"
+          case "$DEPLOY_TOPOLOGY" in
+            single-micro)
+              SSH_KEY="$RUNNER_TEMP/ssh/oracle" \
+                ./infra/oracle/deploy-single-micro.sh \
+                  "$APP_IP" "sha-${SHA}" "$COMPANION_VERSION"
+              ;;
+            split-micro)
+              SSH_KEY="$RUNNER_TEMP/ssh/oracle" \
+                ./infra/oracle/deploy-micro.sh \
+                  "$APP_IP" "$DB_IP" "$DB_PRIVATE_IP" "sha-${SHA}" "$COMPANION_VERSION"
+              ;;
+            *)
+              echo "unknown ORACLE_DEPLOY_TOPOLOGY: $DEPLOY_TOPOLOGY" >&2
+              exit 1
+              ;;
+          esac
       - name: Public health check
         if: steps.fresh.outputs.current == 'true'
         # Run from the app box itself, not the GitHub-hosted runner: Cloudflare's

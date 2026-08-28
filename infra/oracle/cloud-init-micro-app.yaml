@@ -29,5 +29,19 @@ runcmd:
   - sysctl -w vm.swappiness=20
   - echo 'vm.swappiness=20' > /etc/sysctl.d/99-trevra.conf
 
+  # Single-micro mode attaches the durable Postgres volume to this host. The
+  # split topology leaves it unattached, so this probe is deliberately optional.
+  - >
+    for i in $(seq 1 30); do
+    [ -b /dev/oracleoci/oraclevdb ] && { ln -sf /dev/oracleoci/oraclevdb /dev/trevra-data-disk; break; };
+    [ -b /dev/sdb ] && { ln -sf /dev/sdb /dev/trevra-data-disk; break; };
+    sleep 2;
+    done;
+    if [ -b /dev/trevra-data-disk ] && blkid /dev/trevra-data-disk | grep -q 'LABEL="trevra-data"'; then
+    mkdir -p /mnt/data;
+    grep -q '/mnt/data' /etc/fstab || echo 'LABEL=trevra-data /mnt/data ext4 defaults,_netdev,nofail 0 2' >> /etc/fstab;
+    mount -a;
+    fi
+
   - mkdir -p /opt/trevra
   - chown ubuntu:ubuntu /opt/trevra

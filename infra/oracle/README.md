@@ -1,15 +1,27 @@
 # Trevra on Oracle Cloud Always Free
 
-One ARM VM runs the whole stack — API, automation worker, Postgres — behind a
-Cloudflare tunnel. The marketing site stays on Cloudflare Pages.
+Trevra supports the Oracle Always Free compute shapes that are actually available
+in the tenancy home region. The marketing site stays on Cloudflare Pages.
+
+Production can use either:
+
+- **single micro** — one `VM.Standard.E2.1.Micro` runs API, worker and Postgres;
+- **split micro** — two E2 micros, one app and one Postgres;
+- **A1** — one `VM.Standard.A1.Flex` using the current Always Free ceiling of
+  2 OCPUs + 12 GB RAM when host capacity exists.
 
 ## Why this shape
 
-Always Free gives 2 OCPU + 12 GB RAM, 200 GB block storage, and 10 TB/month
-egress in the tenancy home region, permanently. That is enough to run the
-existing `Dockerfile` unmodified — real Postgres, no dialect rewrite, and the
-60-second automation poller costs nothing because the database is local rather
-than metered per awake-hour.
+As of Oracle's 2026 Free Tier documentation, Always Free includes up to two
+`VM.Standard.E2.1.Micro` VMs and an Ampere A1 allowance of 1,500 OCPU-hours plus
+9,000 GB-hours per month (equivalent to 2 OCPUs + 12 GB for an Always Free
+tenancy), together with 200 GB combined boot/block storage and 10 TB/month
+outbound transfer in the home region.
+
+A1 is the preferred one-box shape when capacity exists. `terraform-micro`
+defaults to the single-E2 layout because it needs only one compute boot slot; set
+`split_db_enabled=true` when Oracle can launch the second E2 micro. Both keep
+real PostgreSQL and avoid a database-dialect rewrite.
 
 Ingress is closed. `cloudflared` dials outbound and Cloudflare routes
 `app.usetrevra.com` to it, so no HTTP port is ever exposed and the security
@@ -97,9 +109,10 @@ They verify the database and refuse if the release job was skipped.
 ./deploy.sh "$IP" sha-abc123 # immutable tag / rollback target
 ```
 
-For the two-micro layout, use `deploy-micro.sh <app-public-ip> <db-public-ip>
-<db-private-ip> [tag]`; backups are stored under `/mnt/data/backups` on the DB
-instance.
+For the single-micro layout, use `deploy-single-micro.sh <app-public-ip> [tag]`;
+for the two-micro layout, use `deploy-micro.sh <app-public-ip> <db-public-ip>
+<db-private-ip> [tag]`. Backups stay on the attached durable volume under
+`/mnt/data/backups`.
 
 ## Operating
 

@@ -37,6 +37,7 @@ Variables:
 - `ORACLE_APP_IP`
 - `ORACLE_DB_IP`
 - `ORACLE_DB_PRIVATE_IP`
+- `ORACLE_DEPLOY_TOPOLOGY` — `single-micro` when Postgres shares the app E2 micro, or `split-micro` when the second E2 boot slot is available.
 
 The application/database secrets do **not** live in GitHub. They remain in `/opt/trevra/.env.oracle` on the two Oracle instances, mode `0600`. The deploy job can replace images and the non-secret companion release version but does not receive database/auth/Nango/Google/Cloudflare-tunnel secret values.
 

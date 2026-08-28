@@ -1,19 +1,16 @@
-# Trevra across two Always Free AMD micro instances.
+# Trevra on Always Free AMD micro compute.
 #
-# Fallback for when VM.Standard.A1.Flex capacity is unavailable. E2.1.Micro is
-# always-free-eligible and usually obtainable, but gives only 1 GB of RAM each,
-# so the stack is split rather than stacked:
+# Oracle currently grants up to two VM.Standard.E2.1.Micro instances, but a
+# free tenancy can temporarily be unable to launch the second boot volume even
+# after an instance was terminated. The default therefore keeps the complete
+# stack on one micro with the durable data volume attached to it. Set
+# split_db_enabled=true to put Postgres on the second micro when that slot is
+# actually available.
 #
-#   db  -- Postgres only, with the data volume attached
-#   app -- API + automation worker + cloudflared
-#
-# The split is deliberate: the research skills parse multi-megabyte HTML pages
-# and are the most likely thing to exhaust memory. Keeping them off the
-# database host means an OOM kill takes out a replaceable app container rather
-# than Postgres.
-#
-# Neither instance builds anything -- images come prebuilt from ghcr.io, which
-# is what makes 1 GB viable at all.
+# Neither instance builds anything -- images come prebuilt from ghcr.io. The
+# single-host layout is memory-tight by design and relies on the bounded compose
+# limits plus swap; the split layout remains preferable when Oracle can launch
+# the second free micro.
 
 data "oci_identity_availability_domains" "available" {
   compartment_id = var.tenancy_ocid
@@ -107,6 +104,8 @@ resource "oci_core_subnet" "micro" {
 
 # E2.1.Micro is a fixed shape: no shape_config, 1/8 OCPU burstable, 1 GB RAM.
 resource "oci_core_instance" "db" {
+  count = var.split_db_enabled ? 1 : 0
+
   compartment_id      = var.compartment_ocid
   availability_domain = local.availability_domain
   display_name        = "${var.name_prefix}-db"
@@ -156,7 +155,9 @@ resource "oci_core_instance" "app" {
   }
 
   lifecycle {
-    ignore_changes = [source_details[0].source_id]
+    # Keep refreshed Canonical images and cloud-init improvements for future
+    # replacements without forcing a healthy production VM to be recreated.
+    ignore_changes = [source_details[0].source_id, metadata["user_data"]]
   }
 }
 
@@ -169,6 +170,14 @@ resource "oci_core_volume" "data" {
 
 resource "oci_core_volume_attachment" "data" {
   attachment_type = "paravirtualized"
-  instance_id     = oci_core_instance.db.id
+  instance_id     = var.split_db_enabled ? oci_core_instance.db[0].id : oci_core_instance.app.id
   volume_id       = oci_core_volume.data.id
+}
+
+# The August 2026 recovery temporarily named the app-side attachment
+# `recovery_data`. Keep the state move declarative so a plan after this change
+# does not detach and reattach a healthy production filesystem.
+moved {
+  from = oci_core_volume_attachment.recovery_data
+  to   = oci_core_volume_attachment.data
 }

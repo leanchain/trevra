@@ -30,6 +30,13 @@ variable "name_prefix" {
   default = "trevra-micro"
 }
 
+
+variable "split_db_enabled" {
+  type        = bool
+  description = "Run Postgres on the second Always Free E2 micro. False keeps API, worker and Postgres on the app micro and avoids requiring a second boot-volume slot."
+  default     = false
+}
+
 variable "data_volume_size_in_gbs" {
   type        = number
   description = "Postgres data volume, attached to the db instance. Counts against the 200 GB Always Free block storage allowance alongside both 50 GB boot volumes."
