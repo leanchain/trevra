@@ -192,14 +192,14 @@ async function linkedinCycle(): Promise<void> {
       concurrency: seatConcurrency,
       ...(allowSeat ? { allowSeat } : {})
     });
-    // THE SEND QUEUE FIRST. Ordinary background account polling is disabled:
-    // inbox sync, pending-invite reconciliation, acceptance detection and lead
-    // sourcing only run from explicit operator actions. `runLinkedInSideTasks`
-    // remains here solely to drain an already-queued withdrawal action; when
-    // no such row exists it returns before opening a browser.
+    // THE SEND QUEUE FIRST. Then one tightly bounded autonomous state read:
+    // inbox sync, because replies are outcomes the campaign cannot otherwise
+    // learn. Pending-invite reconciliation, acceptance profile checks and lead
+    // sourcing remain explicit operator actions. `runLinkedInSideTasks` also
+    // drains a withdrawal only when a queued withdrawal row already exists.
     //
-    // PER SEAT and bounded/rotated across the shard so an explicitly queued
-    // withdrawal on one account cannot starve another tenant's worker pass.
+    // PER SEAT and bounded/rotated across the shard so one account cannot
+    // starve another tenant's worker pass.
     const seats = await seatRefsForShard(db, {
       shard: linkedinShard,
       limit: SIDE_TASK_SEATS_PER_TICK,

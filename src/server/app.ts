@@ -3083,9 +3083,11 @@ export function createApp(db: Db) {
 
       const maintenance = seat
         ? await (async () => {
-            if (!(await hasQueuedLinkedInWithdrawal(db, workspaceId, seat.seatKey))) return [];
             const runs = await sideTaskRuns(db, workspaceId, seat.seatKey);
-            return SIDE_TASK_NAMES.map((task) => {
+            const tasks: SideTaskName[] = seat.profileUrl ? [...SIDE_TASK_NAMES] : [];
+            if (await hasQueuedLinkedInWithdrawal(db, workspaceId, seat.seatKey))
+              tasks.push('withdrawals');
+            return tasks.map((task) => {
               const [next] = nextSideTaskOpportunities(seat, runs, task, now, 1);
               return {
                 task,
@@ -7726,15 +7728,21 @@ async function nextLinkedInBackgroundRun(
     candidates.push({ startAt: now, endAt: now, source: 'catchup' });
   }
 
-  // Background maintenance exists only to drain an explicitly queued
-  // withdrawal. With no such row, an idle seat has no maintenance browser run
-  // to advertise or execute.
-  if (await hasQueuedLinkedInWithdrawal(db, workspaceId, seatKey)) {
+  // Inbox maintenance is autonomous for a confirmed seat, but only inside the
+  // same sparse visit windows as sending. This is the product-state read that
+  // learns replies; the profile-heavy reads remain absent from this scheduler.
+  if (seat.profileUrl) {
     for (const task of SIDE_TASK_NAMES) {
       const [next] = nextSideTaskOpportunities(seat, runs, task, now, 1);
       if (next)
         candidates.push({ startAt: next.startAt, endAt: next.endAt, source: 'maintenance' });
     }
+  }
+  // Withdrawals still require an explicit queued row before they acquire a
+  // background window of their own.
+  if (await hasQueuedLinkedInWithdrawal(db, workspaceId, seatKey)) {
+    const [next] = nextSideTaskOpportunities(seat, runs, 'withdrawals', now, 1);
+    if (next) candidates.push({ startAt: next.startAt, endAt: next.endAt, source: 'maintenance' });
   }
 
   // Campaign/automated actions are reported when they actually exist. Manual

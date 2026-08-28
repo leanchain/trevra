@@ -59,6 +59,7 @@ import { OWNER_SEAT_KEY, effectivePosture, getSeat } from './seats.js';
 import {
   AVAILABILITY_CATCHUP_MARKER,
   MAX_CATCHUP_TASKS_PER_VISIT,
+  SIDE_TASK_NAMES,
   VISIT_MARKER,
   availabilityCatchUpPending,
   dueSideTasks,
@@ -945,6 +946,7 @@ export async function runLinkedInSideTasks(
     maxThreads?: number;
     maxMessages?: number;
     sinceDays?: number;
+    inboxDriver?: LinkedInInboxDriver;
     maxPendingInvites?: number;
     maxAcceptanceChecks?: number;
     maxWithdrawals?: number;
@@ -1046,23 +1048,24 @@ export async function runLinkedInSideTasks(
     };
   }
 
-  // Unattended maintenance never polls LinkedIn for account state. The only
-  // scheduled category is `withdrawals`, and even that is eligible only when a
-  // row was explicitly queued by an operator/workflow; the worker does not
-  // discover stale invitations, read the inbox, reconcile pending invites,
-  // detect acceptances or source leads on its own.
+  // Inbox sync is the one autonomous account-state read: replies are product
+  // state, and disabling this is what left /outreach/inbox frozen for days.
+  // Everything profile-heavy stays operator-triggered. A withdrawal joins the
+  // candidate set only after we prove there is an explicitly queued row.
+  const scheduledTasks: SideTaskName[] = seat.profileUrl ? [...SIDE_TASK_NAMES] : [];
+  const queuedWithdrawal = await db
+    .prepare(
+      `SELECT 1 AS queued FROM linkedin_withdrawals
+       WHERE workspace_id=? AND seat_key=? AND status='queued' LIMIT 1`
+    )
+    .get<{ queued: number }>(options.workspaceId, seatKey);
+  if (queuedWithdrawal) scheduledTasks.push('withdrawals');
   const due = new Set(
-    dueSideTasks(seat, runs, now, { limit: catchUp ? MAX_CATCHUP_TASKS_PER_VISIT : undefined })
+    dueSideTasks(seat, runs, now, {
+      tasks: scheduledTasks,
+      limit: catchUp ? MAX_CATCHUP_TASKS_PER_VISIT : undefined
+    })
   );
-  if (due.has('withdrawals')) {
-    const queuedWithdrawal = await db
-      .prepare(
-        `SELECT 1 AS queued FROM linkedin_withdrawals
-         WHERE workspace_id=? AND seat_key=? AND status='queued' LIMIT 1`
-      )
-      .get<{ queued: number }>(options.workspaceId, seatKey);
-    if (!queuedWithdrawal) due.delete('withdrawals');
-  }
   if (due.size === 0 && !recoveryVerification) {
     if (catchUp)
       await markSideTaskRun(db, options.workspaceId, seatKey, AVAILABILITY_CATCHUP_MARKER, now);
@@ -1124,10 +1127,10 @@ export async function runLinkedInSideTasks(
       skipped: 'The LinkedIn session was verified healthy after companion recovery.'
     };
   }
-  // Unattended maintenance has no account-polling branches at all. This is
-  // defense in depth on top of `SIDE_TASK_NAMES=['withdrawals']`: changing a
-  // scheduler list cannot accidentally re-enable inbox reads, pending-invite
-  // reconciliation, acceptance profile checks or lead sourcing here.
+
+  // Only inbox and an explicitly queued withdrawal can reach this unattended
+  // executor. Pending-invite reconciliation, acceptance checks and lead
+  // sourcing still have no background branch here.
   const shared: LinkedInJobOptions = {
     ...options,
     seatKey,
@@ -1137,6 +1140,28 @@ export async function runLinkedInSideTasks(
   };
 
   const jobs: Array<[SideTaskName, string, () => Promise<void>]> = [
+    [
+      'inbox',
+      'inbox sync',
+      async () => {
+        const lastInboxAt = runs.get('inbox');
+        const gapDays = lastInboxAt
+          ? Math.max(0, (now.getTime() - lastInboxAt.getTime()) / 86_400_000)
+          : 7;
+        // Normally only the last three days / three threads are touched. After
+        // a genuine multi-day outage, widen one bounded pass enough to recover
+        // missed replies, then the cadence stamp immediately returns later
+        // visits to the narrow window.
+        const sinceDays = options.sinceDays ?? Math.min(30, Math.max(3, Math.ceil(gapDays) + 1));
+        result.inbox = await syncLinkedInInbox(db, config, {
+          ...shared,
+          maxThreads: options.maxThreads ?? (gapDays > 3 ? 10 : 3),
+          maxMessages: options.maxMessages ?? (gapDays > 3 ? 20 : 10),
+          sinceDays,
+          ...(options.inboxDriver ? { inboxDriver: options.inboxDriver } : {})
+        });
+      }
+    ],
     [
       'withdrawals',
       'withdrawal queue',

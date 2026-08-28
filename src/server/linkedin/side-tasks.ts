@@ -1,14 +1,14 @@
 /**
  * LinkedIn background maintenance policy.
  *
- * An idle seat must not generate LinkedIn traffic. Inbox sync, pending-invite
- * reconciliation, acceptance detection and lead sourcing are operator-triggered
- * only. The worker may run a withdrawal in the background only after an
- * operator/workflow has already queued that specific withdrawal in Trevra.
+ * The inbox is the one account-state read that must stay autonomous: without
+ * it Trevra cannot learn that a prospect replied, so campaigns and the inbox
+ * both go stale. It is still bounded by the same short work-window visits and
+ * a two-hour cadence floor. Profile-heavy reconciliation (pending invites,
+ * acceptance checks and lead sourcing) remains operator-triggered only.
  *
- * The configured work window and cadence data still bound that queued executor.
- * They do not create browser work by themselves. If there is no eligible queued
- * withdrawal, `runLinkedInSideTasks` returns before opening a browser.
+ * Withdrawals are different again: the worker may drain one in the background
+ * only after an operator/workflow has explicitly queued that withdrawal.
  */
 
 import type { Db } from '../db.js';
@@ -34,11 +34,10 @@ export type SideTaskName =
   'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
 
 /**
- * The unattended scheduler performs no account polling. The only background
- * maintenance category is draining a withdrawal row that an operator/workflow
- * already queued.
+ * Autonomous maintenance only. Explicit queued executors such as withdrawals
+ * are added by the caller after it has proved that queued work exists.
  */
-export const SIDE_TASK_NAMES: readonly SideTaskName[] = ['withdrawals'];
+export const SIDE_TASK_NAMES: readonly SideTaskName[] = ['inbox'];
 
 /* ---------------------------------------------------------------------------
  * Execution-window compatibility
@@ -48,7 +47,7 @@ export const SIDE_TASK_NAMES: readonly SideTaskName[] = ['withdrawals'];
  * window; it is not a generated browsing-presence model.
  * ------------------------------------------------------------------------ */
 
-/** At most one explicitly queued maintenance action is handled per pass. */
+/** At most one maintenance action is handled per pass. */
 export const MAX_TASKS_PER_VISIT = 1;
 export const MAX_CATCHUP_TASKS_PER_VISIT = MAX_TASKS_PER_VISIT;
 export const AVAILABILITY_RETURN_MARKER = 'availability_return';
@@ -57,9 +56,8 @@ export const AVAILABILITY_CATCHUP_MARKER = 'availability_catchup';
 /**
  * Minimum cadence floors in hours.
  *
- * Inbox, pending-invite, acceptance and lead-source values apply only when an
- * explicit operator-triggered caller asks the scheduling helpers about them.
- * The unattended scheduler considers only `withdrawals`.
+ * Inbox is autonomous. The other values remain useful to explicit callers,
+ * while withdrawals are scheduled only after a queued row has been proven.
  */
 export const SIDE_TASK_MIN_HOURS: Record<SideTaskName, number> = {
   inbox: 2,
@@ -398,6 +396,12 @@ export function nextSideTaskOpportunities(
   count = 1,
   options: { dayShape?: DayShapeFn; horizonDays?: number } = {}
 ): SideTaskOpportunity[] {
+  // Only autonomous tasks have an unattended schedule. Withdrawals are the
+  // one exception because callers use this helper after proving a queued row
+  // exists. Pending-invite/profile/lead reads remain operator-triggered.
+  if (!SIDE_TASK_NAMES.includes(task) && task !== 'withdrawals') return [];
+  const scheduledTasks: readonly SideTaskName[] =
+    task === 'withdrawals' ? ['withdrawals'] : SIDE_TASK_NAMES;
   const wanted = Math.max(1, Math.min(50, Math.trunc(count)));
   const horizonDays = Math.max(1, Math.min(31, Math.trunc(options.horizonDays ?? 14)));
   const shapeDay = options.dayShape ?? dayShapeFor;
@@ -419,11 +423,8 @@ export function nextSideTaskOpportunities(
       if (endAt.getTime() <= now.getTime()) continue;
       if (simulated.get(VISIT_MARKER)?.getTime() === startAt.getTime()) continue;
 
-      // If the browser reconnects during a visit, the next worker tick may use
-      // the remainder of that visit. Otherwise the visit's start is the
-      // scheduling instant. Either way, never manufacture a missed tick.
       const decisionAt = new Date(Math.max(now.getTime(), startAt.getTime()));
-      const due = dueSideTasks(seat, simulated, decisionAt);
+      const due = dueSideTasks(seat, simulated, decisionAt, { tasks: scheduledTasks });
       simulated.set(VISIT_MARKER, startAt);
       for (const selected of due) simulated.set(selected, decisionAt);
 

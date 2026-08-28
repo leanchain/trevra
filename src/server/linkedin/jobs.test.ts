@@ -535,14 +535,11 @@ describe('the account a sync is allowed to read', () => {
 /**
  * THE TICK, AND HOW OFTEN IT IS ALLOWED TO GO AND LOOK.
  *
- * `runLinkedInSideTasks` is called once per worker tick -- 60 seconds by
- * default -- and used to run all five of its jobs on every one of them,
- * forever, at every hour of the day. With an empty inbox and an empty queue
- * that was ~8,600 LinkedIn page loads a day for one seat, ~2,900 of them on
- * the connections page. Nothing was sent and the account was restricted for
- * "accessing an unusually large amount of LinkedIn profile data over time".
- *
- * Every test below asserts a refusal to open a browser.
+ * The historical failure was every job on every 60-second worker tick: about
+ * 8,600 LinkedIn page loads a day for one idle seat. Inbox sync stays
+ * autonomous because replies are outcome state, but it may run only in the
+ * sparse visit model and with its own multi-hour floor. Profile-heavy reads
+ * stay out of this loop.
  */
 describe('how often the side-task tick touches LinkedIn', () => {
   const CONNECTED = 'https://www.linkedin.com/in/connected/';
@@ -571,14 +568,23 @@ describe('how often the side-task tick touches LinkedIn', () => {
     };
   }
 
-  /**
-   * When this seat opens LinkedIn on the test's Tuesday, and the first of
-   * those visits.
-   *
-   * Derived from the same function the tick uses rather than hardcoded: the
-   * SCHEDULE is asserted in `side-tasks.test.ts`, and what is under test here
-   * is what the tick does with it.
-   */
+  const inboxCalls: Array<{ maxThreads?: number; sinceDays?: number }> = [];
+  const inboxDriver = {
+    listConversations: async (
+      _page: LinkedInPage,
+      options: { maxThreads?: number; sinceDays?: number }
+    ) => {
+      inboxCalls.push({ maxThreads: options.maxThreads, sinceDays: options.sinceDays });
+      return { ok: true as const, threads: [], degraded: [] };
+    },
+    readThread: async () => {
+      throw new Error('an empty rail has no thread to read');
+    },
+    sendReply: async () => {
+      throw new Error('background inbox sync never sends');
+    }
+  } as unknown as LinkedInInboxDriver;
+
   const VISIT_STARTS = visitsForDay(
     `${WORKSPACE_ID}:owner`,
     { year: 2026, month: 8, day: 4 },
@@ -589,21 +595,21 @@ describe('how often the side-task tick touches LinkedIn', () => {
   );
   const VISIT_AT = VISIT_STARTS[0] as Date;
 
-  /** Every real driver starts with a navigation, so this fails all five of them fast. */
   const page = {
     goto: async () => {
-      throw new Error('this test does not navigate');
+      throw new Error('this test does not navigate after the fake inbox read');
     },
     url: () => 'https://www.linkedin.com/feed/',
     locator: () => {
-      throw new Error('this test does not read the page');
+      throw new Error('the fake inbox driver owns page reads');
     },
     waitForTimeout: async () => {}
   } as unknown as LinkedInPage;
 
-  // The in-process cadence floor outlives one test's database, exactly as it
-  // outlives one deploy's missing table. Cleared so each test starts cold.
-  beforeEach(() => resetSideTaskRuns());
+  beforeEach(() => {
+    resetSideTaskRuns();
+    inboxCalls.length = 0;
+  });
 
   async function connectedSeat(): Promise<void> {
     await upsertSeat(
@@ -624,17 +630,15 @@ describe('how often the side-task tick touches LinkedIn', () => {
         now,
         page,
         driver,
+        inboxDriver,
         dayShape: FLAT_DAY_SHAPE,
         log: () => {}
       }
     );
   }
 
-  it('opens no browser for an idle seat even when the cadence table is unavailable', async () => {
+  it('runs one inbox pass, not a minute loop, when the cadence table is unavailable', async () => {
     await connectedSeat();
-    // Simulate the exact mid-deploy failure without dropping a table shared by
-    // other Vitest files. An unavailable cadence table must not turn an idle
-    // account into a browser visit.
     const realPrepare = db.prepare.bind(db);
     const unavailable = new Proxy(db, {
       get(target, property, receiver) {
@@ -656,9 +660,9 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
     const firstDriver = tickDriver();
     const first = await tick(VISIT_AT, firstDriver.driver, false, unavailable);
-    expect(first.ran).toEqual([]);
-    expect(first.skipped).toContain('nothing has gone stale');
-    expect(firstDriver.calls).toEqual([]);
+    expect(first.ran).toEqual(['inbox']);
+    expect(firstDriver.calls).toEqual(['readSeat']);
+    expect(inboxCalls).toHaveLength(1);
 
     const secondDriver = tickDriver();
     const second = await tick(
@@ -668,11 +672,12 @@ describe('how often the side-task tick touches LinkedIn', () => {
       unavailable
     );
     expect(second.ran).toEqual([]);
-    expect(second.skipped).toContain('nothing has gone stale');
+    expect(second.skipped).toContain('already happened');
     expect(secondDriver.calls).toEqual([]);
+    expect(inboxCalls).toHaveLength(1);
   });
 
-  it('does zero background account polling throughout an ordinary work window', async () => {
+  it('does one bounded inbox read during a visit, not polling throughout the window', async () => {
     await connectedSeat();
     const probe = tickDriver();
 
@@ -680,65 +685,68 @@ describe('how often the side-task tick touches LinkedIn', () => {
     const second = await tick(new Date(VISIT_AT.getTime() + 60_000), probe.driver);
     const between = await tick(new Date(VISIT_AT.getTime() + 30 * 60_000), probe.driver);
 
-    // THE ASSERTION THAT MATTERS IS UNCHANGED: no job ran and the driver was
-    // never touched, at any of the three instants.
-    expect(first.ran).toEqual([]);
+    expect(first.ran).toEqual(['inbox']);
     expect(second.ran).toEqual([]);
     expect(between.ran).toEqual([]);
-    expect(probe.calls).toEqual([]);
-    // The REASON differs now that a day is two or three short sittings rather
-    // than one ten-hour window: inside a sitting there is simply nothing due,
-    // and thirty minutes later the seat is not at LinkedIn at all. Both are
-    // "no polling"; asserting the same sentence for both would have hidden
-    // which one was doing the work.
-    expect(first.skipped).toContain('nothing has gone stale');
-    expect(second.skipped).toContain('nothing has gone stale');
+    expect(probe.calls).toEqual(['readSeat']);
+    expect(inboxCalls).toHaveLength(1);
+    expect(second.skipped).toContain('already happened');
     expect(between.skipped ?? '').toMatch(/none of them is now/);
 
     const event = await db
       .prepare(
-        `
-      SELECT detail FROM linkedin_seat_events
-      WHERE workspace_id=? AND seat_key='owner' AND kind='background_run'
-      ORDER BY occurred_at DESC LIMIT 1
-    `
+        `SELECT detail FROM linkedin_seat_events
+         WHERE workspace_id=? AND seat_key='owner' AND kind='background_run'
+         ORDER BY occurred_at DESC LIMIT 1`
       )
       .get<{ detail: string | null }>(WORKSPACE_ID);
-    expect(event).toBeUndefined();
+    expect(parseBackgroundRunDetail(event?.detail ?? null)?.tasks).toEqual(['inbox']);
   });
 
-  it('does not turn a companion return into an account-polling catch-up', async () => {
+  it('widens one bounded inbox pass after a multi-day sync gap', async () => {
+    await connectedSeat();
+    await markSideTaskRun(
+      db,
+      WORKSPACE_ID,
+      'owner',
+      'inbox',
+      new Date(VISIT_AT.getTime() - 5 * 86_400_000)
+    );
+    const probe = tickDriver();
+
+    const result = await tick(VISIT_AT, probe.driver);
+
+    expect(result.ran).toEqual(['inbox']);
+    expect(inboxCalls[0]).toMatchObject({ maxThreads: 10, sinceDays: 6 });
+  });
+
+  it('uses one inbox catch-up when the companion returns, never a burst', async () => {
     await connectedSeat();
     const returnedAt = new Date(VISIT_AT.getTime() + 30 * 60_000);
     await markSideTaskRun(db, WORKSPACE_ID, 'owner', AVAILABILITY_RETURN_MARKER, returnedAt);
     const probe = tickDriver();
 
-    // The availability-return marker makes this tick evaluate a catch-up
-    // regardless of where in the day it lands, and the answer is still nothing:
-    // no job is stale, so a companion coming back does not become a burst.
     const first = await tick(returnedAt, probe.driver, true);
-    expect(first.ran).toEqual([]);
-    expect(first.skipped).toContain('nothing has gone stale');
-    expect(probe.calls).toEqual([]);
+    expect(first.ran).toEqual(['inbox']);
+    expect(probe.calls).toEqual(['readSeat']);
+    expect(inboxCalls).toHaveLength(1);
 
     const runs = await sideTaskRuns(db, WORKSPACE_ID, 'owner');
     expect(runs.get(AVAILABILITY_CATCHUP_MARKER)?.getTime()).toBe(returnedAt.getTime());
 
-    // A minute later the catch-up is already stamped, so the ordinary rule
-    // applies again -- and `returnedAt + 60s` is in the quiet gap between two
-    // sittings, which is what the refusal now says. It used to say "nothing has
-    // gone stale", because a pinned visit model left LinkedIn nominally open
-    // for the whole ten-hour window.
     const second = await tick(new Date(returnedAt.getTime() + 60_000), probe.driver, true);
     expect(second.ran).toEqual([]);
     expect(second.skipped ?? '').toMatch(/none of them is now/);
-    expect(probe.calls).toEqual([]);
+    expect(probe.calls).toEqual(['readSeat']);
+    expect(inboxCalls).toHaveLength(1);
   });
 
-  it('does not start polling on later working days just because time passed', async () => {
+  it('stays bounded across later working days instead of becoming a tick loop', async () => {
     await connectedSeat();
     const probe = tickDriver();
-    const done = new Set<string>();
+    let inboxRuns = 0;
+    let visitsSeen = 0;
+
     for (const day of [4, 5, 6]) {
       const visits = visitsForDay(
         `${WORKSPACE_ID}:owner`,
@@ -746,33 +754,37 @@ describe('how often the side-task tick touches LinkedIn', () => {
         { startMinute: 480, endMinute: 1080 }
       );
       for (const visit of visits) {
+        visitsSeen += 1;
         const at = new Date(
           Date.UTC(2026, 7, day, Math.floor(visit.startMinute / 60), visit.startMinute % 60)
         );
         const result = await tick(at, probe.driver);
-        for (const task of result.ran) done.add(task);
-        expect(result.ran).toEqual([]);
+        expect(result.ran.every((task) => task === 'inbox')).toBe(true);
+        if (result.ran.includes('inbox')) inboxRuns += 1;
       }
     }
 
-    expect([...done]).toEqual([]);
-    expect(probe.calls).toEqual([]);
+    expect(inboxRuns).toBeGreaterThan(0);
+    expect(inboxRuns).toBeLessThanOrEqual(visitsSeen);
+    expect(inboxCalls).toHaveLength(inboxRuns);
+    expect(probe.calls).toHaveLength(inboxRuns);
   });
 
-  it('does not load /in/me/ or request connection counts for idle background work', async () => {
+  it('uses one lightweight identity read and skips connection counts for inbox sync', async () => {
     await connectedSeat();
     const { driver, calls, readOptions } = tickDriver();
 
     const result = await tick(VISIT_AT, driver);
 
-    expect(result.ran).toEqual([]);
-    expect(calls).toEqual([]);
-    expect(calls.filter((call) => call === 'readSeat')).toEqual([]);
-    expect(readOptions).toEqual([]);
+    expect(result.ran).toEqual(['inbox']);
+    expect(calls).toEqual(['readSeat']);
+    expect(readOptions).toEqual([{ skipConnections: true }]);
+    expect(inboxCalls).toHaveLength(1);
   });
 
   it('leaves stale pending-invite reconciliation operator-triggered', async () => {
     await connectedSeat();
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', 'inbox', VISIT_AT);
     await markSideTaskRun(
       db,
       WORKSPACE_ID,
@@ -788,15 +800,17 @@ describe('how often the side-task tick touches LinkedIn', () => {
     expect(result.pendingInvites).toBeNull();
     expect(result.skipped).toContain('nothing has gone stale');
     expect(calls).toEqual([]);
+    expect(inboxCalls).toHaveLength(0);
   });
 
-  it('opens no browser at 03:00 -- nobody reads their LinkedIn inbox at three in the morning', async () => {
+  it('opens no browser at 03:00', async () => {
     await connectedSeat();
     const { driver, calls } = tickDriver();
 
     const result = await tick(new Date('2026-08-04T03:00:00.000Z'), driver);
 
     expect(calls).toEqual([]);
+    expect(inboxCalls).toHaveLength(0);
     expect(result.ran).toEqual([]);
     expect(result.skipped).toContain('03:00');
   });
@@ -814,6 +828,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
     const result = await tick(VISIT_AT, driver);
 
     expect(calls).toEqual([]);
+    expect(inboxCalls).toHaveLength(0);
     expect(result.skipped).toContain('between sittings');
   });
 
@@ -825,6 +840,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
     const result = await tick(NOW, driver);
 
     expect(calls).toEqual([]);
+    expect(inboxCalls).toHaveLength(0);
     expect(result.ran).toEqual([]);
   });
 });

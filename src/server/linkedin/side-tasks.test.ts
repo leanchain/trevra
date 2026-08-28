@@ -173,19 +173,16 @@ describe('dueSideTasks', () => {
     expect(dueSideTasks(SEAT, new Map(), NOW)).toHaveLength(MAX_TASKS_PER_VISIT);
   });
 
-  it('keeps all account polling out; withdrawals are only an explicit queued-work executor', () => {
-    expect(SIDE_TASK_NAMES).toEqual(['withdrawals']);
+  it('keeps only inbox sync autonomous; profile-heavy reads stay operator-triggered', () => {
+    expect(SIDE_TASK_NAMES).toEqual(['inbox']);
     const runs: SideTaskRuns = new Map([
       ['inbox', NOW],
-      ['pending_invites', NOW],
-      ['acceptance', new Date(NOW.getTime() - 30 * 3_600_000)],
+      ['pending_invites', new Date(NOW.getTime() - 40 * 3_600_000)],
+      ['acceptance', new Date(NOW.getTime() - 40 * 3_600_000)],
       ['withdrawals', new Date(NOW.getTime() - 40 * 3_600_000)],
       ['lead_sources', new Date(NOW.getTime() - 40 * 3_600_000)]
     ]);
-    const selected = dueSideTasks(SEAT, runs, NOW);
-    expect(selected).not.toContain('acceptance');
-    expect(selected).toContain('withdrawals');
-    expect(selected).not.toContain('lead_sources');
+    expect(dueSideTasks(SEAT, runs, NOW)).toEqual([]);
   });
 
   it('does nothing when the visit has nothing stale to look at', () => {
@@ -228,13 +225,13 @@ describe('dueSideTasks', () => {
     expect(next?.startAt.getTime()).toBeGreaterThan(firstStart.getTime());
   });
 
-  it('advertises no background schedule for operator-only account polling', () => {
+  it('schedules the next inbox read but no profile-heavy background reads', () => {
     const now = new Date('2026-08-04T19:00:00.000Z');
-    expect(
-      nextSideTaskOpportunities(SEAT, new Map(), 'inbox', now, 1, {
-        dayShape: FLAT_DAY_SHAPE
-      })
-    ).toEqual([]);
+    const [inbox] = nextSideTaskOpportunities(SEAT, new Map(), 'inbox', now, 1, {
+      dayShape: FLAT_DAY_SHAPE
+    });
+    expect(inbox).toBeDefined();
+    expect(inbox!.startAt.getTime()).toBeGreaterThan(now.getTime());
     expect(
       nextSideTaskOpportunities(SEAT, new Map(), 'pending_invites', now, 1, {
         dayShape: FLAT_DAY_SHAPE

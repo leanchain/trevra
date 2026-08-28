@@ -79,7 +79,9 @@ function fail(message: string): never {
 function seatSelector(argv: readonly string[]): string | undefined {
   const flag = argv.find((argument) => argument === '--seat' || argument.startsWith('--seat='));
   if (!flag) return undefined;
-  const value = flag.includes('=') ? flag.slice(flag.indexOf('=') + 1).trim() : (argv[argv.indexOf(flag) + 1] ?? '').trim();
+  const value = flag.includes('=')
+    ? flag.slice(flag.indexOf('=') + 1).trim()
+    : (argv[argv.indexOf(flag) + 1] ?? '').trim();
   if (!value) fail('--seat needs a seat key, e.g. --seat=owner or --seat=sales.');
   // The same alphabet `seats.ts` enforces on a stored key. Rejected here rather
   // than silently matching nothing, because "the worker ran and did nothing"
@@ -98,9 +100,13 @@ try {
   runtime = validateEnvironment();
 } catch (error) {
   if (!process.env.DATABASE_URL?.trim()) {
-    fail('Set DATABASE_URL to the Trevra database (your stack publishes it on localhost:45432 by default), then run this again.');
+    fail(
+      'Set DATABASE_URL to the Trevra database (your stack publishes it on localhost:45432 by default), then run this again.'
+    );
   }
-  fail(`This machine's environment is not valid for Trevra: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
+  fail(
+    `This machine's environment is not valid for Trevra: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`
+  );
 }
 
 const config = runtime.linkedinLocalWorker;
@@ -146,7 +152,9 @@ process.stdout.write(
     ? `Serving seat '${seatKey}' only. Run another process with a different --seat to drive another account.\n`
     : 'Serving every configured seat, one at a time. Pass --seat=<key> to serve just one.\n'
 );
-process.stdout.write(`Checking for work every ${Math.round(runtime.automationIntervalMs / 1000)}s. Ctrl-C to stop.\n`);
+process.stdout.write(
+  `Checking for work every ${Math.round(runtime.automationIntervalMs / 1000)}s. Ctrl-C to stop.\n`
+);
 
 const SIDE_TASK_SEATS_PER_TICK = 50;
 const CAMPAIGN_WORKSPACES_PER_TICK = 50;
@@ -175,38 +183,56 @@ async function cycle(): Promise<void> {
     // real Chrome window on the operator's own desktop, and two of those
     // fighting for the foreground is worse than two batches in a row -- the
     // argument this file has always made, now that it has to be made out loud.
-    await runDueLinkedInActions(db, config, { ...(seatKey ? { seatKey } : {}), shard, workerId, host, concurrency: 1, ...(allowSeat ? { allowSeat } : {}) });
-    // Then the periodic work: read the inbox, reconcile LinkedIn's own
-    // pending-invite list, drain the withdrawal queue, walk a lead source.
-    // AFTER the send queue, always -- that is the only work with a paced slot
-    // attached, and an inbox walk can take minutes.
+    await runDueLinkedInActions(db, config, {
+      ...(seatKey ? { seatKey } : {}),
+      shard,
+      workerId,
+      host,
+      concurrency: 1,
+      ...(allowSeat ? { allowSeat } : {})
+    });
+    // Then periodic state work: a tightly bounded inbox read, plus any
+    // withdrawal an operator/workflow already queued. Pending-invite
+    // reconciliation, acceptance profile checks and lead sourcing stay
+    // operator-triggered. AFTER the send queue, always -- that is the only work
+    // with a paced slot attached, and an inbox walk can take minutes.
     //
-    // This is the process that usually does all of it: on the normal
-    // self-hosted split the API and the container worker have no display, so
-    // they serve only seats that sign themselves in. Same functions, same
-    // gates; only the machine differs.
+    // This is the process that usually does it: on the normal self-hosted split
+    // the API and container worker have no display, so the paired local worker
+    // supplies the signed-in browser. Same functions, same safety gates; only
+    // the machine differs.
     //
-    // ONCE PER SEAT, NOT ONCE PER WORKSPACE. Every one of these reads a
-    // different signed-in session -- the inbox is that account's inbox, the
-    // pending-invite list is that account's list -- so iterating workspaces
-    // would silently serve only whichever seat `runLinkedInSideTasks`
-    // defaulted to and leave every other account's inbox stale.
-    //
+    // ONCE PER SEAT, NOT ONCE PER WORKSPACE. Each account has its own inbox, so
+    // iterating workspaces would silently leave secondary accounts stale.
     // Bounded and rotated for the same reason the container worker's loop is:
     // a page at a time, continuing where the last tick stopped, so a machine
     // driving many seats cannot spend a whole tick on the alphabetical head and
     // never reach the tail.
-    const seats = await seatRefsForShard(db, { shard, limit: SIDE_TASK_SEATS_PER_TICK, after: seatCursor });
-    seatCursor = seats.length < SIDE_TASK_SEATS_PER_TICK ? null : seats[seats.length - 1] ?? null;
+    const seats = await seatRefsForShard(db, {
+      shard,
+      limit: SIDE_TASK_SEATS_PER_TICK,
+      after: seatCursor
+    });
+    seatCursor = seats.length < SIDE_TASK_SEATS_PER_TICK ? null : (seats[seats.length - 1] ?? null);
     for (const seat of seats) {
       if (seatKey && seat.seatKey !== seatKey) continue;
       if (allowSeat && !(await allowSeat(seat))) continue;
-      await runLinkedInSideTasks(db, config, { workspaceId: seat.workspaceId, seatKey: seat.seatKey });
+      await runLinkedInSideTasks(db, config, {
+        workspaceId: seat.workspaceId,
+        seatKey: seat.seatKey
+      });
     }
     // Campaigns advance once per WORKSPACE, after the side tasks have recorded
     // this cycle's outcomes -- see `runLinkedInCampaignTick`.
-    const workspaces = await linkedinWorkspaceIdsForShard(db, { shard, limit: CAMPAIGN_WORKSPACES_PER_TICK, after: workspaceCursor });
-    workspaceCursor = workspaces.length < CAMPAIGN_WORKSPACES_PER_TICK ? null : workspaces[workspaces.length - 1] ?? null;
+    const workspaces = await linkedinWorkspaceIdsForShard(db, {
+      shard,
+      limit: CAMPAIGN_WORKSPACES_PER_TICK,
+      after: workspaceCursor
+    });
+    workspaceCursor =
+      workspaces.length < CAMPAIGN_WORKSPACES_PER_TICK
+        ? null
+        : (workspaces[workspaces.length - 1] ?? null);
     for (const workspaceId of workspaces) {
       await runLinkedInCampaignTick(db, workspaceId);
     }

@@ -1,17 +1,18 @@
 /**
  * Sanity-check the LinkedIn background-maintenance floor.
  *
- * An idle seat must produce zero LinkedIn browser work. The unattended
- * scheduler only considers withdrawals that were already explicitly queued by
- * an operator/workflow; inbox, pending-invite, acceptance and lead-source reads
- * are operator-triggered only.
+ * An idle but connected seat is allowed one thing autonomously: a bounded inbox
+ * read so replies do not disappear from Trevra. This replays a week of 60s
+ * worker ticks through the real visit/cadence functions and proves that the
+ * result is a handful of visits, not the old every-minute polling loop.
  *
  * Run after changing side-task scheduling:
- *
  *   npx tsx scripts/linkedin-side-task-load.ts
  */
 
 import {
+  SIDE_TASK_NAMES,
+  VISIT_MARKER,
   dueSideTasks,
   visitAt,
   type SideTaskRuns,
@@ -29,42 +30,49 @@ const SEAT: SideTaskSeat = {
 
 const TICK_MS = 60_000;
 const DAYS = 7;
-const START = new Date('2026-08-03T00:00:00.000Z'); // Monday
+const START = new Date('2026-08-03T00:00:00.000Z');
 const runs: SideTaskRuns = new Map();
-
-// This script models an IDLE account: there is no explicitly queued withdrawal.
-const queuedWithdrawals = 0;
-let ticksInsideConfiguredWindow = 0;
-let eligibleMaintenancePasses = 0;
+let ticksInVisits = 0;
+let maintenancePasses = 0;
+let inboxRuns = 0;
 let linkedinNavigations = 0;
 
 for (let tick = 0; tick < (DAYS * 24 * 60 * 60_000) / TICK_MS; tick += 1) {
   const now = new Date(START.getTime() + tick * TICK_MS);
-  const { visit } = visitAt(SEAT, now);
-  if (!visit) continue;
-  ticksInsideConfiguredWindow += 1;
+  const { visit, startedAt } = visitAt(SEAT, now);
+  if (!visit || !startedAt) continue;
+  ticksInVisits += 1;
 
-  const due = dueSideTasks(SEAT, runs, now).filter(
-    (task) => task !== 'withdrawals' || queuedWithdrawals > 0
-  );
+  if (runs.get(VISIT_MARKER)?.getTime() === startedAt.getTime()) continue;
+  const due = dueSideTasks(SEAT, runs, now);
+  runs.set(VISIT_MARKER, startedAt);
   if (due.length === 0) continue;
 
-  // `runLinkedInSideTasks` opens a browser only after this same queue check.
-  eligibleMaintenancePasses += 1;
-  linkedinNavigations += 1; // conservative lower bound: the requested LinkedIn surface
-  for (const task of due) runs.set(task, now);
+  maintenancePasses += 1;
+  // Lower bound for an empty inbox: one lightweight identity check and the
+  // messaging rail. Browser arrival/departure are deliberately not counted as
+  // LinkedIn page loads here.
+  linkedinNavigations += 2;
+  for (const task of due) {
+    if (task === 'inbox') inboxRuns += 1;
+    runs.set(task, now);
+  }
 }
 
 const OLD_NAVIGATIONS_PER_TICK = 6;
 const oldWeek = OLD_NAVIGATIONS_PER_TICK * ((DAYS * 24 * 60 * 60_000) / TICK_MS);
+const maxWorkingVisits = 5 * 3;
 
-process.stdout.write(`One idle seat, ${DAYS} days of 60s worker ticks\n\n`);
-process.stdout.write(`  ticks inside configured window : ${ticksInsideConfiguredWindow}\n`);
-process.stdout.write(`  queued withdrawals             : ${queuedWithdrawals}\n`);
-process.stdout.write(`  background browser passes      : ${eligibleMaintenancePasses}\n`);
-process.stdout.write(`  LinkedIn navigations            : ${linkedinNavigations}\n`);
-process.stdout.write(`  historical pre-hardening model  : ${oldWeek} navigations/week\n`);
+process.stdout.write(`One connected idle seat, ${DAYS} days of 60s worker ticks\n\n`);
+process.stdout.write(`  autonomous tasks               : ${SIDE_TASK_NAMES.join(', ')}\n`);
+process.stdout.write(`  ticks inside visit windows     : ${ticksInVisits}\n`);
+process.stdout.write(`  background maintenance passes  : ${maintenancePasses}\n`);
+process.stdout.write(`  inbox syncs                    : ${inboxRuns}\n`);
+process.stdout.write(`  LinkedIn navigation floor      : ${linkedinNavigations}\n`);
+process.stdout.write(`  historical pre-hardening model : ${oldWeek} navigations/week\n`);
 
-if (eligibleMaintenancePasses !== 0 || linkedinNavigations !== 0) {
-  throw new Error('Idle LinkedIn maintenance must produce zero browser work.');
-}
+if (SIDE_TASK_NAMES.join(',') !== 'inbox') throw new Error('Only inbox may poll autonomously.');
+if (inboxRuns < 1 || maintenancePasses > maxWorkingVisits)
+  throw new Error('Inbox maintenance escaped the bounded visit model.');
+if (linkedinNavigations >= oldWeek / 100)
+  throw new Error('Background LinkedIn traffic is still too close to the historical polling loop.');
