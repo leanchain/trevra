@@ -1,27 +1,29 @@
 # Trevra on Oracle Cloud Always Free
 
-Trevra supports the Oracle Always Free compute shapes that are actually available
-in the tenancy home region. The marketing site stays on Cloudflare Pages.
+Trevra production targets the Oracle Always Free resources this tenancy can
+actually allocate in the home region. The marketing site stays on Cloudflare
+Pages.
 
-Production can use either:
+Production now uses:
 
-- **single micro** — one `VM.Standard.E2.1.Micro` runs API, worker and Postgres;
-- **split micro** — two E2 micros, one app and one Postgres;
-- **A1** — one `VM.Standard.A1.Flex` using the current Always Free ceiling of
-  2 OCPUs + 12 GB RAM when host capacity exists.
+- **single E2 micro** — one `VM.Standard.E2.1.Micro` runs API + worker + Postgres;
+- **50 GB durable block volume** — PostgreSQL data and deploy backups live here;
+- **Cloudflare Tunnel** — public ingress remains outbound-only from OCI.
+
+A two-E2 split layout remains supported by Terraform for a future boot-volume
+quota change, but production does not depend on it. The A1 configuration is
+retained only as an optional legacy path; releases do not wait for or target A1
+capacity.
 
 ## Why this shape
 
-As of Oracle's 2026 Free Tier documentation, Always Free includes up to two
-`VM.Standard.E2.1.Micro` VMs and an Ampere A1 allowance of 1,500 OCPU-hours plus
-9,000 GB-hours per month (equivalent to 2 OCPUs + 12 GB for an Always Free
-tenancy), together with 200 GB combined boot/block storage and 10 TB/month
-outbound transfer in the home region.
-
-A1 is the preferred one-box shape when capacity exists. `terraform-micro`
-defaults to the single-E2 layout because it needs only one compute boot slot; set
-`split_db_enabled=true` when Oracle can launch the second E2 micro. Both keep
-real PostgreSQL and avoid a database-dialect rewrite.
+Oracle's 2026 Free Tier documentation still advertises up to two E2 micros and
+an A1 allowance, plus 200 GB combined boot/block storage. In this Zurich tenancy,
+A1 host capacity is unavailable and OCI currently refuses a second E2 launch
+with `bootVolumeQuota` even though the E2 service limit reports one slot free.
+The single-E2 layout is therefore the strongest compute configuration Oracle is
+actually provisioning for this account today. It keeps real PostgreSQL and
+requires no database-dialect rewrite.
 
 Ingress is closed. `cloudflared` dials outbound and Cloudflare routes
 `app.usetrevra.com` to it, so no HTTP port is ever exposed and the security
@@ -29,8 +31,9 @@ list opens only SSH.
 
 ## Known constraints
 
-- **A1 capacity is frequently exhausted.** `Out of host capacity` on apply is
-  normal; bump `availability_domain_index` and retry, or retry later.
+- **Second E2 boot quota is currently unavailable.** `split_db_enabled=true`
+  remains supported, but production stays on the single E2 until OCI accepts a
+  second boot volume. No release or operational workflow waits for this.
 - **Idle reclamation.** Oracle may reclaim Always Free instances averaging
   under 20% CPU, network, _and_ memory across 7 days. The Trevra worker plus
   Postgres normally keeps memory above that, but it is not guaranteed.
