@@ -146,6 +146,27 @@ describe('brand watch service', () => {
     expect(row?.lease_until).toBeNull();
   });
 
+  it('records per-platform warnings when every platform degrades instead of throwing', async () => {
+    const watch = await watchFor('daily');
+    // The realistic failure mode: outreach/scouts/http.ts's getJson degrades
+    // a non-200 to a warning and returns null rather than throwing, so
+    // watchMentions never reaches runBrandWatch's catch -- last_error alone
+    // cannot show this.
+    const rateLimited: FetchLike = async () => new Response('nope', { status: 403 });
+    const result = await runBrandWatch(db, DEMO_WORKSPACE_ID, watch.id, {
+      now: NOW,
+      fetchImpl: rateLimited,
+      credentials: noCredentials
+    });
+    expect(result.warnings.join(' ')).toContain('403');
+
+    const after = await getWatch(db, DEMO_WORKSPACE_ID, watch.id);
+    expect(after?.lastError).toBeNull();
+    expect(after?.lastRunWarnings.length).toBeGreaterThan(0);
+    expect(after?.lastRunWarnings[0]).toMatchObject({ platform: 'hackernews' });
+    expect(after?.lastRunWarnings[0].reason).toContain('403');
+  });
+
   it('runs a not-yet-due watch when forced', async () => {
     const watch = await watchFor('daily');
     await runBrandWatch(db, DEMO_WORKSPACE_ID, watch.id, {

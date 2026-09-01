@@ -2,6 +2,7 @@ import type { Db } from '../db.js';
 import type { CredentialAccessor } from '../research/types.js';
 import type { FetchLike } from '../skills/guard.js';
 import { watchMentions, type WatchPlatformReport } from './skill.js';
+import type { WatchRunWarning } from './store.js';
 
 /**
  * Cadence and leasing for brand watches.
@@ -14,6 +15,25 @@ import { watchMentions, type WatchPlatformReport } from './skill.js';
  */
 
 const LEASE = "INTERVAL '10 minutes'";
+
+/**
+ * Flatten each report's per-platform warnings -- already populated even when
+ * every request degraded rather than threw, see `outreach/scouts/http.ts` --
+ * plus a whole-run failure message, if any, into one persistable list.
+ */
+function collectRunWarnings(
+  reports: readonly WatchPlatformReport[],
+  failure: string | null
+): WatchRunWarning[] {
+  const collected: WatchRunWarning[] = [];
+  for (const report of reports) {
+    for (const message of report.warnings) {
+      collected.push({ platform: report.platform, reason: message });
+    }
+  }
+  if (failure) collected.push({ platform: null, reason: failure });
+  return collected;
+}
 
 export interface BrandWatchRunResult {
   watchId: string;
@@ -88,17 +108,36 @@ export async function runBrandWatch(
     warnings.push(failure);
   }
 
+  // The realistic failure mode never reaches the catch above that sets
+  // `failure`/`last_error`: outreach/scouts/http.ts's `getJson` degrades every
+  // non-200, timeout, transport error and unparseable body to a warning and
+  // returns null, so a run where GitHub 403s, HN times out and Stack Overflow
+  // throttles ends with `failure === null` and every platform still `ready`.
+  // Persisting the per-platform warnings here is what gives the worker's own
+  // cadence sweep -- which runs with no session watching -- something to show
+  // instead of being indistinguishable from a run that found nothing.
+  const runWarnings = collectRunWarnings(reports, failure);
+
   await db
     .prepare(
       `UPDATE brand_watches SET
          lease_until = NULL,
          last_run_at = ?::timestamptz,
          last_error = ?,
+         last_run_warnings = ?::jsonb,
          next_run_at = ?::timestamptz + ${interval},
          updated_at = ?::timestamptz
        WHERE id=? AND workspace_id=?`
     )
-    .run(timestamp, failure, timestamp, timestamp, watchId, workspaceId);
+    .run(
+      timestamp,
+      failure,
+      JSON.stringify(runWarnings),
+      timestamp,
+      timestamp,
+      watchId,
+      workspaceId
+    );
 
   return { watchId, ran: true, inserted, updated, reports, warnings };
 }
