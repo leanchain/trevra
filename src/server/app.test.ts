@@ -1918,6 +1918,75 @@ describe('brand watches', () => {
       .expect(404);
   });
 
+  it('409s a mention that has already been promoted', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    const watchId = created.body.watch.id;
+
+    await db!
+      .prepare(
+        `INSERT INTO brand_watch_mentions (
+             id, workspace_id, watch_id, platform, external_id, url, title, content,
+             sentiment_label, sentiment_score, sentiment_version, content_hash,
+             first_seen_at, last_seen_at
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,now(),now())`
+      )
+      .run(
+        'bwm_double',
+        DEMO_WORKSPACE_ID,
+        watchId,
+        'hackernews',
+        'hn10',
+        'https://news.ycombinator.com/item?id=hn10',
+        'Trevra thread',
+        'Trevra is excellent.',
+        'positive',
+        0.5,
+        1,
+        'hash'
+      );
+
+    const first = await agent
+      .post(`/api/watches/${watchId}/mentions/bwm_double/reply`)
+      .send({ product: OFFER })
+      .expect(201);
+
+    const second = await agent
+      .post(`/api/watches/${watchId}/mentions/bwm_double/reply`)
+      .send({ product: OFFER })
+      .expect(409);
+    expect(second.body.error).toBeTruthy();
+    expect(second.body.runId).toBe(first.body.run.id);
+
+    // The second, rejected attempt must not have overwritten anything.
+    const mentions = await agent.get(`/api/watches/${watchId}/mentions`).expect(200);
+    expect(mentions.body.mentions[0].promotedRunId).toBe(first.body.run.id);
+  });
+
+  it('surfaces the last run’s per-platform warnings through the watch API', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    const watchId = created.body.watch.id;
+
+    // Simulates what `runBrandWatch` persists when every platform degrades to
+    // a warning instead of throwing (outreach/scouts/http.ts's degrade
+    // contract) -- the realistic failure mode `last_error` alone cannot show.
+    await db!
+      .prepare('UPDATE brand_watches SET last_run_warnings = ?::jsonb WHERE id=?')
+      .run(
+        JSON.stringify([{ platform: 'hackernews', reason: 'hn.algolia.com returned HTTP 403.' }]),
+        watchId
+      );
+
+    const listed = await agent.get('/api/watches').expect(200);
+    expect(listed.body.watches[0].lastRunWarnings).toEqual([
+      { platform: 'hackernews', reason: 'hn.algolia.com returned HTTP 403.' }
+    ]);
+
+    const single = await agent.get(`/api/watches/${watchId}/mentions`).expect(200);
+    expect(single.status).toBe(200);
+  });
+
   it("404s a real mention promoted through a different watch's route, and leaves it unstamped", async () => {
     const agent = await agentWithSession();
     const watchA = await agent.post('/api/watches').send(BODY).expect(201);

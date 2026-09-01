@@ -3172,6 +3172,19 @@ export function createApp(db: Db) {
         res.status(404).json({ error: 'Mention not found' });
         return;
       }
+      // Without this, two clicks on the same mention (or a retried request)
+      // each start a `gtm.thread-reply` run and the second overwrites
+      // `promoted_run_id` -- two approval-queue entries for one thread, and
+      // the first run is now orphaned with nothing pointing at it. Checked
+      // before parsing the body so a double-promote 409s even with an invalid
+      // `product`.
+      if (mention.promotedRunId !== null) {
+        res.status(409).json({
+          error: 'This mention was already promoted to a reply run.',
+          runId: mention.promotedRunId
+        });
+        return;
+      }
 
       const input = z
         .object({
@@ -6827,10 +6840,17 @@ const brandWatchBodySchema = z.object({
   keywords: z.array(z.string().min(1).max(120)).min(1).max(20),
   // linkedin is absent on purpose: its scout is permanently disabled by policy,
   // so offering it would only ever produce a report saying so.
+  //
+  // devto is absent for the same class of reason: devtoScout.search has no
+  // keyword search endpoint at all -- it always loops the four hardcoded
+  // DEVTO_TAGS and filters locally, and unlike github/reddit it never reads
+  // ScoutQuery.communities, so the `communities: []` mechanism every other
+  // watch platform uses to go sitewide is a silent no-op for it. A watch for
+  // a brand outside those four tags would report "nobody mentions you" having
+  // only ever looked at ai/llm/programming/productivity. Still registered for
+  // gtm.scout-threads, which never claimed sitewide coverage from it.
   platforms: z
-    .array(
-      z.enum(['hackernews', 'stackoverflow', 'lobsters', 'github', 'reddit', 'mastodon', 'devto'])
-    )
+    .array(z.enum(['hackernews', 'stackoverflow', 'lobsters', 'github', 'reddit', 'mastodon']))
     .min(1),
   cadence: z.enum(['daily', 'weekly']),
   limitPerPlatform: z.number().int().min(1).max(100).optional(),
