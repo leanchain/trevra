@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.js';
 import type { CredentialAccessor } from '../research/types.js';
 import type { FetchLike } from '../skills/guard.js';
 import type { SkillContext } from '../skills/types.js';
+import { runSkill } from '../skills/runner.js';
+import { githubScout } from '../outreach/scouts/github.js';
 import { createWatch, listWatchMentions } from './store.js';
 import { watchMentions, watchMentionsSkill } from './skill.js';
 
@@ -17,6 +19,13 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await db?.close();
+});
+
+// Additive: only the two new tests below (Finding 2's `runSkill` coverage)
+// stub global fetch. Restoring it here keeps that stub from leaking into any
+// other test file sharing this worker.
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 function ctx(): SkillContext {
@@ -152,5 +161,115 @@ describe('gtm.watch-mentions', () => {
     });
     expect(result.watchId).toBeNull();
     expect(result.mentions).toHaveLength(1);
+  });
+
+  // Coverage gaps closed after review (task-5 follow-up): the brief's fixed
+  // test file exercised only the "unknown watch id" error path. The other
+  // three guard clauses in `watchMentions` (skill.ts:108-134) had no test.
+
+  it('rejects a run that resolves to zero keywords', async () => {
+    await expect(watchMentions({ platforms: ['hackernews'] }, ctx())).rejects.toThrow(
+      /at least one keyword/i
+    );
+  });
+
+  it('rejects a run that resolves to zero platforms', async () => {
+    await expect(watchMentions({ keywords: ['trevra'] }, ctx())).rejects.toThrow(
+      /at least one platform/i
+    );
+  });
+
+  it('degrades an unknown platform to a disabled report without stopping a known one', async () => {
+    const { fetchImpl } = jsonFetch({ 'hn.algolia.com': HN_HIT });
+    const result = await watchMentions(
+      { keywords: ['trevra'], platforms: ['not-a-real-platform', 'hackernews'] },
+      ctx(),
+      { credentials: noCredentials, fetchImpl }
+    );
+
+    // Deliberate divergence from `scoutThreads` (outreach/scout.ts:75-79),
+    // which throws immediately on any unknown platform. This skill instead
+    // reports it per-platform and keeps going -- pinned here so a future
+    // "fix" back to throwing fails loudly.
+    expect(result.reports[0]).toMatchObject({
+      platform: 'not-a-real-platform',
+      availability: { mode: 'disabled' }
+    });
+    expect(result.reports[0].warnings.join(' ')).toContain(
+      'Unknown platform: not-a-real-platform.'
+    );
+    expect(result.warnings.join(' ')).toContain('Unknown platform: not-a-real-platform.');
+    expect(result.mentions).toHaveLength(1);
+    expect(result.mentions[0].platform).toBe('hackernews');
+  });
+
+  // The existing "keeps one platform's failure..." test above never actually
+  // rejects from `scout.search()` -- a throwing `fetchImpl` is swallowed
+  // inside `getJson`'s own catch (outreach/scouts/http.ts:44-47) and surfaces
+  // as a `result.warnings` entry, so `scout.search` itself resolves. This
+  // test makes `scout.search` reject directly, exercising the try/catch at
+  // skill.ts:139-146.
+  it('keeps a scout.search() rejection from discarding another platform’s results', async () => {
+    const watch = await createWatch(
+      db,
+      DEMO_WORKSPACE_ID,
+      {
+        name: 'Trevra',
+        keywords: ['trevra'],
+        platforms: ['github', 'hackernews'],
+        cadence: 'daily'
+      },
+      NOW
+    );
+    const { fetchImpl } = jsonFetch({ 'hn.algolia.com': HN_HIT });
+    const spy = vi.spyOn(githubScout, 'search').mockRejectedValue(new Error('boom'));
+    try {
+      const result = await watchMentions({ watchId: watch.id }, ctx(), {
+        credentials: noCredentials,
+        fetchImpl
+      });
+      expect(result.mentions).toHaveLength(1);
+      expect(result.mentions[0].platform).toBe('hackernews');
+      expect(result.warnings.join(' ')).toContain('GitHub');
+      expect(result.warnings.join(' ')).toContain('boom');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // Closes the reviewer's fourth observation: every other test calls
+  // `watchMentions` directly, so `outputSchema.safeParse` in
+  // `skills/runner.ts:88` never sees a real return value. Going through
+  // `runSkill` is what proves the schema actually accepts what the skill
+  // returns. `runSkill` calls `skill.run(input, ctx)` with no options
+  // argument, so there is no `fetchImpl` seam here -- global `fetch` is
+  // stubbed instead (same pattern as `linkedin/driver-inmail.test.ts`), and
+  // the SSRF guard's DNS pre-flight is left to actually resolve
+  // `hn.algolia.com`, a real public host.
+  it('produces an output the schema accepts and records an ok ledger row via runSkill', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('hn.algolia.com')) {
+          return new Response(JSON.stringify(HN_HIT), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        return new Response('not found', { status: 404 });
+      })
+    );
+
+    const run = await runSkill(
+      'gtm.watch-mentions',
+      { keywords: ['trevra'], platforms: ['hackernews'] },
+      ctx()
+    );
+
+    expect(run.status).toBe('ok');
+    expect(run.error).toBeNull();
+    const output = run.output as { watchId: string | null; mentions: unknown[] };
+    expect(output.watchId).toBeNull();
+    expect(output.mentions).toHaveLength(1);
   });
 });
