@@ -2,6 +2,7 @@ import type { LinkedInQueueWaitReason } from './api';
 
 export const MAINTENANCE_TASK_LABELS = {
   inbox: 'Inbox sync',
+  connections: 'Accepted connections',
   pending_invites: 'Pending invites',
   acceptance: 'Acceptance checks',
   withdrawals: 'Withdrawal queue',

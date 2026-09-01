@@ -31,13 +31,27 @@ export { VISITS_PER_DAY, VISIT_MINUTES, visitsForDay, type Visit };
 
 /** All supported maintenance jobs, including operator-triggered reads. */
 export type SideTaskName =
-  'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
+  'inbox' | 'connections' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
 
 /**
  * Autonomous maintenance only. Explicit queued executors such as withdrawals
  * are added by the caller after it has proved that queued work exists.
+ *
+ * WHY `connections` IS AUTONOMOUS WHILE `acceptance` IS NOT, given both answer
+ * the same question. The distinction this list draws has never been "reads" vs
+ * "writes"; it is PROFILE-HEAVY vs not. `acceptance` opens one stranger's
+ * profile per invite, against the seat's daily view ceiling, and it stays
+ * operator-triggered. `connections` loads the member's OWN network page once --
+ * the same page `readSeatFromSession` already loads to count connections -- and
+ * gets every acceptance since the last pass out of it.
+ *
+ * It has to be autonomous, because in practice the operator-triggered path
+ * meant it never ran: this workspace sent 32 invites and reported an acceptance
+ * rate of 0% for nine days, not because nobody accepted but because nothing
+ * ever looked. An acceptance rate is not cosmetic -- `guard.ts` paces on it --
+ * so a number nothing maintains is worse than no number.
  */
-export const SIDE_TASK_NAMES: readonly SideTaskName[] = ['inbox'];
+export const SIDE_TASK_NAMES: readonly SideTaskName[] = ['inbox', 'connections'];
 
 /* ---------------------------------------------------------------------------
  * Execution-window compatibility
@@ -61,6 +75,10 @@ export const AVAILABILITY_CATCHUP_MARKER = 'availability_catchup';
  */
 export const SIDE_TASK_MIN_HOURS: Record<SideTaskName, number> = {
   inbox: 2,
+  // Twice a working day. An acceptance is not urgent -- the next step in a
+  // sequence waits a day anyway -- and one page load per half-day is a rhythm
+  // no reasonable reading of LinkedIn's own use calls automation.
+  connections: 6,
   pending_invites: 12,
   acceptance: 10,
   withdrawals: 20,

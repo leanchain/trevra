@@ -27,7 +27,10 @@ import {
 } from './driver-scrape.js';
 import {
   isPendingInviteList,
+  isRecentConnectionList,
+  playwrightConnectionsDriver,
   playwrightWithdrawDriver,
+  type LinkedInConnectionsDriver,
   type LinkedInListPage,
   type LinkedInWithdrawDriver
 } from './driver-withdraw.js';
@@ -73,8 +76,10 @@ import {
   detectAcceptedInvites,
   runWithdrawalBatch,
   sweepStaleInvites,
+  syncAcceptedConnections,
   syncPendingInvites,
   type AcceptanceDetectionResult,
+  type ConnectionAcceptanceSyncResult,
   type WithdrawalBatchResult,
   type WithdrawalCandidate,
   type WithdrawalCandidateOptions
@@ -501,6 +506,77 @@ export interface AcceptanceDetectionJobResult extends AcceptanceDetectionResult 
   blockedReason: string | null;
 }
 
+export interface ConnectionSyncJobResult extends ConnectionAcceptanceSyncResult {
+  /** Why no browser work happened, or null when it did. */
+  blocked: string | null;
+  /** What the driver could not read. Never a reason to fail the pass. */
+  degraded: string[];
+}
+
+/**
+ * Read this seat's connections list and file the invites it proves were
+ * accepted.
+ *
+ * THE CHEAP HALF OF ACCEPTANCE DETECTION, and the only half that can keep up.
+ * `detectLinkedInAcceptances` spends one profile view per invite against a
+ * daily view ceiling; this spends ONE PAGE LOAD for the whole backlog, because
+ * LinkedIn has already done the aggregation on the member's own network page.
+ * It is the same fact, read from the side that scales.
+ *
+ * THE ACCOUNT CHECK IS NOT OPTIONAL, for exactly the reason it is not optional
+ * there: a connection is a property of the RELATIONSHIP between two members,
+ * and this page lists them for WHOEVER IS SIGNED IN. Reading it out of a
+ * browser logged into a different account than the seat these invites belong to
+ * would file that other person's network as this seat's acceptances.
+ *
+ * NEVER THROWS FOR A LINKEDIN PROBLEM (`jobs.ts` rule 2).
+ */
+export async function syncLinkedInConnections(
+  db: Db,
+  config: LinkedInLocalWorkerConfig,
+  options: LinkedInJobOptions & {
+    maxConnections?: number;
+    connectionsDriver?: LinkedInConnectionsDriver;
+  }
+): Promise<ConnectionSyncJobResult> {
+  const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
+  const seat = seatOf(options.workspaceId, seatKey);
+  const now = options.now ?? new Date();
+  const empty: ConnectionSyncJobResult = {
+    workspaceId: seat.workspaceId,
+    seatKey: seat.seatKey,
+    listed: 0,
+    matched: 0,
+    accepted: 0,
+    unchanged: 0,
+    truncated: false,
+    blocked: null,
+    degraded: []
+  };
+
+  const session = await openLinkedInSession(db, config, options);
+  if (!session.ok) return { ...empty, blocked: session.blocked };
+
+  const wrongAccount = options.accountConfirmed
+    ? null
+    : await confirmSeatAccount(db, session, options.workspaceId, seatKey);
+  if (wrongAccount) return { ...empty, blocked: wrongAccount };
+
+  const driver = options.connectionsDriver ?? playwrightConnectionsDriver;
+  const listed = await driver.listRecentConnections(session.page as unknown as LinkedInListPage, {
+    ...(options.maxConnections === undefined ? {} : { maxConnections: options.maxConnections })
+  });
+  if (!isRecentConnectionList(listed)) {
+    return {
+      ...empty,
+      blocked: `${listed.failureKind ?? 'unknown'}: ${listed.detail ?? 'The connections list could not be read.'}`
+    };
+  }
+
+  const synced = await syncAcceptedConnections(db, seat, listed, now);
+  return { ...synced, blocked: null, degraded: listed.degraded };
+}
+
 /**
  * Find out which of this seat's vanished invites were actually accepted.
 
@@ -890,6 +966,7 @@ export async function runLinkedInLeadSources(
 export interface LinkedInSideTaskResult {
   workspaceId: string;
   inbox: InboxSyncResult | null;
+  connections: ConnectionSyncJobResult | null;
   pendingInvites: PendingSyncJobResult | null;
   acceptance: AcceptanceDetectionJobResult | null;
   withdrawals: WithdrawalJobResult | null;
@@ -947,6 +1024,8 @@ export async function runLinkedInSideTasks(
     maxMessages?: number;
     sinceDays?: number;
     inboxDriver?: LinkedInInboxDriver;
+    maxConnections?: number;
+    connectionsDriver?: LinkedInConnectionsDriver;
     maxPendingInvites?: number;
     maxAcceptanceChecks?: number;
     maxWithdrawals?: number;
@@ -959,6 +1038,7 @@ export async function runLinkedInSideTasks(
   const result: LinkedInSideTaskResult = {
     workspaceId: options.workspaceId,
     inbox: null,
+    connections: null,
     pendingInvites: null,
     acceptance: null,
     withdrawals: null,
@@ -1128,9 +1208,11 @@ export async function runLinkedInSideTasks(
     };
   }
 
-  // Only inbox and an explicitly queued withdrawal can reach this unattended
-  // executor. Pending-invite reconciliation, acceptance checks and lead
-  // sourcing still have no background branch here.
+  // Only the inbox, the connections list and an explicitly queued withdrawal
+  // can reach this unattended executor. Pending-invite reconciliation,
+  // profile-by-profile acceptance checks and lead sourcing still have no
+  // background branch here -- see SIDE_TASK_NAMES for why the connections list
+  // is not in their company.
   const shared: LinkedInJobOptions = {
     ...options,
     seatKey,
@@ -1159,6 +1241,19 @@ export async function runLinkedInSideTasks(
           maxMessages: options.maxMessages ?? (gapDays > 3 ? 20 : 10),
           sinceDays,
           ...(options.inboxDriver ? { inboxDriver: options.inboxDriver } : {})
+        });
+      }
+    ],
+    [
+      'connections',
+      'connections sync',
+      async () => {
+        result.connections = await syncLinkedInConnections(db, config, {
+          ...shared,
+          ...(options.maxConnections === undefined
+            ? {}
+            : { maxConnections: options.maxConnections }),
+          ...(options.connectionsDriver ? { connectionsDriver: options.connectionsDriver } : {})
         });
       }
     ],

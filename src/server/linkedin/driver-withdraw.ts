@@ -1,4 +1,5 @@
 import {
+  CONNECTIONS_URL,
   SELECTORS,
   normalisedProfileUrl,
   profileUrlFor,
@@ -204,7 +205,23 @@ export const WITHDRAW_SELECTORS = {
    * profile links anywhere in it has nothing to withdraw, in any language --
    * whereas profile links WITHOUT cards is genuine drift and still fails.
    */
-  invitationProfileLinkAnywhere: 'main a[href*="/in/"]'
+  invitationProfileLinkAnywhere: 'main a[href*="/in/"]',
+
+  /*
+   * THE CONNECTIONS LIST, and it is a different page with a different job.
+   *
+   * The sent-invitations list answers "who has not replied yet". This one
+   * answers "who said yes", for one page load rather than one profile view per
+   * invite -- which is the entire reason it exists. See `listRecentConnections`.
+   */
+
+  /** One connection. LinkedIn has shipped all of these shapes for this page. */
+  connectionCard:
+    'li.mn-connection-card, div.mn-connection-card, li[componentkey^="ConnectionsList"], li[componentkey*="Connection"]',
+  /** The member's name on a connection card. Informational -- a miss degrades. */
+  connectionName: '.mn-connection-card__name, a[href*="/in/"] span[aria-hidden="true"], strong',
+  /** No connections at all. Rare, real, and not a failure. */
+  connectionsEmptyState: 'text=/No connections|You have no connections|no connections yet/i'
 } as const;
 
 /** The sent-invitations manager. The only URL this file navigates to. */
@@ -335,19 +352,28 @@ async function textOf(scope: LinkedInListLocator, selector: string): Promise<str
   }
 }
 
-/** A card's canonical profile URL, or null when it carries no readable one. */
-async function cardProfileUrl(card: LinkedInListLocator): Promise<string | null> {
+/**
+ * A card's canonical profile URL, or null when it carries no readable one.
+ *
+ * `base` is the page the href was read from, because a relative href means
+ * nothing without one. It defaults to the sent-invitations manager, which is
+ * where this started; the connections list passes its own.
+ */
+async function cardProfileUrl(
+  card: LinkedInListLocator,
+  base: string = SENT_INVITES_URL
+): Promise<string | null> {
   try {
     const link = card.locator(WITHDRAW_SELECTORS.invitationProfileLink);
     if ((await link.count()) === 0) return null;
     const href = await link.first().getAttribute('href', { timeout: CLICK_TIMEOUT_MS });
     if (!href) return null;
-    // Relative hrefs are what LinkedIn actually renders. Resolved against
-    // SENT_INVITES_URL rather than string-patched, so the host check in
+    // Relative hrefs are what LinkedIn actually renders. Resolved against the
+    // page they came from rather than string-patched, so the host check in
     // `normalisedProfileUrl` still sees a real origin and still applies.
     let absolute: string;
     try {
-      absolute = new URL(href, SENT_INVITES_URL).toString();
+      absolute = new URL(href, base).toString();
     } catch {
       return null;
     }
@@ -679,6 +705,219 @@ export async function withdrawInvite(
     );
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * The connections list: acceptance evidence for the price of one page load
+ * ------------------------------------------------------------------------ */
+
+/**
+ * WHY THIS EXISTS ALONGSIDE THE PROFILE-BY-PROFILE DETECTOR.
+ *
+ * `withdraw.ts` section 7 answers "was this invite accepted" by opening the
+ * target's profile and reading the degree badge. That answer is authoritative,
+ * and it costs ONE PROFILE VIEW PER INVITE -- so it runs behind the seat's
+ * daily view ceiling, behind the safety gate, behind a 30-120s gap, ten
+ * profiles at a time. On a seat sending fifteen invites a day the detector can
+ * never catch up with its own backlog, and in practice it never ran at all.
+ *
+ * The connections list is the SAME FACT, ALREADY AGGREGATED BY LINKEDIN. It is
+ * the member's own network page, sorted recently-added first, and every row on
+ * it is LinkedIn stating that this connection exists. Reading it is one
+ * navigation to a page the operator's own account owns -- the same page
+ * `readSeatFromSession` already loads to count connections -- so it charges
+ * nobody's profile-view budget and needs no per-target gate, because it makes
+ * no per-target request.
+ *
+ * IT IS STILL ONLY EVIDENCE OF PRESENCE, NEVER OF ABSENCE. A name that is here
+ * is connected. A name that is NOT here means nothing at all: this list is
+ * bounded, recently-added-first, and truncated on purpose. Nothing downstream
+ * may read a miss as a decline -- exactly the rule `syncPendingInvites` states
+ * about its own `disappeared` count.
+ *
+ * CARDS OR NOTHING. There is no loose `main a[href*="/in/"]` fallback here,
+ * and that omission is the safety property: LinkedIn renders "People you may
+ * know" on this very page, those people are by definition NOT connections, and
+ * several of them are people this seat has just invited. Matching a suggestion
+ * card would file an unanswered invite as accepted -- a wrong number in the one
+ * place a wrong number changes what the pacing engine does next. A page whose
+ * cards this driver cannot read is `selector_drift`: it detects nothing, which
+ * is the only acceptable way for a detector to be incomplete.
+ */
+
+/** One member LinkedIn lists as a connection of the signed-in account. */
+export interface RecentConnection {
+  /** Canonical, exactly as `profileUrlFor` produces it, for comparison against `target_ref`. */
+  profileUrl: string;
+  name: string | null;
+}
+
+/** A successful read of the connections list. Same `degraded` contract as the invite list. */
+export interface RecentConnectionList {
+  ok: true;
+  connections: RecentConnection[];
+  /** True when LinkedIn still had more to show. A prefix is the normal case here. */
+  truncated: boolean;
+  degraded: string[];
+}
+
+export interface ListRecentConnectionsOptions {
+  /** How many "show more" expansions to perform. Default {@link MAX_CONNECTION_PAGES}. */
+  maxPages?: number;
+  /** How many cards to read at most. Default {@link MAX_RECENT_CONNECTIONS}. */
+  maxConnections?: number;
+  /** Seed for the between-page pauses. Same seed, same pauses, any machine. */
+  seed?: string;
+}
+
+/**
+ * Its own interface, not a third method on `LinkedInWithdrawDriver`, for the
+ * reason that interface's own docs give: every fake in every test that drives
+ * withdrawals would otherwise grow a method none of them calls.
+ */
+export interface LinkedInConnectionsDriver {
+  listRecentConnections(
+    page: LinkedInListPage,
+    options?: ListRecentConnectionsOptions
+  ): Promise<RecentConnectionList | LinkedInDriverResult>;
+}
+
+/** Narrow a connections read. A read carries no `failureKind`; a failure always does. */
+export function isRecentConnectionList(
+  value: RecentConnectionList | LinkedInDriverResult
+): value is RecentConnectionList {
+  return !('failureKind' in value);
+}
+
+/**
+ * The bounds, and they are much tighter than the invite list's on purpose.
+ *
+ * This runs every few hours against an account that may have thousands of
+ * connections, and it only ever needs the ones added since the last pass. A
+ * seat sending twenty invites a day would have to be ignored for five days
+ * before a hundred recently-added rows stopped covering it, and the pass
+ * reports `truncated` when they do.
+ */
+export const MAX_RECENT_CONNECTIONS = 100;
+export const MAX_CONNECTION_PAGES = 3;
+
+/** Is this an empty connections list, rather than one this driver failed to read? */
+async function emptyConnectionList(page: LinkedInListPage): Promise<boolean> {
+  if (await present(page, WITHDRAW_SELECTORS.connectionsEmptyState)) return true;
+  return !(await present(page, WITHDRAW_SELECTORS.invitationProfileLinkAnywhere));
+}
+
+/** Open the connections list and read the walls. Null means it is safe to read. */
+async function openConnections(page: LinkedInListPage): Promise<LinkedInDriverResult | null> {
+  try {
+    await page.goto(CONNECTIONS_URL, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT_MS });
+    await settle(page, `${CONNECTIONS_URL}#open`);
+  } catch (cause) {
+    return fail(
+      'selector_drift',
+      `Could not open ${CONNECTIONS_URL}: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+  }
+  const wall = await detectWall(page);
+  if (!wall) return null;
+  return fail(
+    wall,
+    wall === 'challenge'
+      ? `LinkedIn is showing a challenge at ${page.url()}. A human has to clear it in the profile window; nothing else will.`
+      : `LinkedIn refused ${CONNECTIONS_URL}: a limit or restriction notice is on screen. This is LinkedIn asking us to stop.`
+  );
+}
+
+/**
+ * Walk the connections list, most recently added first, and report who is on
+ * it.
+ *
+ * A PURE READ, like `listPendingInvites`: it clicks "show more" and nothing
+ * else, so re-running it changes nothing in anybody's account. It is not paced
+ * against any ceiling because it makes no request about another member.
+ */
+export async function listRecentConnections(
+  page: LinkedInListPage,
+  options: ListRecentConnectionsOptions = {}
+): Promise<RecentConnectionList | LinkedInDriverResult> {
+  const opened = await openConnections(page);
+  if (opened) return opened;
+
+  const maxPages = Math.max(0, Math.trunc(options.maxPages ?? MAX_CONNECTION_PAGES));
+  const maxConnections = Math.max(1, Math.trunc(options.maxConnections ?? MAX_RECENT_CONNECTIONS));
+  const seed = options.seed ?? CONNECTIONS_URL;
+
+  const connections: RecentConnection[] = [];
+  const degraded: string[] = [];
+  const seen = new Set<string>();
+  let unreadable = 0;
+  let truncated = false;
+  let cursor = 0;
+  let expansions = 0;
+
+  // Read, then expand -- the same order and the same reason as the invite walk:
+  // bounding the EXPANSIONS rather than the turns means the last page LinkedIn
+  // handed over is still read.
+  for (;;) {
+    let count: number;
+    try {
+      count = await page.locator(WITHDRAW_SELECTORS.connectionCard).count();
+    } catch (cause) {
+      return fail(
+        'selector_drift',
+        `Could not count ${WITHDRAW_SELECTORS.connectionCard} on ${CONNECTIONS_URL}: ${cause instanceof Error ? cause.message : String(cause)}`
+      );
+    }
+
+    if (count === 0 && cursor === 0) {
+      if (await emptyConnectionList(page)) {
+        return { ok: true, connections: [], truncated: false, degraded: [] };
+      }
+      return fail(
+        'selector_drift',
+        `Neither ${WITHDRAW_SELECTORS.connectionCard} nor an empty list matched on ${CONNECTIONS_URL} -- the page holds profile links but no cards this driver can read, so who this account is connected to is unknown. No link was matched loosely, because the suggestions on this page are people who are NOT connections. Repair WITHDRAW_SELECTORS.connectionCard in driver-withdraw.ts.`
+      );
+    }
+
+    for (; cursor < count && connections.length < maxConnections; cursor += 1) {
+      const card = page.locator(WITHDRAW_SELECTORS.connectionCard).nth(cursor);
+      const profileUrl = await cardProfileUrl(card, CONNECTIONS_URL);
+      if (!profileUrl) {
+        unreadable += 1;
+        continue;
+      }
+      if (seen.has(profileUrl)) continue;
+      seen.add(profileUrl);
+      connections.push({
+        profileUrl,
+        name: await textOf(card, WITHDRAW_SELECTORS.connectionName)
+      });
+    }
+
+    if (connections.length >= maxConnections) {
+      truncated = cursor < count || (await present(page, WITHDRAW_SELECTORS.showMoreButton));
+      break;
+    }
+    if (expansions >= maxPages || !(await expandList(page, expansions, seed))) {
+      truncated = await present(page, WITHDRAW_SELECTORS.showMoreButton);
+      break;
+    }
+    expansions += 1;
+  }
+
+  if (unreadable > 0) {
+    degraded.push(
+      `${unreadable} connection card(s) carried no readable LinkedIn profile link, so they were left out of this list rather than guessed at.`
+    );
+  }
+  if (truncated) {
+    degraded.push(
+      `LinkedIn still had more connections to show after ${connections.length}. This list is the most recent ones, not the whole network -- an invite missing from it has not been declined, only not seen.`
+    );
+  }
+  return { ok: true, connections, truncated, degraded };
+}
+
+export const playwrightConnectionsDriver: LinkedInConnectionsDriver = { listRecentConnections };
 
 /** The real driver. `withdraw.ts` takes this behind an interface so tests need no browser. */
 export const playwrightWithdrawDriver: LinkedInWithdrawDriver = {

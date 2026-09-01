@@ -2014,7 +2014,7 @@ function onLinkedIn(url: string): boolean {
  * would record 500 for a 4,000-connection account -- a wrong number wearing
  * the shape of a right one.
  */
-const CONNECTIONS_URL = 'https://www.linkedin.com/mynetwork/invite-connect/connections/';
+export const CONNECTIONS_URL = 'https://www.linkedin.com/mynetwork/invite-connect/connections/';
 
 /** Narrow a `readSeat` answer. A read carries no `failureKind`; a failure always does. */
 export function isSeatRead(

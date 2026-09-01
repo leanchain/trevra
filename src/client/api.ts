@@ -1145,7 +1145,7 @@ export interface LinkedInLimitsReport {
 export type LinkedInQueueWaitReason = 'computer' | 'account_paused' | 'account_cooldown' | 'worker';
 
 interface LinkedInMaintenanceTiming {
-  task: 'inbox' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
+  task: 'inbox' | 'connections' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
   nextRunAt: string | null;
   nextRunWindowEndAt: string | null;
   timezone: string;

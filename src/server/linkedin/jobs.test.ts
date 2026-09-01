@@ -9,6 +9,7 @@ import type {
   LinkedInSeatRead
 } from './driver.js';
 import type { LinkedInInboxDriver } from './driver-inbox.js';
+import type { LinkedInConnectionsDriver, RecentConnection } from './driver-withdraw.js';
 import {
   runLinkedInPostTick,
   runLinkedInSideTasks,
@@ -585,6 +586,22 @@ describe('how often the side-task tick touches LinkedIn', () => {
     }
   } as unknown as LinkedInInboxDriver;
 
+  /**
+   * The connections list the fake seat is shown, and what it was asked for.
+   *
+   * Its own driver rather than the page fake, for the same reason the inbox has
+   * one: the page in this suite throws on `locator`, because no test here is
+   * about parsing LinkedIn's markup.
+   */
+  let connectionsList: RecentConnection[] = [];
+  const connectionsCalls: Array<{ maxConnections?: number }> = [];
+  const connectionsDriver: LinkedInConnectionsDriver = {
+    listRecentConnections: async (_page, options) => {
+      connectionsCalls.push({ ...(options ?? {}) });
+      return { ok: true, connections: [...connectionsList], truncated: false, degraded: [] };
+    }
+  };
+
   const VISIT_STARTS = visitsForDay(
     `${WORKSPACE_ID}:owner`,
     { year: 2026, month: 8, day: 4 },
@@ -609,7 +626,20 @@ describe('how often the side-task tick touches LinkedIn', () => {
   beforeEach(() => {
     resetSideTaskRuns();
     inboxCalls.length = 0;
+    connectionsCalls.length = 0;
+    connectionsList = [];
   });
+
+  /**
+   * Stamp the connections read as just done.
+   *
+   * The two autonomous reads take turns, most-overdue first, one per visit, so
+   * a test that is about the INBOX has to say which of the two it means --
+   * otherwise it is really asserting the order of `SIDE_TASK_NAMES`.
+   */
+  function connectionsJustRead(at: Date = VISIT_AT): Promise<void> {
+    return markSideTaskRun(db, WORKSPACE_ID, 'owner', 'connections', at);
+  }
 
   async function connectedSeat(): Promise<void> {
     await upsertSeat(
@@ -631,6 +661,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
         page,
         driver,
         inboxDriver,
+        connectionsDriver,
         dayShape: FLAT_DAY_SHAPE,
         log: () => {}
       }
@@ -705,6 +736,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
   it('widens one bounded inbox pass after a multi-day sync gap', async () => {
     await connectedSeat();
+    await connectionsJustRead();
     await markSideTaskRun(
       db,
       WORKSPACE_ID,
@@ -747,6 +779,8 @@ describe('how often the side-task tick touches LinkedIn', () => {
     let inboxRuns = 0;
     let visitsSeen = 0;
 
+    let connectionRuns = 0;
+
     for (const day of [4, 5, 6]) {
       const visits = visitsForDay(
         `${WORKSPACE_ID}:owner`,
@@ -759,19 +793,61 @@ describe('how often the side-task tick touches LinkedIn', () => {
           Date.UTC(2026, 7, day, Math.floor(visit.startMinute / 60), visit.startMinute % 60)
         );
         const result = await tick(at, probe.driver);
-        expect(result.ran.every((task) => task === 'inbox')).toBe(true);
+        // AT MOST ONE JOB PER VISIT, and only ever the two autonomous ones.
+        expect(result.ran.length).toBeLessThanOrEqual(1);
+        expect(result.ran.every((task) => task === 'inbox' || task === 'connections')).toBe(true);
         if (result.ran.includes('inbox')) inboxRuns += 1;
+        if (result.ran.includes('connections')) connectionRuns += 1;
       }
     }
 
     expect(inboxRuns).toBeGreaterThan(0);
-    expect(inboxRuns).toBeLessThanOrEqual(visitsSeen);
+    expect(connectionRuns).toBeGreaterThan(0);
+    // Three working days of visits still buy one bounded read per visit at most,
+    // shared between the two -- never a read per tick.
+    expect(inboxRuns + connectionRuns).toBeLessThanOrEqual(visitsSeen);
     expect(inboxCalls).toHaveLength(inboxRuns);
-    expect(probe.calls).toHaveLength(inboxRuns);
+    expect(connectionsCalls).toHaveLength(connectionRuns);
+    expect(probe.calls).toHaveLength(inboxRuns + connectionRuns);
+  });
+
+  it('reads the connections list unattended and files the invites it proves accepted', async () => {
+    // THE WHOLE POINT OF MAKING THIS ONE AUTONOMOUS. The profile-by-profile
+    // detector spends a view per invite against a daily ceiling and in practice
+    // never ran; this is one page load of the seat's own network, so the
+    // acceptance rate `guard.ts` paces on is maintained by something.
+    await connectedSeat();
+    const invite = await recordAction(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        targetRef: 'https://www.linkedin.com/in/said-yes/',
+        status: 'sent',
+        source: 'export'
+      },
+      new Date(VISIT_AT.getTime() - 3 * 86_400_000)
+    );
+    connectionsList = [{ profileUrl: 'https://www.linkedin.com/in/said-yes/', name: 'Said Yes' }];
+    // The inbox is fresh, so this visit's one job is the connections read.
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', 'inbox', VISIT_AT);
+    const probe = tickDriver();
+
+    const result = await tick(VISIT_AT, probe.driver);
+
+    expect(result.ran).toEqual(['connections']);
+    expect(result.connections).toMatchObject({ listed: 1, matched: 1, accepted: 1 });
+    expect(connectionsCalls).toHaveLength(1);
+    expect(inboxCalls).toHaveLength(0);
+    const row = await db
+      .prepare('SELECT status, accepted_source FROM linkedin_actions WHERE id=?')
+      .get<{ status: string; accepted_source: string }>(invite.id);
+    expect(row).toMatchObject({ status: 'accepted', accepted_source: 'detected' });
   });
 
   it('uses one lightweight identity read and skips connection counts for inbox sync', async () => {
     await connectedSeat();
+    await connectionsJustRead();
     const { driver, calls, readOptions } = tickDriver();
 
     const result = await tick(VISIT_AT, driver);
@@ -785,6 +861,7 @@ describe('how often the side-task tick touches LinkedIn', () => {
   it('leaves stale pending-invite reconciliation operator-triggered', async () => {
     await connectedSeat();
     await markSideTaskRun(db, WORKSPACE_ID, 'owner', 'inbox', VISIT_AT);
+    await connectionsJustRead();
     await markSideTaskRun(
       db,
       WORKSPACE_ID,

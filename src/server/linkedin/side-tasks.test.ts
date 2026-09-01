@@ -173,16 +173,44 @@ describe('dueSideTasks', () => {
     expect(dueSideTasks(SEAT, new Map(), NOW)).toHaveLength(MAX_TASKS_PER_VISIT);
   });
 
-  it('keeps only inbox sync autonomous; profile-heavy reads stay operator-triggered', () => {
-    expect(SIDE_TASK_NAMES).toEqual(['inbox']);
+  it('keeps profile-heavy reads operator-triggered, whatever else is autonomous', () => {
+    // The two own-account page loads are autonomous; the three that open OTHER
+    // people's profiles are not, however overdue they are.
+    expect([...SIDE_TASK_NAMES]).toEqual(['inbox', 'connections']);
     const runs: SideTaskRuns = new Map([
       ['inbox', NOW],
+      ['connections', NOW],
       ['pending_invites', new Date(NOW.getTime() - 40 * 3_600_000)],
       ['acceptance', new Date(NOW.getTime() - 40 * 3_600_000)],
       ['withdrawals', new Date(NOW.getTime() - 40 * 3_600_000)],
       ['lead_sources', new Date(NOW.getTime() - 40 * 3_600_000)]
     ]);
     expect(dueSideTasks(SEAT, runs, NOW)).toEqual([]);
+  });
+
+  it('reads the connections list twice a working day, and never faster', () => {
+    // The acceptance rate `guard.ts` paces on has to be maintained by something.
+    // One own-network page load per half-day is that something.
+    const runs: SideTaskRuns = new Map([
+      ['inbox', NOW],
+      ['connections', NOW]
+    ]);
+    const floor = SIDE_TASK_MIN_HOURS.connections * 3_600_000;
+    const tasks = ['connections'] as const;
+    expect(dueSideTasks(SEAT, runs, new Date(NOW.getTime() + floor - 1), { tasks })).toEqual([]);
+    expect(dueSideTasks(SEAT, runs, new Date(NOW.getTime() + floor), { tasks })).toEqual([
+      'connections'
+    ]);
+  });
+
+  it('picks the more overdue of the two autonomous reads, one per visit', () => {
+    // MAX_TASKS_PER_VISIT is 1, so adding a second autonomous task must not mean
+    // two page loads in one visit -- it means they take turns, longest wait first.
+    const runs: SideTaskRuns = new Map([
+      ['inbox', new Date(NOW.getTime() - 3 * 3_600_000)],
+      ['connections', new Date(NOW.getTime() - 30 * 3_600_000)]
+    ]);
+    expect(dueSideTasks(SEAT, runs, NOW)).toEqual(['connections']);
   });
 
   it('does nothing when the visit has nothing stale to look at', () => {

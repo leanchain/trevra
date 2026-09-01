@@ -22,6 +22,7 @@ import {
   detectLinkedInAcceptances,
   runLinkedInLeadSources,
   runLinkedInWithdrawals,
+  syncLinkedInConnections,
   syncLinkedInInbox,
   syncLinkedInPendingInvites
 } from '../src/server/linkedin/jobs.js';
@@ -41,6 +42,7 @@ const shared = { workspaceId, seatKey, log };
 const runs: Array<[string, () => Promise<unknown>]> = [
   ['inbox', () => syncLinkedInInbox(db, config, { ...shared, maxThreads: 3 })],
   ['pending invites', () => syncLinkedInPendingInvites(db, config, shared)],
+  ['connections', () => syncLinkedInConnections(db, config, shared)],
   ['acceptance', () => detectLinkedInAcceptances(db, config, shared)],
   ['withdrawals', () => runLinkedInWithdrawals(db, config, { ...shared, maxActions: 1 })],
   ['lead sources', () => runLinkedInLeadSources(db, config, { ...shared, maxSources: 1 })]

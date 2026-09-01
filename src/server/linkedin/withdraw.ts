@@ -13,7 +13,8 @@ import {
 import type {
   LinkedInListPage,
   LinkedInWithdrawDriver,
-  PendingInviteList
+  PendingInviteList,
+  RecentConnectionList
 } from './driver-withdraw.js';
 import { evaluateLinkedInSafety, type LinkedInSafetyVerdict } from './guard.js';
 import { bandFor } from './limits.js';
@@ -1624,6 +1625,98 @@ async function recordAcceptanceCheckView(
   `
     )
     .run(candidate.campaignMemberId, candidate.workflowStepId, written.id, seat.workspaceId);
+}
+
+/* ---------------------------------------------------------------------------
+ * 7b. Acceptance, read off the connections list
+ * ------------------------------------------------------------------------ */
+
+/** What one connections-list pass concluded. */
+export interface ConnectionAcceptanceSyncResult {
+  workspaceId: string;
+  seatKey: string;
+  /** Connections read off the page. */
+  listed: number;
+  /** Of those, how many named an invite of ours that was still awaiting an answer. */
+  matched: number;
+  /** Ledger rows actually moved to 'accepted'. */
+  accepted: number;
+  /**
+   * Matched, but the ledger declined the write -- a human had already ruled, or
+   * the row moved on between the read and the write. Not an error.
+   */
+  unchanged: number;
+  /** Straight from the driver: was this the recent prefix rather than the whole network? */
+  truncated: boolean;
+}
+
+/**
+ * Reconcile a freshly-read connections list against the ledger.
+ *
+ * TAKES THE LIST, DOES NOT FETCH IT -- the same split as `syncPendingInvites`,
+ * for the same reason: this is pure database work and is tested against real
+ * SQL with no Playwright anywhere near it.
+ *
+ * IT ONLY EVER WRITES PRESENCE. Every row it acts on is LinkedIn saying "you
+ * are connected to this person", and the only invites it may act on are ones
+ * WE sent that are still awaiting an answer -- which is what makes the
+ * connection attributable to the invite rather than to whoever else may have
+ * connected with this seat. A name that is absent from the list means nothing
+ * and nothing is written for it.
+ *
+ * THE WRITE ITSELF IS `recordDetectedAcceptance`, unchanged, so this shares one
+ * guard with the profile-badge detector: 'invite' only, still 'sent'/'exported'
+ * only, and a human's mark outranks it. There is no second way into the
+ * `accepted` status.
+ */
+export async function syncAcceptedConnections(
+  db: Db,
+  seat: SeatRef,
+  list: RecentConnectionList,
+  now: Date
+): Promise<ConnectionAcceptanceSyncResult> {
+  const result: ConnectionAcceptanceSyncResult = {
+    workspaceId: seat.workspaceId,
+    seatKey: seat.seatKey,
+    listed: list.connections.length,
+    matched: 0,
+    accepted: 0,
+    unchanged: 0,
+    truncated: list.truncated
+  };
+
+  // The same closed set of spellings `syncPendingInvites` expands, and the same
+  // reason for expanding it in code rather than normalising `target_ref` in SQL.
+  const keys = [...new Set(list.connections.flatMap((entry) => targetMatchKeys(entry.profileUrl)))];
+  if (keys.length === 0) return result;
+
+  // ONE QUERY FOR THE WHOLE LIST. A hundred connections against a ledger of
+  // thousands is one statement, not a hundred round trips.
+  const rows = await db
+    .prepare(
+      `
+    SELECT DISTINCT a.id
+    FROM unnest(?::text[]) AS listed(key)
+    JOIN linkedin_actions a ON LOWER(a.target_ref) = listed.key
+    WHERE a.workspace_id=? AND a.seat_key=? AND a.kind='invite'
+      AND a.status IN ('sent', 'exported')
+      AND a.accepted_source IS DISTINCT FROM 'human'
+    ORDER BY a.id
+  `
+    )
+    .all<{ id: string }>(keys, seat.workspaceId, seat.seatKey);
+
+  result.matched = rows.length;
+  for (const row of rows) {
+    const written = await recordDetectedAcceptance(
+      db,
+      { workspaceId: seat.workspaceId, actionId: row.id, detectedAt: now.toISOString() },
+      now
+    );
+    if (written.applied) result.accepted += 1;
+    else result.unchanged += 1;
+  }
+  return result;
 }
 
 export interface AcceptanceDetectionDeps {

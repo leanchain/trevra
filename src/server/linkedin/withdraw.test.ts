@@ -22,7 +22,8 @@ import type {
 import type {
   LinkedInListPage,
   LinkedInWithdrawDriver,
-  PendingInviteList
+  PendingInviteList,
+  RecentConnectionList
 } from './driver-withdraw.js';
 import type { LinkedInSafetyVerdict } from './guard.js';
 import { LINKEDIN_LIMITS } from './limits.js';
@@ -33,6 +34,7 @@ import {
   claimNextWithdrawal,
   detectAcceptedInvites,
   selectAcceptanceCandidates,
+  syncAcceptedConnections,
   countPendingInvites,
   enqueueWithdrawals,
   evaluateWithdrawalSafety,
@@ -1339,6 +1341,133 @@ function allowedGate(): LinkedInSafetyVerdict {
 }
 
 const detectorPage = {} as LinkedInPage;
+
+function connectionList(handles: string[], truncated = false): RecentConnectionList {
+  return {
+    ok: true,
+    connections: handles.map((handle) => ({ profileUrl: url(handle), name: handle })),
+    truncated,
+    degraded: []
+  };
+}
+
+describe('acceptance read off the connections list', () => {
+  beforeEach(async () => {
+    await steadySeat();
+  });
+
+  it('accepts the invites the connections list proves, and spends no profile view doing it', async () => {
+    const acceptedId = await pendingInvite('said-yes', 3);
+    const waitingId = await pendingInvite('still-thinking', 3);
+
+    const result = await syncAcceptedConnections(
+      db,
+      SEAT,
+      // A stranger this seat connected with outside Trevra is on the page too,
+      // and must not invent a ledger row.
+      connectionList(['said-yes', 'someone-we-never-invited']),
+      NOW
+    );
+
+    expect(result).toMatchObject({ listed: 2, matched: 1, accepted: 1, unchanged: 0 });
+    expect(await statusOf(acceptedId)).toBe('accepted');
+    // ABSENCE PROVES NOTHING. This list is the recent prefix of a network, so an
+    // invite that is not on it is still awaiting an answer, never declined.
+    expect(await statusOf(waitingId)).toBe('sent');
+
+    const row = await db
+      .prepare(
+        'SELECT accepted_source, recorded_at, acceptance_checked_at FROM linkedin_actions WHERE id=?'
+      )
+      .get<{
+        accepted_source: string;
+        recorded_at: string;
+        acceptance_checked_at: string | null;
+      }>(acceptedId);
+    expect(row?.accepted_source).toBe('detected');
+    // The invite keeps the day it was SENT, so it is not re-charged to today's
+    // rolling budgets -- the same rule `recordDetectedAcceptance` states.
+    expect(new Date(row!.recorded_at).getTime()).toBe(NOW.getTime() - 3 * 86_400_000);
+    // No profile was opened, so no view was spent and none is claimed.
+    expect(row?.acceptance_checked_at).toBeNull();
+  });
+
+  it('matches a ledger target however it was spelled', async () => {
+    const bare = await recordAction(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'invite',
+        // What a CSV or a human actually supplies. Trevra never resolves it.
+        targetRef: 'in/typed-by-hand',
+        status: 'sent',
+        source: 'export'
+      },
+      NOW
+    );
+
+    const result = await syncAcceptedConnections(db, SEAT, connectionList(['typed-by-hand']), NOW);
+
+    expect(result).toMatchObject({ matched: 1, accepted: 1 });
+    expect(await statusOf(bare.id)).toBe('accepted');
+  });
+
+  it('never walks a decided invite backwards and never outranks a human', async () => {
+    const repliedId = await pendingInvite('already-replied', 10);
+    await ingestOutcome(
+      db,
+      { workspaceId: WORKSPACE_ID, actionId: repliedId, outcome: 'replied' },
+      NOW
+    );
+    const humanId = await pendingInvite('human-ruled', 10);
+    await ingestOutcome(
+      db,
+      { workspaceId: WORKSPACE_ID, actionId: humanId, outcome: 'accepted' },
+      NOW
+    );
+
+    const result = await syncAcceptedConnections(
+      db,
+      SEAT,
+      connectionList(['already-replied', 'human-ruled']),
+      new Date(NOW.getTime() + 3_600_000)
+    );
+
+    // Neither row is even a candidate: one has moved on, the other carries a
+    // person's mark. The pass reports two names and no writes.
+    expect(result).toMatchObject({ listed: 2, matched: 0, accepted: 0, unchanged: 0 });
+    expect(await statusOf(repliedId)).toBe('replied');
+    const row = await db
+      .prepare('SELECT accepted_source FROM linkedin_actions WHERE id=?')
+      .get<{ accepted_source: string }>(humanId);
+    expect(row?.accepted_source).toBe('human');
+  });
+
+  it('is bound to one account: another seat’s invite is not this seat’s acceptance', async () => {
+    const otherSeat = await recordAction(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        seatKey: 'second-account',
+        kind: 'invite',
+        targetRef: url('their-invite'),
+        status: 'sent',
+        source: 'export'
+      },
+      NOW
+    );
+
+    const result = await syncAcceptedConnections(db, SEAT, connectionList(['their-invite']), NOW);
+
+    expect(result).toMatchObject({ listed: 1, matched: 0, accepted: 0 });
+    expect(await statusOf(otherSeat.id)).toBe('sent');
+  });
+
+  it('carries the truncation through, because a prefix is not the whole network', async () => {
+    const result = await syncAcceptedConnections(db, SEAT, connectionList(['a-name'], true), NOW);
+    expect(result.truncated).toBe(true);
+  });
+});
 
 describe('acceptance detection', () => {
   beforeEach(async () => {

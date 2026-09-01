@@ -5,14 +5,18 @@ import {
   SENT_INVITES_URL,
   WITHDRAW_SELECTORS,
   isPendingInviteList,
+  isRecentConnectionList,
   listPendingInvites,
+  listRecentConnections,
   pageGapSeconds,
   parsePendingSince,
   withdrawInvite,
   type LinkedInListLocator,
   type LinkedInListPage,
-  type PendingInviteList
+  type PendingInviteList,
+  type RecentConnectionList
 } from './driver-withdraw.js';
+import { CONNECTIONS_URL } from './driver.js';
 
 /**
  * NO BROWSER IS LAUNCHED AND NO LINKEDIN REQUEST IS MADE BY THIS FILE, EVER.
@@ -494,5 +498,147 @@ describe('withdrawInvite', () => {
 
     expect(result.failureKind).toBe('challenge');
     expect(clicks).toEqual([]);
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * The connections list
+ * ------------------------------------------------------------------------ */
+
+interface ConnectionsPageOptions {
+  /** Cards this driver can read. */
+  cards?: Array<{ href: string | null; name: string | null }>;
+  /** Appended, one array per "show more" click. */
+  morePages?: Array<Array<{ href: string | null; name: string | null }>>;
+  /**
+   * People on the page in a shape this driver does NOT recognise as a card --
+   * including the "People you may know" suggestions LinkedIn renders here, who
+   * are by definition not connections.
+   */
+  strayProfileLinks?: boolean;
+  emptyState?: boolean;
+}
+
+function connectionsPage(options: ConnectionsPageOptions = {}): {
+  page: LinkedInListPage;
+  clicks: string[];
+} {
+  const cards = [...(options.cards ?? [])];
+  const morePages = [...(options.morePages ?? [])];
+  const clicks: string[] = [];
+
+  const cardChild = (index: number, selector: string): LinkedInListLocator => {
+    const card = cards[index];
+    if (!card) return emptyLocator();
+    if (selector === WITHDRAW_SELECTORS.invitationProfileLink)
+      return locator({ count: card.href ? 1 : 0, href: () => card.href });
+    if (selector === WITHDRAW_SELECTORS.connectionName)
+      return locator({ count: card.name ? 1 : 0, text: () => card.name });
+    return emptyLocator();
+  };
+
+  const page: LinkedInListPage = {
+    url: () => CONNECTIONS_URL,
+    goto: async () => undefined,
+    waitForTimeout: async () => {},
+    locator: (selector: string) => {
+      if (selector === WITHDRAW_SELECTORS.connectionCard)
+        return locator({ count: cards.length, child: cardChild });
+      if (selector === WITHDRAW_SELECTORS.connectionsEmptyState)
+        return locator({ count: options.emptyState && cards.length === 0 ? 1 : 0 });
+      if (selector === WITHDRAW_SELECTORS.invitationProfileLinkAnywhere)
+        return locator({ count: cards.length > 0 || options.strayProfileLinks ? 1 : 0 });
+      if (selector === WITHDRAW_SELECTORS.showMoreButton) {
+        return locator({
+          count: morePages.length > 0 ? 1 : 0,
+          onClick: () => {
+            clicks.push('show-more');
+            cards.push(...(morePages.shift() ?? []));
+          }
+        });
+      }
+      return emptyLocator();
+    }
+  };
+  return { page, clicks };
+}
+
+function connection(handle: string) {
+  return { href: `/in/${handle}/`, name: handle };
+}
+
+function expectConnections(
+  value: RecentConnectionList | LinkedInDriverResult
+): RecentConnectionList {
+  if (!isRecentConnectionList(value))
+    throw new Error(`expected a list, got ${value.failureKind}: ${value.detail}`);
+  return value;
+}
+
+describe('listRecentConnections', () => {
+  it('reads the recently-added connections and canonicalises every link', async () => {
+    const { page } = connectionsPage({ cards: [connection('maya'), connection('sam')] });
+
+    const result = expectConnections(await listRecentConnections(page));
+
+    expect(result.connections.map((entry) => entry.profileUrl)).toEqual([
+      'https://www.linkedin.com/in/maya/',
+      'https://www.linkedin.com/in/sam/'
+    ]);
+    expect(result.connections[0]?.name).toBe('maya');
+    expect(result.truncated).toBe(false);
+  });
+
+  it('refuses a page whose cards it cannot read rather than matching loose links', async () => {
+    // THE SAFETY PROPERTY OF THIS WHOLE ROUTINE. `main` on this page also holds
+    // "People you may know" -- people who are NOT connections, several of whom
+    // this seat has just invited. Matching them would file an unanswered invite
+    // as accepted, so a page without readable cards detects nothing.
+    const { page } = connectionsPage({ strayProfileLinks: true });
+
+    const result = await listRecentConnections(page);
+
+    expect(isRecentConnectionList(result)).toBe(false);
+    expect((result as LinkedInDriverResult).failureKind).toBe('selector_drift');
+    expect((result as LinkedInDriverResult).detail).toContain('NOT connections');
+  });
+
+  it('reads an empty network as an empty list, not as a failure', async () => {
+    const { page } = connectionsPage({ emptyState: true });
+
+    const result = expectConnections(await listRecentConnections(page));
+
+    expect(result.connections).toEqual([]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('stops at the bound and says the list is a prefix', async () => {
+    const { page, clicks } = connectionsPage({
+      cards: [connection('one'), connection('two'), connection('three')],
+      morePages: [[connection('four')]]
+    });
+
+    const result = expectConnections(await listRecentConnections(page, { maxConnections: 2 }));
+
+    expect(result.connections).toHaveLength(2);
+    expect(result.truncated).toBe(true);
+    // Bounded means bounded: it did not keep expanding to fill a page it had
+    // already stopped reading.
+    expect(clicks).toEqual([]);
+    expect(result.degraded.join(' ')).toContain('has not been declined');
+  });
+
+  it('counts one person once however many times LinkedIn renders them', async () => {
+    const { page } = connectionsPage({
+      cards: [connection('maya')],
+      morePages: [[connection('maya'), connection('sam')]]
+    });
+
+    const result = expectConnections(await listRecentConnections(page));
+
+    expect(result.connections.map((entry) => entry.profileUrl)).toEqual([
+      'https://www.linkedin.com/in/maya/',
+      'https://www.linkedin.com/in/sam/'
+    ]);
   });
 });
