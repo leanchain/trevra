@@ -58,6 +58,18 @@ import {
   SkillApiError
 } from './skill-api.js';
 import { loadThreadFeed } from './outreach/feed.js';
+import {
+  createWatch,
+  deleteWatch,
+  getWatch,
+  getWatchMention,
+  listWatchMentions,
+  listWatches,
+  markMentionPromoted,
+  sentimentTrend,
+  updateWatch
+} from './watch/store.js';
+import { runBrandWatch } from './watch/service.js';
 import { handleMcpHttpRequest, rejectMcpNonPost } from './mcp-http.js';
 import {
   decidePlaybookApproval,
@@ -2974,6 +2986,127 @@ export function createApp(db: Db) {
       })
       .parse(req.body ?? {});
     res.json({ results: await searchResearchCorpus(db, req.auth!.workspaceId, input) });
+  });
+
+  /**
+   * Brand and keyword watches.
+   *
+   * Every :id route resolves the watch through getWatch FIRST, so another
+   * workspace's id 404s instead of reaching a query that would have been
+   * scoped anyway -- one refusal shape, and no route where a missing scope
+   * would be a cross-tenant read.
+   */
+  app.get('/api/watches', async (req: AuthedRequest, res, next) => {
+    try {
+      res.json({ watches: await listWatches(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/watches', async (req: AuthedRequest, res) => {
+    try {
+      const input = brandWatchBodySchema.parse(req.body ?? {});
+      res
+        .status(201)
+        .json({ watch: await createWatch(db, req.auth!.workspaceId, input, new Date()) });
+    } catch (error) {
+      res
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : 'Could not create the watch' });
+    }
+  });
+
+  app.patch('/api/watches/:id', async (req: AuthedRequest, res) => {
+    try {
+      const patch = brandWatchPatchSchema.parse(req.body ?? {});
+      const watch = await updateWatch(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        patch,
+        new Date()
+      );
+      if (!watch) {
+        res.status(404).json({ error: 'Watch not found' });
+        return;
+      }
+      res.json({ watch });
+    } catch (error) {
+      res
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : 'Could not update the watch' });
+    }
+  });
+
+  app.delete('/api/watches/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      const removed = await deleteWatch(db, req.auth!.workspaceId, String(req.params.id));
+      if (!removed) {
+        res.status(404).json({ error: 'Watch not found' });
+        return;
+      }
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/watches/:id/run', async (req: AuthedRequest, res) => {
+    try {
+      const watch = await getWatch(db, req.auth!.workspaceId, String(req.params.id));
+      if (!watch) {
+        res.status(404).json({ error: 'Watch not found' });
+        return;
+      }
+      const result = await runBrandWatch(db, req.auth!.workspaceId, watch.id, { force: true });
+      res.json({
+        inserted: result.inserted,
+        updated: result.updated,
+        reports: result.reports,
+        warnings: result.warnings
+      });
+    } catch (error) {
+      res
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : 'The watch run failed' });
+    }
+  });
+
+  app.get('/api/watches/:id/mentions', async (req: AuthedRequest, res) => {
+    try {
+      const watch = await getWatch(db, req.auth!.workspaceId, String(req.params.id));
+      if (!watch) {
+        res.status(404).json({ error: 'Watch not found' });
+        return;
+      }
+      const filters = brandWatchMentionFiltersSchema.parse(req.query);
+      res.json({
+        mentions: await listWatchMentions(db, req.auth!.workspaceId, watch.id, filters)
+      });
+    } catch (error) {
+      res
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : 'Could not read mentions' });
+    }
+  });
+
+  app.get('/api/watches/:id/trend', async (req: AuthedRequest, res) => {
+    try {
+      const watch = await getWatch(db, req.auth!.workspaceId, String(req.params.id));
+      if (!watch) {
+        res.status(404).json({ error: 'Watch not found' });
+        return;
+      }
+      const { days } = brandWatchTrendSchema.parse(req.query);
+      res.json({
+        points: await sentimentTrend(db, req.auth!.workspaceId, watch.id, days ?? 30, new Date())
+      });
+    } catch (error) {
+      res
+        .status(400)
+        .json({ error: error instanceof Error ? error.message : 'Could not read the trend' });
+    }
   });
 
   /**
@@ -6581,6 +6714,33 @@ const skillRunFiltersSchema = z.object({
 const outreachThreadFiltersSchema = z.object({
   platform: z.string().min(1).max(50).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50)
+});
+
+const brandWatchBodySchema = z.object({
+  name: z.string().min(1).max(120),
+  keywords: z.array(z.string().min(1).max(120)).min(1).max(20),
+  // linkedin is absent on purpose: its scout is permanently disabled by policy,
+  // so offering it would only ever produce a report saying so.
+  platforms: z
+    .array(
+      z.enum(['hackernews', 'stackoverflow', 'lobsters', 'github', 'reddit', 'mastodon', 'devto'])
+    )
+    .min(1),
+  cadence: z.enum(['daily', 'weekly']),
+  limitPerPlatform: z.number().int().min(1).max(100).optional(),
+  enabled: z.boolean().optional()
+});
+
+const brandWatchPatchSchema = brandWatchBodySchema.partial();
+
+const brandWatchMentionFiltersSchema = z.object({
+  sentiment: z.enum(['positive', 'neutral', 'negative']).optional(),
+  platform: z.string().min(1).max(40).optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional()
+});
+
+const brandWatchTrendSchema = z.object({
+  days: z.coerce.number().int().min(1).max(180).optional()
 });
 
 const publisherCreateSchema = z.object({

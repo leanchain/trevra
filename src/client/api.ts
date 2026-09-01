@@ -485,6 +485,113 @@ export async function getOutreachOfferDefaults(): Promise<OutreachOffer> {
   return result.offer;
 }
 
+export interface BrandWatch {
+  id: string;
+  name: string;
+  keywords: string[];
+  platforms: string[];
+  cadence: 'daily' | 'weekly';
+  enabled: boolean;
+  limitPerPlatform: number;
+  nextRunAt: string;
+  lastRunAt: string | null;
+  lastError: string | null;
+}
+
+export interface BrandWatchMention {
+  id: string;
+  watchId: string;
+  platform: string;
+  externalId: string;
+  url: string;
+  title: string;
+  content: string;
+  author: string | null;
+  community: string | null;
+  score: number;
+  numComments: number;
+  matchedKeywords: string[];
+  sentimentLabel: 'positive' | 'neutral' | 'negative';
+  sentimentScore: number;
+  sentimentSpan: string;
+  metadata: Record<string, unknown>;
+  mentionCreatedAt: string | null;
+  firstSeenAt: string;
+  promotedRunId: string | null;
+}
+
+export interface WatchTrendPoint {
+  day: string;
+  positive: number;
+  neutral: number;
+  negative: number;
+  average: number;
+}
+
+export async function getWatches(): Promise<BrandWatch[]> {
+  const result = await request<{ watches?: BrandWatch[] }>('/api/watches');
+  return result.watches ?? [];
+}
+
+export async function createWatch(input: {
+  name: string;
+  keywords: string[];
+  platforms: string[];
+  cadence: 'daily' | 'weekly';
+}): Promise<BrandWatch> {
+  const result = await request<{ watch: BrandWatch }>('/api/watches', {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+  return result.watch;
+}
+
+export async function updateWatch(
+  id: string,
+  patch: Partial<{
+    name: string;
+    keywords: string[];
+    platforms: string[];
+    cadence: 'daily' | 'weekly';
+    enabled: boolean;
+  }>
+): Promise<BrandWatch> {
+  const result = await request<{ watch: BrandWatch }>(`/api/watches/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch)
+  });
+  return result.watch;
+}
+
+export async function deleteWatch(id: string): Promise<void> {
+  await fetch(`/api/watches/${id}`, { method: 'DELETE', credentials: 'include' });
+}
+
+export async function runWatch(id: string): Promise<{ inserted: number; warnings: string[] }> {
+  return request(`/api/watches/${id}/run`, { method: 'POST', body: '{}' });
+}
+
+export async function getWatchMentions(
+  id: string,
+  filters: { sentiment?: string; platform?: string; limit?: number } = {}
+): Promise<BrandWatchMention[]> {
+  const query = new URLSearchParams();
+  if (filters.sentiment) query.set('sentiment', filters.sentiment);
+  if (filters.platform) query.set('platform', filters.platform);
+  if (filters.limit) query.set('limit', String(filters.limit));
+  const result = await request<{ mentions?: BrandWatchMention[] }>(
+    `/api/watches/${id}/mentions${query.size ? `?${query}` : ''}`
+  );
+  return result.mentions ?? [];
+}
+
+export async function getWatchTrend(id: string, days = 30): Promise<WatchTrendPoint[]> {
+  const result = await request<{ points?: WatchTrendPoint[] }>(
+    `/api/watches/${id}/trend?days=${days}`
+  );
+  return result.points ?? [];
+}
+
 /**
  * What Trevra's own agent did, if this deployment runs one.
  *

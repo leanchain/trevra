@@ -1746,3 +1746,67 @@ describe('GET /api/outreach/offer-defaults', () => {
     expect(secondOffer.body.offer.name).toBe('Workspace B only');
   });
 });
+
+describe('brand watches', () => {
+  const BODY = {
+    name: 'Trevra',
+    keywords: ['trevra'],
+    platforms: ['hackernews'],
+    cadence: 'daily'
+  };
+
+  it('round-trips create, list, patch and delete', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    const watchId = created.body.watch.id;
+    expect(created.body.watch.limitPerPlatform).toBe(25);
+
+    const listed = await agent.get('/api/watches').expect(200);
+    expect(listed.body.watches).toHaveLength(1);
+
+    const patched = await agent
+      .patch(`/api/watches/${watchId}`)
+      .send({ cadence: 'weekly' })
+      .expect(200);
+    expect(patched.body.watch.cadence).toBe('weekly');
+    expect(patched.body.watch.keywords).toEqual(['trevra']);
+
+    await agent.delete(`/api/watches/${watchId}`).expect(204);
+    await agent.get(`/api/watches/${watchId}/mentions`).expect(404);
+  });
+
+  it('rejects an invalid cadence and an oversized keyword list', async () => {
+    const agent = await agentWithSession();
+    await agent
+      .post('/api/watches')
+      .send({ ...BODY, cadence: 'hourly' })
+      .expect(400);
+    await agent
+      .post('/api/watches')
+      .send({ ...BODY, keywords: Array.from({ length: 21 }, (_, i) => `k${i}`) })
+      .expect(400);
+  });
+
+  it('404s an unknown watch id', async () => {
+    const agent = await agentWithSession();
+    await agent.get('/api/watches/bw_missing/mentions').expect(404);
+    await agent.get('/api/watches/bw_missing/trend').expect(404);
+    await agent.patch('/api/watches/bw_missing').send({ cadence: 'weekly' }).expect(404);
+  });
+
+  it('returns a zero-filled 30-day trend', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    const trend = await agent
+      .get(`/api/watches/${created.body.watch.id}/trend?days=30`)
+      .expect(200);
+    expect(trend.body.points).toHaveLength(30);
+    expect(trend.body.points.every((point: { average: number }) => point.average === 0)).toBe(true);
+  });
+
+  it('caps the mention limit rather than trusting the query string', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    await agent.get(`/api/watches/${created.body.watch.id}/mentions?limit=5000`).expect(400);
+  });
+});
