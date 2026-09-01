@@ -1889,4 +1889,46 @@ describe('brand watches', () => {
       .send({ product: OFFER })
       .expect(404);
   });
+
+  it("404s a real mention promoted through a different watch's route, and leaves it unstamped", async () => {
+    const agent = await agentWithSession();
+    const watchA = await agent.post('/api/watches').send(BODY).expect(201);
+    const watchB = await agent
+      .post('/api/watches')
+      .send({ ...BODY, name: 'Trevra Alt' })
+      .expect(201);
+
+    await db!
+      .prepare(
+        `INSERT INTO brand_watch_mentions (
+             id, workspace_id, watch_id, platform, external_id, url, title, content,
+             sentiment_label, sentiment_score, sentiment_version, content_hash,
+             first_seen_at, last_seen_at
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,now(),now())`
+      )
+      .run(
+        'bwm_cross',
+        DEMO_WORKSPACE_ID,
+        watchA.body.watch.id,
+        'hackernews',
+        'hn9',
+        'https://news.ycombinator.com/item?id=hn9',
+        'Trevra thread',
+        'Trevra is excellent.',
+        'positive',
+        0.5,
+        1,
+        'hash'
+      );
+
+    // watchB's id, watchA's mention id: the ownership clause, not the
+    // not-found clause, must be what stops this.
+    await agent
+      .post(`/api/watches/${watchB.body.watch.id}/mentions/bwm_cross/reply`)
+      .send({ product: OFFER })
+      .expect(404);
+
+    const mentions = await agent.get(`/api/watches/${watchA.body.watch.id}/mentions`).expect(200);
+    expect(mentions.body.mentions[0].promotedRunId).toBeNull();
+  });
 });
