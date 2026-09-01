@@ -818,11 +818,18 @@ export function ResearchView({
               <button
                 key={watch.id}
                 type="button"
-                className={`li-range ${selectedWatch === watch.id ? 'is-active' : ''}`}
+                className={[
+                  'li-range',
+                  selectedWatch === watch.id ? 'is-active' : '',
+                  watch.enabled ? '' : 'is-disabled'
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
                 aria-pressed={selectedWatch === watch.id}
                 onClick={() => setSelectedWatch(watch.id)}
               >
                 {watch.name}
+                {!watch.enabled && ' (disabled)'}
               </button>
             ))}
             <button type="button" className="li-range" onClick={() => setWatchDialogOpen(true)}>
@@ -835,9 +842,24 @@ export function ResearchView({
               {selectedWatchRow.lastRunAt
                 ? `Last run ${new Date(selectedWatchRow.lastRunAt).toLocaleString()}.`
                 : 'Not run yet.'}{' '}
-              <button type="button" onClick={() => void runSelectedWatch()} disabled={runningWatch}>
-                {runningWatch ? 'Running…' : 'Run now'}
-              </button>
+              {selectedWatchRow.enabled ? (
+                <button
+                  type="button"
+                  onClick={() => void runSelectedWatch()}
+                  disabled={runningWatch}
+                >
+                  {runningWatch ? 'Running…' : 'Run now'}
+                </button>
+              ) : (
+                // No "Run now" for a disabled watch: runBrandWatch's claim
+                // predicate requires `enabled`, so the button would always
+                // resolve to `ran:false, warnings:[]` -- a 200 the founder
+                // would read as "it ran and found nothing" rather than "this
+                // watch cannot run". The reason it was disabled (if any) is
+                // in watchRunWarningsNote, rendered below in the mentions
+                // panel's empty state.
+                <span className="client-status">Disabled</span>
+              )}
             </p>
           )}
           {watches.length === 0 && (

@@ -6195,6 +6195,9 @@ button:disabled {
   border-color: var(--t-green-200);
   color: var(--green);
 }
+.li-range.is-disabled {
+  opacity: 0.55;
+}
 .li-block-label {
   margin-top: 4px;
 }

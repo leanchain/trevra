@@ -363,6 +363,52 @@ describe('migration 114 -- devto removed from stored platform arrays', () => {
     expect(afterDevtoOnly?.platforms).toEqual([]);
     expect(afterDevtoOnly?.enabled).toBe(false);
     expect(afterDevtoOnly?.lastError).toContain('devto');
+    // last_error alone is never rendered client-side (no reference to
+    // lastError anywhere in ResearchView.tsx) -- last_run_warnings is what
+    // the mentions panel's empty state actually reads, via
+    // lastRunWarningsNote, so the explanation has to land there too.
+    expect(afterDevtoOnly?.lastRunWarnings).toEqual([
+      { platform: null, reason: expect.stringContaining('devto') }
+    ]);
+
+    const devtoOnlyRow = await db
+      .prepare('SELECT updated_at FROM brand_watches WHERE id=?')
+      .get<{ updated_at: string }>(devtoOnly.id);
+    expect(new Date(devtoOnlyRow!.updated_at).getTime()).toBeGreaterThan(NOW.getTime());
+  });
+
+  it('preserves a pre-existing last_error but still records last_run_warnings when disabling', async () => {
+    const devtoOnly = await createWatch(
+      db,
+      DEMO_WORKSPACE_ID,
+      {
+        name: 'Devto only, already broken',
+        keywords: ['trevra'],
+        platforms: ['hackernews'],
+        cadence: 'daily'
+      },
+      NOW
+    );
+    await db
+      .prepare('UPDATE brand_watches SET platforms = ?, last_error = ? WHERE id=?')
+      .run(['devto'], 'network down', devtoOnly.id);
+
+    const sql = await readFile(
+      resolve(migrationDirectory(), '114_remove_devto_watch_platform.sql'),
+      'utf8'
+    );
+    await db.exec(sql);
+
+    const after = await getWatch(db, DEMO_WORKSPACE_ID, devtoOnly.id);
+    expect(after?.enabled).toBe(false);
+    // The pre-existing real error is not clobbered by the housekeeping
+    // disablement message...
+    expect(after?.lastError).toBe('network down');
+    // ...but last_run_warnings -- the field the client actually renders --
+    // still gets the explanation, unconditionally.
+    expect(after?.lastRunWarnings).toEqual([
+      { platform: null, reason: expect.stringContaining('devto') }
+    ]);
   });
 
   it('is a no-op for a watch that never had devto', async () => {
