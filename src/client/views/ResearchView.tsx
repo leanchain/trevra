@@ -692,17 +692,37 @@ export function ResearchView({
 
   async function startMentionDraft(mention: BrandWatchMention): Promise<void> {
     if (!selectedWatch) return;
+    const watchId = selectedWatch;
     setStarting(true);
     setDialogError(null);
+    let promoted = false;
     try {
-      const run = await draftMentionReply(selectedWatch, mention.id, offer);
+      const run = await draftMentionReply(watchId, mention.id, offer);
       setDraftingMention(null);
       setOffer(EMPTY_OFFER);
       reportPlaybookOutcome(run);
+      promoted = true;
     } catch (error) {
       setDialogError(error instanceof Error ? error.message : 'Could not start the draft.');
     } finally {
       setStarting(false);
+    }
+    if (!promoted) return;
+    // The mention was just promoted server-side (201) -- refetch so its
+    // card's promotedRunId flips and it stops offering "Draft reply"
+    // (clicking it again would only 409, but it should not be offered at
+    // all). Same staleness guard as runSelectedWatch: the founder can
+    // switch watches while this was in flight, and a stale mention list
+    // must not clobber whatever watch is now selected. A refetch failure
+    // does not undo the promotion, so it is swallowed rather than surfaced
+    // as a draft error -- the button simply stays visible until the next
+    // natural refresh (switching watches, or a manual "Run now").
+    if (selectedWatchRef.current !== watchId) return;
+    try {
+      const freshMentions = await getWatchMentions(watchId);
+      if (selectedWatchRef.current === watchId) setMentions(freshMentions);
+    } catch {
+      /* best-effort refresh only */
     }
   }
 
