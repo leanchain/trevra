@@ -1834,4 +1834,59 @@ describe('brand watches', () => {
     const created = await agent.post('/api/watches').send(BODY).expect(201);
     await agent.get(`/api/watches/${created.body.watch.id}/mentions?limit=5000`).expect(400);
   });
+
+  const OFFER = {
+    name: 'Trevra',
+    url: 'https://trevra.com',
+    summary: 'Runs go-to-market skills and records every attempt.',
+    mechanism: 'Deterministic skills over a workspace ledger.',
+    claims: [{ label: 'Ledger', value: 'Every run recorded' }]
+  };
+
+  it('promotes a mention into a thread-reply run and stamps it', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    const watchId = created.body.watch.id;
+
+    await db!
+      .prepare(
+        `INSERT INTO brand_watch_mentions (
+             id, workspace_id, watch_id, platform, external_id, url, title, content,
+             sentiment_label, sentiment_score, sentiment_version, content_hash,
+             first_seen_at, last_seen_at
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,now(),now())`
+      )
+      .run(
+        'bwm_test',
+        DEMO_WORKSPACE_ID,
+        watchId,
+        'hackernews',
+        'hn9',
+        'https://news.ycombinator.com/item?id=hn9',
+        'Trevra thread',
+        'Trevra is excellent.',
+        'positive',
+        0.5,
+        1,
+        'hash'
+      );
+
+    const promoted = await agent
+      .post(`/api/watches/${watchId}/mentions/bwm_test/reply`)
+      .send({ product: OFFER })
+      .expect(201);
+    expect(promoted.body.run.id).toBeTruthy();
+
+    const mentions = await agent.get(`/api/watches/${watchId}/mentions`).expect(200);
+    expect(mentions.body.mentions[0].promotedRunId).toBe(promoted.body.run.id);
+  });
+
+  it('404s a mention that belongs to another watch', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    await agent
+      .post(`/api/watches/${created.body.watch.id}/mentions/bwm_missing/reply`)
+      .send({ product: OFFER })
+      .expect(404);
+  });
 });

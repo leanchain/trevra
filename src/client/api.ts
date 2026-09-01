@@ -596,6 +596,18 @@ export async function getWatchTrend(id: string, days = 30): Promise<WatchTrendPo
   return result.points ?? [];
 }
 
+export async function draftMentionReply(
+  watchId: string,
+  mentionId: string,
+  product: OutreachOffer
+): Promise<PlaybookRun> {
+  const result = await request<{ run: PlaybookRun }>(
+    `/api/watches/${watchId}/mentions/${mentionId}/reply`,
+    { method: 'POST', body: JSON.stringify({ product }) }
+  );
+  return result.run;
+}
+
 /**
  * What Trevra's own agent did, if this deployment runs one.
  *

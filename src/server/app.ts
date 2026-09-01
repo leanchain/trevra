@@ -3118,6 +3118,72 @@ export function createApp(db: Db) {
   });
 
   /**
+   * Promote a mention into gtm.thread-reply.
+   *
+   * Server-side rather than "client starts the playbook, then PATCHes the
+   * mention": two round trips leave a window where a run exists that no mention
+   * points at, and nothing would ever reconcile it.
+   */
+  app.post('/api/watches/:id/mentions/:mentionId/reply', async (req: AuthedRequest, res, next) => {
+    try {
+      const watch = await getWatch(db, req.auth!.workspaceId, String(req.params.id));
+      if (!watch) {
+        res.status(404).json({ error: 'Watch not found' });
+        return;
+      }
+      const mention = await getWatchMention(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.mentionId)
+      );
+      if (!mention || mention.watchId !== watch.id) {
+        res.status(404).json({ error: 'Mention not found' });
+        return;
+      }
+
+      const input = z
+        .object({
+          product: z.record(z.unknown()),
+          angle: z.string().min(1).max(60).optional()
+        })
+        .parse(req.body ?? {});
+
+      const run = await startPlaybookRun(db, {
+        workspaceId: req.auth!.workspaceId,
+        playbookId: 'gtm.thread-reply',
+        payload: {
+          thread: {
+            platform: mention.platform,
+            externalId: mention.externalId,
+            url: mention.url,
+            title: mention.title,
+            content: mention.content,
+            author: mention.author,
+            community: mention.community,
+            score: mention.score,
+            numComments: mention.numComments,
+            createdAt: mention.mentionCreatedAt,
+            metadata: mention.metadata
+          },
+          // A watch does not score reply-worthiness; the playbook's own guard
+          // and scorer still run. Supplying a fake relevance score here would
+          // be the one number in the chain nobody computed, so it is left unset
+          // (the schema's `relevanceScore` is optional).
+          angle: input.angle ?? 'minimal_mention',
+          product: input.product
+        },
+        actorType: 'user',
+        actorId: req.auth!.userId
+      });
+
+      await markMentionPromoted(db, req.auth!.workspaceId, mention.id, run.id, new Date());
+      res.status(201).json({ run });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
    * Custom record ingestion.
    *
    * WHAT `INGEST_API_KEY` IS, AND WHAT IT IS NOT. It is ONE key for the whole
