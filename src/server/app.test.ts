@@ -1803,6 +1803,29 @@ describe('brand watches', () => {
     expect(listed.body.watches[0].platformAvailability).toEqual(availability);
   });
 
+  it('reports devto as disabled for watches even though it stays registered for scout-threads', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    const watchId = created.body.watch.id;
+
+    // brandWatchBodySchema's enum already rejects 'devto' on POST/PATCH, so
+    // raw SQL is the only way to reproduce a pre-existing row that stores it
+    // -- exactly what migration 114 exists to clean up, and what a stray
+    // route (skill runner, MCP) could still write in the meantime.
+    await db!.prepare('UPDATE brand_watches SET platforms = ? WHERE id=?').run(['devto'], watchId);
+
+    const listed = await agent.get('/api/watches').expect(200);
+    const availability = listed.body.watches[0].platformAvailability as Array<{
+      platform: string;
+      mode: string;
+      reason: string;
+    }>;
+    expect(availability).toHaveLength(1);
+    expect(availability[0].platform).toBe('devto');
+    expect(availability[0].mode).toBe('disabled');
+    expect(availability[0].reason.length).toBeGreaterThan(0);
+  });
+
   it('rejects an invalid cadence and an oversized keyword list', async () => {
     const agent = await agentWithSession();
     await agent

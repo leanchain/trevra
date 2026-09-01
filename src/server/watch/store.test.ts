@@ -1,5 +1,13 @@
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.js';
+import {
+  DEMO_WORKSPACE_ID,
+  migrationDirectory,
+  openDatabase,
+  resetDemoData,
+  type Db
+} from '../db.js';
 import {
   createWatch,
   deleteWatch,
@@ -300,5 +308,73 @@ describe('brand watch mentions', () => {
     const after = await getWatchMention(db, DEMO_WORKSPACE_ID, row.id);
     expect(after).not.toBeNull();
     expect(after?.promotedRunId).toBeNull();
+  });
+});
+
+describe('migration 114 -- devto removed from stored platform arrays', () => {
+  // Migrations apply once ever (tracked in schema_migrations), so by the time
+  // this test's beforeEach runs, migration 114 has already run against
+  // whatever data existed then -- not the rows this test is about to create.
+  // Executing the real file's SQL text directly against manufactured
+  // pre-existing rows is the only way left to exercise it: it proves the
+  // actual bytes the production migration runner applies, not a
+  // reimplementation that could silently drift from them.
+  it('drops devto from a mixed-platform watch, and disables a watch whose only platform was devto', async () => {
+    const mixed = await createWatch(
+      db,
+      DEMO_WORKSPACE_ID,
+      {
+        name: 'Mixed',
+        keywords: ['trevra'],
+        platforms: ['hackernews', 'github'],
+        cadence: 'daily'
+      },
+      NOW
+    );
+    // brandWatchBodySchema's enum already excludes devto from every route
+    // that could create or edit a watch; raw SQL is the only way left to
+    // reproduce the pre-existing row this migration exists to repair.
+    await db
+      .prepare('UPDATE brand_watches SET platforms = ? WHERE id=?')
+      .run(['hackernews', 'devto', 'github'], mixed.id);
+
+    const devtoOnly = await createWatch(
+      db,
+      DEMO_WORKSPACE_ID,
+      { name: 'Devto only', keywords: ['trevra'], platforms: ['hackernews'], cadence: 'daily' },
+      NOW
+    );
+    await db
+      .prepare('UPDATE brand_watches SET platforms = ? WHERE id=?')
+      .run(['devto'], devtoOnly.id);
+
+    const sql = await readFile(
+      resolve(migrationDirectory(), '114_remove_devto_watch_platform.sql'),
+      'utf8'
+    );
+    await db.exec(sql);
+
+    const afterMixed = await getWatch(db, DEMO_WORKSPACE_ID, mixed.id);
+    expect(afterMixed?.platforms).toEqual(['hackernews', 'github']);
+    expect(afterMixed?.enabled).toBe(true);
+    expect(afterMixed?.lastError).toBeNull();
+
+    const afterDevtoOnly = await getWatch(db, DEMO_WORKSPACE_ID, devtoOnly.id);
+    expect(afterDevtoOnly?.platforms).toEqual([]);
+    expect(afterDevtoOnly?.enabled).toBe(false);
+    expect(afterDevtoOnly?.lastError).toContain('devto');
+  });
+
+  it('is a no-op for a watch that never had devto', async () => {
+    const watch = await createWatch(db, DEMO_WORKSPACE_ID, INPUT, NOW);
+    const sql = await readFile(
+      resolve(migrationDirectory(), '114_remove_devto_watch_platform.sql'),
+      'utf8'
+    );
+    await db.exec(sql);
+    const after = await getWatch(db, DEMO_WORKSPACE_ID, watch.id);
+    expect(after?.platforms).toEqual(INPUT.platforms);
+    expect(after?.enabled).toBe(true);
+    expect(after?.lastError).toBeNull();
   });
 });

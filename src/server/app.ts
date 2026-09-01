@@ -71,6 +71,7 @@ import {
   updateWatch
 } from './watch/store.js';
 import { runBrandWatch } from './watch/service.js';
+import { WATCH_UNSUPPORTED_PLATFORMS } from './watch/skill.js';
 import { handleMcpHttpRequest, rejectMcpNonPost } from './mcp-http.js';
 import {
   decidePlaybookApproval,
@@ -3013,6 +3014,15 @@ export function createApp(db: Db) {
     platforms: readonly string[]
   ): Array<{ platform: string; mode: ProviderAvailabilityMode; reason: string }> {
     return platforms.map((platform) => {
+      // A row can carry a platform (devto) that `getScout` still resolves for
+      // gtm.scout-threads but that a watch must never treat as usable -- see
+      // `WATCH_UNSUPPORTED_PLATFORMS`. Checked before `getScout` so this never
+      // reports a scout's own `ready` (devto's is unconditional) for a
+      // platform a watch cannot actually use.
+      const unsupportedReason = WATCH_UNSUPPORTED_PLATFORMS[platform];
+      if (unsupportedReason) {
+        return { platform, mode: 'disabled', reason: unsupportedReason };
+      }
       const scout = getScout(platform);
       if (!scout) {
         return { platform, mode: 'disabled', reason: `Unknown platform: ${platform}.` };

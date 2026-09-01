@@ -4,6 +4,7 @@ import type { CredentialAccessor } from '../research/types.js';
 import type { FetchLike } from '../skills/guard.js';
 import type { SkillContext } from '../skills/types.js';
 import { githubScout } from '../outreach/scouts/github.js';
+import { devtoScout } from '../outreach/scouts/devto.js';
 import { createWatch, listWatchMentions } from './store.js';
 import { watchMentions, watchMentionsSkill, type WatchMentionsResult } from './skill.js';
 
@@ -275,5 +276,31 @@ describe('gtm.watch-mentions', () => {
     expect(result.reports[0].availability.mode).toBe('needs-credential');
     expect(result.mentions).toHaveLength(0);
     expectValidOutput(result);
+  });
+
+  it('reports devto as unusable for watches instead of searching its four hardcoded tags', async () => {
+    // devto stays registered for gtm.scout-threads (`getScout('devto')`
+    // resolves and its `availability()` unconditionally reports `ready` --
+    // see devto.ts), so nothing short of a check ahead of `getScout` stops a
+    // watch from reaching it. Reachable here even though `brandWatchBodySchema`
+    // already excludes devto from the HTTP watch routes' enum, because this
+    // request shape (`platforms: z.array(z.string())`) is unconstrained and
+    // reachable through the skill runner and MCP directly, and a pre-existing
+    // `brand_watches` row can carry it regardless of the enum.
+    const spy = vi.spyOn(devtoScout, 'search');
+    try {
+      const result = await watchMentions({ keywords: ['trevra'], platforms: ['devto'] }, ctx(), {
+        credentials: noCredentials,
+        fetchImpl: async () => new Response('not found', { status: 404 })
+      });
+      expect(spy).not.toHaveBeenCalled();
+      expect(result.reports).toHaveLength(1);
+      expect(result.reports[0].availability.mode).toBe('disabled');
+      expect(result.reports[0].availability.reason).toContain('devto');
+      expect(result.mentions).toHaveLength(0);
+      expectValidOutput(result);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

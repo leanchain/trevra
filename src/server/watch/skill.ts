@@ -32,6 +32,23 @@ import { scoreSentiment, type Sentiment } from './sentiment.js';
  * `app.ts`) even though it stays registered for `gtm.scout-threads`.
  */
 
+/**
+ * Platforms `getScout` still resolves (so `gtm.scout-threads` keeps them),
+ * but that a watch must never treat as usable, mapped to the reason why.
+ *
+ * Not redundant with `brandWatchBodySchema`'s enum in `app.ts`: that schema
+ * only guards the HTTP watch CRUD routes. This skill's own `platforms` input
+ * is a much looser `z.array(z.string())`, reachable through the skill runner
+ * and MCP directly, and a `brand_watches` row can also carry a platform a
+ * schema no longer allows (a row written before that enum excluded it). Both
+ * routes funnel through this loop, so checking it here is the one place that
+ * covers every caller.
+ */
+export const WATCH_UNSUPPORTED_PLATFORMS: Readonly<Record<string, string>> = {
+  devto:
+    'devto has no sitewide keyword search: devtoScout.search always loops four hardcoded tags (ai, llm, programming, productivity) and never reads communities the way github/reddit do, so a watch on it would silently only ever see those four unrelated tag feeds.'
+};
+
 export interface ScoredMention {
   platform: string;
   externalId: string;
@@ -134,6 +151,20 @@ export async function watchMentions(
   const collected: WatchMentionInput[] = [];
 
   for (const platform of platforms) {
+    const unsupportedReason = WATCH_UNSUPPORTED_PLATFORMS[platform];
+    if (unsupportedReason) {
+      const message = `${platform} is not usable for watches: ${unsupportedReason}`;
+      warnings.push(message);
+      reports.push({
+        platform,
+        availability: { mode: 'disabled', reason: unsupportedReason },
+        fresh: [],
+        knownCount: 0,
+        warnings: [message]
+      });
+      continue;
+    }
+
     const scout = getScout(platform);
     if (!scout) {
       const message = `Unknown platform: ${platform}.`;
