@@ -81,13 +81,22 @@ export const redditScout: OutreachScout = {
         docsUrl: 'https://github.com/reddit-archive/reddit/wiki/OAuth2'
       };
     }
-    return { mode: 'ready', reason: 'Reddit OAuth credentials are configured.', docsUrl: 'https://www.reddit.com/dev/api/' };
+    return {
+      mode: 'ready',
+      reason: 'Reddit OAuth credentials are configured.',
+      docsUrl: 'https://www.reddit.com/dev/api/'
+    };
   },
   async search(query, options) {
     const warnings: string[] = [];
     const missing = REDDIT_CREDENTIALS.filter((name) => !options.credentials.get(name));
     if (missing.length > 0) {
-      return { platform: 'reddit', threads: [], warnings: [`Reddit search skipped: ${missing.join(', ')} not set.`], evidence: [] };
+      return {
+        platform: 'reddit',
+        threads: [],
+        warnings: [`Reddit search skipped: ${missing.join(', ')} not set.`],
+        evidence: []
+      };
     }
 
     const client = scoutClient(options.fetchImpl);
@@ -114,20 +123,34 @@ export const redditScout: OutreachScout = {
     }
 
     // Reddit caps a multi-subreddit path; the reference took the first five.
-    const subreddits = REDDIT_TARGET_SUBREDDITS.slice(0, 5).join('+');
+    const subreddits = query.communities ?? REDDIT_TARGET_SUBREDDITS.slice(0, 5);
+    const subredditPath = subreddits.length > 0 ? subreddits.join('+') : null;
     const batches: OutreachThread[][] = [];
 
     for (const term of query.queries) {
-      const url = new URL(`${REDDIT_API_URL}/r/${subreddits}/search.json`);
+      const url = new URL(
+        subredditPath
+          ? `${REDDIT_API_URL}/r/${subredditPath}/search.json`
+          : `${REDDIT_API_URL}/search`
+      );
       url.searchParams.set('q', term);
       url.searchParams.set('limit', String(Math.min(query.limit, 100)));
       url.searchParams.set('sort', 'relevance');
       url.searchParams.set('t', 'week');
-      const body = await getJson<{ data?: { children?: unknown } }>(client, url.toString(), warnings, {
-        headers: { Authorization: `Bearer ${accessToken}`, 'User-Agent': userAgent }
-      });
-      const children = Array.isArray(body?.data?.children) ? (body.data.children as RedditChild[]) : [];
-      batches.push(children.map(parseChild).filter((thread): thread is OutreachThread => thread !== null));
+      const body = await getJson<{ data?: { children?: unknown } }>(
+        client,
+        url.toString(),
+        warnings,
+        {
+          headers: { Authorization: `Bearer ${accessToken}`, 'User-Agent': userAgent }
+        }
+      );
+      const children = Array.isArray(body?.data?.children)
+        ? (body.data.children as RedditChild[])
+        : [];
+      batches.push(
+        children.map(parseChild).filter((thread): thread is OutreachThread => thread !== null)
+      );
     }
 
     const threads = dedupeById(batches, query.limit);
@@ -138,7 +161,7 @@ export const redditScout: OutreachScout = {
       evidence: [
         {
           label: 'Reddit search',
-          detail: `Searched r/${subreddits.replaceAll('+', ', r/')} for ${query.queries.length} term(s); ${threads.length} distinct thread(s).`,
+          detail: `Searched ${subredditPath ? `r/${subredditPath.replaceAll('+', ', r/')}` : 'all of Reddit'} for ${query.queries.length} term(s); ${threads.length} distinct thread(s).`,
           sourceUrl: 'https://www.reddit.com/dev/api/#GET_search'
         }
       ]

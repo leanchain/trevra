@@ -48,6 +48,16 @@ export interface ScoutQuery {
   queries: string[];
   /** Per-platform hard ceiling on threads returned across all queries. */
   limit: number;
+  /**
+   * Communities (subreddits, repos) to scope the search to.
+   *
+   * ABSENT means each scout keeps its own configured target list -- that is
+   * what `gtm.scout-threads` relies on and what its tests assert byte-for-byte.
+   * An EMPTY ARRAY means search sitewide, which is what a brand watch needs: a
+   * watch scoped to five hardcoded repos would report "nobody mentions you"
+   * while never having looked anywhere a mention would be.
+   */
+  communities?: readonly string[];
 }
 
 export interface ScoutOptions {

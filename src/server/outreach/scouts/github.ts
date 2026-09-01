@@ -48,13 +48,18 @@ function repoOf(issue: GithubIssue): string | null {
 }
 
 function parseIssue(issue: GithubIssue): OutreachThread | null {
-  const externalId = typeof issue.id === 'number' || typeof issue.id === 'string' ? String(issue.id) : null;
+  const externalId =
+    typeof issue.id === 'number' || typeof issue.id === 'string' ? String(issue.id) : null;
   const url = typeof issue.html_url === 'string' ? issue.html_url : null;
   if (!externalId || !url) return null;
 
   const title = typeof issue.title === 'string' ? issue.title : '';
   const labels = Array.isArray(issue.labels)
-    ? issue.labels.map((label) => (typeof label === 'object' && label !== null ? String((label as { name?: unknown }).name ?? '') : String(label)))
+    ? issue.labels.map((label) =>
+        typeof label === 'object' && label !== null
+          ? String((label as { name?: unknown }).name ?? '')
+          : String(label)
+      )
     : [];
 
   return {
@@ -67,12 +72,14 @@ function parseIssue(issue: GithubIssue): OutreachThread | null {
     community: repoOf(issue),
     score: numberOf(issue.reactions?.total_count),
     numComments: numberOf(issue.comments),
-    createdAt: typeof issue.created_at === 'string' ? new Date(issue.created_at).toISOString() : null,
+    createdAt:
+      typeof issue.created_at === 'string' ? new Date(issue.created_at).toISOString() : null,
     metadata: {
       issueNumber: numberOf(issue.number),
       repo: repoOf(issue),
       // Both read by the scorer's github branch.
-      authorAssociation: typeof issue.author_association === 'string' ? issue.author_association : '',
+      authorAssociation:
+        typeof issue.author_association === 'string' ? issue.author_association : '',
       labels: labels.filter((label) => label.length > 0)
     }
   };
@@ -91,20 +98,28 @@ export const githubScout: OutreachScout = {
         docsUrl: 'https://docs.github.com/en/rest/search/search#rate-limit'
       };
     }
-    return { mode: 'ready', reason: `${GITHUB_CREDENTIAL} is set; searching at the authenticated rate limit.`, docsUrl: 'https://docs.github.com/en/rest/search' };
+    return {
+      mode: 'ready',
+      reason: `${GITHUB_CREDENTIAL} is set; searching at the authenticated rate limit.`,
+      docsUrl: 'https://docs.github.com/en/rest/search'
+    };
   },
   async search(query, options) {
     const client = scoutClient(options.fetchImpl);
     const warnings: string[] = [];
     const token = options.credentials.get(GITHUB_CREDENTIAL);
-    if (!token) warnings.push(`${GITHUB_CREDENTIAL} is not set; GitHub search is rate-limited to roughly 10 requests per minute.`);
+    if (!token)
+      warnings.push(
+        `${GITHUB_CREDENTIAL} is not set; GitHub search is rate-limited to roughly 10 requests per minute.`
+      );
 
-    const repoFilter = GITHUB_TARGET_REPOS.map((repo) => `repo:${repo}`).join(' ');
+    const repos = query.communities ?? GITHUB_TARGET_REPOS;
+    const repoFilter = repos.map((repo) => `repo:${repo}`).join(' ');
     const batches: OutreachThread[][] = [];
 
     for (const term of query.queries) {
       const url = new URL(`${GITHUB_API_URL}/search/issues`);
-      url.searchParams.set('q', `${term} ${repoFilter} is:issue`);
+      url.searchParams.set('q', [term, repoFilter, 'is:issue'].filter(Boolean).join(' '));
       url.searchParams.set('sort', 'updated');
       url.searchParams.set('order', 'desc');
       url.searchParams.set('per_page', String(Math.min(query.limit, 100)));
@@ -116,7 +131,9 @@ export const githubScout: OutreachScout = {
         }
       });
       const items = Array.isArray(body?.items) ? (body.items as GithubIssue[]) : [];
-      batches.push(items.map(parseIssue).filter((thread): thread is OutreachThread => thread !== null));
+      batches.push(
+        items.map(parseIssue).filter((thread): thread is OutreachThread => thread !== null)
+      );
     }
 
     const threads = dedupeById(batches, query.limit);
@@ -127,7 +144,7 @@ export const githubScout: OutreachScout = {
       evidence: [
         {
           label: 'GitHub issue search',
-          detail: `Searched ${GITHUB_TARGET_REPOS.length} target repo(s) for ${query.queries.length} term(s); ${threads.length} distinct issue(s).`,
+          detail: `Searched ${repos.length === 0 ? 'all of GitHub' : `${repos.length} target repo(s)`} for ${query.queries.length} term(s); ${threads.length} distinct issue(s).`,
           sourceUrl: 'https://docs.github.com/en/rest/search/search#search-issues-and-pull-requests'
         }
       ]

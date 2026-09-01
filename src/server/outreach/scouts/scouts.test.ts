@@ -3,6 +3,7 @@ import type { CredentialAccessor } from '../../research/types.js';
 import type { FetchLike } from '../../skills/guard.js';
 import { getScout, listScouts } from '../registry.js';
 import { devtoScout } from './devto.js';
+import { githubScout } from './github.js';
 import { hackernewsScout } from './hackernews.js';
 import { dedupeById, matchesQuery } from './http.js';
 
@@ -240,5 +241,40 @@ describe('http helpers', () => {
     ];
     expect(dedupeById(batches, 10).map((entry) => entry.externalId)).toEqual(['a', 'b', 'c']);
     expect(dedupeById(batches, 2).map((entry) => entry.externalId)).toEqual(['a', 'b']);
+  });
+});
+
+describe('scout community scoping', () => {
+  const issues = { items: [] };
+
+  it('keeps the configured repo filter when communities is absent', async () => {
+    const { fetchImpl, calls } = jsonFetch({ 'api.github.com/search/issues': issues });
+    await githubScout.search(
+      { queries: ['agent cost'], limit: 10 },
+      { credentials: noCredentials, fetchImpl }
+    );
+    expect(calls).toHaveLength(1);
+    expect(decodeURIComponent(calls[0])).toContain('repo:');
+  });
+
+  it('drops the repo filter when communities is an empty array', async () => {
+    const { fetchImpl, calls } = jsonFetch({ 'api.github.com/search/issues': issues });
+    await githubScout.search(
+      { queries: ['trevra'], limit: 10, communities: [] },
+      { credentials: noCredentials, fetchImpl }
+    );
+    expect(calls).toHaveLength(1);
+    expect(decodeURIComponent(calls[0])).not.toContain('repo:');
+    expect(decodeURIComponent(calls[0])).toContain('trevra');
+    expect(decodeURIComponent(calls[0])).toContain('is:issue');
+  });
+
+  it('scopes to the supplied repos when communities is non-empty', async () => {
+    const { fetchImpl, calls } = jsonFetch({ 'api.github.com/search/issues': issues });
+    await githubScout.search(
+      { queries: ['trevra'], limit: 10, communities: ['acme/widgets'] },
+      { credentials: noCredentials, fetchImpl }
+    );
+    expect(decodeURIComponent(calls[0])).toContain('repo:acme/widgets');
   });
 });
