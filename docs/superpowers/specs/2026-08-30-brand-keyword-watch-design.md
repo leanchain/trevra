@@ -525,12 +525,28 @@ brand terms are genuinely absent from that one-page window, exactly the failure 
 described above: Lobsters has no server-side search, so any mention older than the
 current `newest.json` page is invisible.
 
-**Decision.** `stackoverflow` and `github` both earned their place — no evidence either
-was the thin, unproven source the open question worried about. `lobsters` did not: two
-genuinely high-traffic terms, zero mentions, for the structural reason the spec already
-named. `lobsters` came out of `WATCH_DEFAULT_PLATFORMS` in `src/client/views/ResearchView.tsx`;
+**Decision.** `stackoverflow` and `github` both cleared the brief's literal bar (a
+high-traffic term must return non-zero mentions); `lobsters` did not, for the structural
+reason the spec already named — two genuinely high-traffic terms, zero mentions each.
+`lobsters` came out of `WATCH_DEFAULT_PLATFORMS` in `src/client/views/ResearchView.tsx`;
 it stays selectable in `WATCH_PLATFORMS`. New default: `hackernews`, `stackoverflow`,
 `github`. The server's accepted-platform enum in `src/server/app.ts` is unchanged — this
 is a client default only, not a capability removal.
+
+**A narrower claim about Stack Overflow, corrected after review.** The non-zero hit count
+above answers _keyword presence_, not the question the open question actually asked —
+whether Stack Overflow is a useful **brand-mention** source. `postgres` and `stripe` are
+near-guaranteed to appear in Stack Overflow titles as dependency names regardless of
+whether anyone is discussing the thing. A follow-up spot-check (2026-09-01) pulled the
+actual titles behind the `postgres` hit count; they were overwhelmingly routine
+troubleshooting Q&A that merely names Postgres as a dependency — e.g. "Trouble migrating
+Laravel database to PostgreSQL", "Can't connect to Neon database using Sequelize", "How
+to detect and deter scraping from my Postgres database alone" — not discussion of
+Postgres itself. That is closer to the thin-source risk the open question raised than to
+a refutation of it. Whether Stack Overflow surfaces genuine brand discussion for a real
+founder's (much lower-traffic) brand term was not tested and remains unproven; this task
+only established that the platform is not silent. It still clears the brief's literal
+bar, so it stays in the default set per the decision above — clearing that bar was the
+only thing this task was asked to settle. See the report for the full title list.
 
 Full raw output: `.superpowers/sdd/2026-09-01-brand-keyword-watch/task-10-report.md`.
