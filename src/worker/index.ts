@@ -134,7 +134,7 @@ async function cycle(): Promise<void> {
   }
 }
 // The local LinkedIn worker gets its OWN loop and its own in-flight flag,
-// rather than a fifth entry in the cycle above. One batch drives a real
+// rather than another entry in the cycle above. One batch drives a real
 // browser at real paced gaps (30-120s between actions, plan 1.4), so a pass
 // can last tens of minutes -- and folding that into `cycle()` would hold the
 // automation sweep, the playbook engine and the schedule sweep behind it for

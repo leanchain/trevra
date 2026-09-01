@@ -123,6 +123,29 @@ describe('brand watch service', () => {
     expect(row?.lease_until).toBeNull();
   });
 
+  it('releases the lease after a run that fails', async () => {
+    // Dedicated coverage per review finding: service.ts:91-101 clears
+    // lease_until unconditionally after the try/catch, but the only test
+    // exercising lease_until used okFetch (success path only). A refactor
+    // that moved the lease-clear into the success tail would leave a
+    // once-failing watch leased for 10 minutes -- invisible to the LIMIT-3
+    // sweep -- with the rest of the suite still green.
+    const watch = await watchFor('daily');
+    const boom: FetchLike = async () => {
+      throw new Error('network down');
+    };
+    const result = await runBrandWatch(db, DEMO_WORKSPACE_ID, watch.id, {
+      now: NOW,
+      fetchImpl: boom,
+      credentials: noCredentials
+    });
+    expect(result.warnings.join(' ')).toContain('network down');
+    const row = await db
+      .prepare('SELECT lease_until FROM brand_watches WHERE id=?')
+      .get<{ lease_until: string | null }>(watch.id);
+    expect(row?.lease_until).toBeNull();
+  });
+
   it('runs a not-yet-due watch when forced', async () => {
     const watch = await watchFor('daily');
     await runBrandWatch(db, DEMO_WORKSPACE_ID, watch.id, {
@@ -137,6 +160,26 @@ describe('brand watch service', () => {
       credentials: noCredentials
     });
     expect(forced.ran).toBe(true);
+  });
+
+  it('does not force a run when another worker holds the lease', async () => {
+    // The lease clause sits outside the force ternary in service.ts, so
+    // `force: true` must still be a no-op against a row another worker
+    // currently holds -- force ignores next_run_at, not an active lease.
+    const watch = await watchFor('daily');
+    await db
+      .prepare(
+        "UPDATE brand_watches SET lease_until = ?::timestamptz + INTERVAL '5 minutes' WHERE id=?"
+      )
+      .run(NOW.toISOString(), watch.id);
+    const result = await runBrandWatch(db, DEMO_WORKSPACE_ID, watch.id, {
+      now: NOW,
+      force: true,
+      fetchImpl: okFetch,
+      credentials: noCredentials
+    });
+    expect(result.ran).toBe(false);
+    expect((await getWatch(db, DEMO_WORKSPACE_ID, watch.id))?.lastRunAt).toBeNull();
   });
 
   it('picks up only enabled, due watches', async () => {
