@@ -93,9 +93,10 @@ scout's `availability()`:
 | mastodon      | `MASTODON_ACCESS_TOKEN`     | yes once authed                                                    |
 | linkedin      | —                           | permanently disabled by policy; never offered as a watch option    |
 
-Default platform set for a new watch: `hackernews`, `stackoverflow`, `lobsters`, `github`.
+Default platform set for a new watch: `hackernews`, `stackoverflow`, `github`. `lobsters`,
 `reddit`, `mastodon`, and `devto` are selectable and report their availability mode per
-platform, exactly as `scoutThreads` already does.
+platform, exactly as `scoutThreads` already does. `lobsters` was measured out of the
+default set — see "Default platform set: measured" below.
 
 ### The one contract change
 
@@ -501,9 +502,35 @@ accessor, which run offline because supplying `fetchImpl` disables the DNS guard
    `sentiment_span` lets the founder see and discount the deciding sentence;
    `sentiment_version` makes a lexicon correction re-appliable without a schema change.
 
-## Open question to settle during implementation
+## Default platform set: measured
 
-Whether `stackoverflow` and `lobsters` earn their place in the default platform set.
-Lobsters has no server-side search — it only matches the current `newest.json` window, so a
-mention older than that page is invisible. Settle it with one manual
-`POST /api/watches/:id/run` against a real brand term before shipping the defaults.
+The open question above was settled empirically on 2026-09-01 (Task 10), against the real
+network, no mocked `fetchImpl`. Script: `watchMentions()` from `src/server/watch/skill.ts`
+called ad hoc (`keywords` + `platforms`, no `watchId`, nothing persisted), one platform per
+run so GitHub's rate limit couldn't mask another platform's result. Two high-traffic terms,
+neither Trevra's own brand: `postgres` and `stripe`.
+
+| Platform      | `postgres` fresh mentions | `stripe` fresh mentions | `availability.mode` | Notes                                                               |
+| ------------- | ------------------------- | ----------------------- | ------------------- | ------------------------------------------------------------------- |
+| hackernews    | 25 (of 25 known)          | 25 (of 25 known)        | ready               | —                                                                   |
+| stackoverflow | 24 (of 25 known)          | 25 (of 25 known)        | ready               | —                                                                   |
+| github        | 23 (of 25 known)          | 19 (of 25 known)        | ready               | Sitewide since Task 4; no 403s across either run at ~1 req/keyword. |
+| lobsters      | 0 (of 0 known)            | 0 (of 0 known)          | ready               | Real zero, not rate-limited — see below.                            |
+
+The lobsters zero was checked, not assumed: `curl https://lobste.rs/newest.json` at
+measurement time returned its usual 25 stories, none mentioning `postgres` or `stripe`,
+and a same-pipeline sanity run with `keywords: ['css']` (a term visibly on that page)
+returned 2 real matches — confirming the fetch and filter path both work and the two
+brand terms are genuinely absent from that one-page window, exactly the failure mode
+described above: Lobsters has no server-side search, so any mention older than the
+current `newest.json` page is invisible.
+
+**Decision.** `stackoverflow` and `github` both earned their place — no evidence either
+was the thin, unproven source the open question worried about. `lobsters` did not: two
+genuinely high-traffic terms, zero mentions, for the structural reason the spec already
+named. `lobsters` came out of `WATCH_DEFAULT_PLATFORMS` in `src/client/views/ResearchView.tsx`;
+it stays selectable in `WATCH_PLATFORMS`. New default: `hackernews`, `stackoverflow`,
+`github`. The server's accepted-platform enum in `src/server/app.ts` is unchanged — this
+is a client default only, not a capability removal.
+
+Full raw output: `.superpowers/sdd/2026-09-01-brand-keyword-watch/task-10-report.md`.

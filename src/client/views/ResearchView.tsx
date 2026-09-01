@@ -61,7 +61,11 @@ const WATCH_PLATFORMS = [
   'mastodon',
   'devto'
 ];
-const WATCH_DEFAULT_PLATFORMS = ['hackernews', 'stackoverflow', 'lobsters', 'github'];
+// lobsters dropped from the default set 2026-09-01: it has no server-side
+// search (client-side filter over the current `newest.json` window only) and
+// measured zero mentions for two high-traffic terms. Still selectable in
+// WATCH_PLATFORMS above. See docs/superpowers/specs/2026-08-30-brand-keyword-watch-design.md.
+const WATCH_DEFAULT_PLATFORMS = ['hackernews', 'stackoverflow', 'github'];
 
 const EMPTY_OFFER: OutreachOffer = { name: '', url: '', summary: '', mechanism: '', claims: [] };
 
