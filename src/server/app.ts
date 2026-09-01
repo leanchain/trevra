@@ -58,6 +58,7 @@ import {
   SkillApiError
 } from './skill-api.js';
 import { loadThreadFeed } from './outreach/feed.js';
+import { getScout } from './outreach/registry.js';
 import {
   createWatch,
   deleteWatch,
@@ -428,7 +429,10 @@ import {
 import { rescoreAccounts, rescoreWorkspace } from './accounts/score.js';
 import type { Account, AccountScore, AccountSignal, RankedAccount } from './accounts/types.js';
 import { listProviders as listLeadSourceProviders } from './research/registry.js';
-import { envCredentials as leadSourceCredentials } from './research/types.js';
+import {
+  envCredentials as leadSourceCredentials,
+  type ProviderAvailabilityMode
+} from './research/types.js';
 import { registerLeadCaptureIntake } from './lead-capture/http.js';
 import {
   createCaptureSource,
@@ -2996,9 +3000,38 @@ export function createApp(db: Db) {
    * scoped anyway -- one refusal shape, and no route where a missing scope
    * would be a cross-tenant read.
    */
+
+  /**
+   * A scout's availability is a pure function of configuration (no network, no
+   * database), so it is computed here at read time rather than persisted --
+   * every route that hands a watch to the client gets a current answer,
+   * including the very first load, before anyone has ever clicked "Run now".
+   * Kept out of watch/store.ts on purpose: the store stays persistence-only
+   * and never imports a scout.
+   */
+  function watchPlatformAvailability(
+    platforms: readonly string[]
+  ): Array<{ platform: string; mode: ProviderAvailabilityMode; reason: string }> {
+    return platforms.map((platform) => {
+      const scout = getScout(platform);
+      if (!scout) {
+        return { platform, mode: 'disabled', reason: `Unknown platform: ${platform}.` };
+      }
+      const availability = scout.availability(leadSourceCredentials);
+      return { platform, mode: availability.mode, reason: availability.reason };
+    });
+  }
+
+  function withPlatformAvailability<T extends { platforms: string[] }>(
+    watch: T
+  ): T & { platformAvailability: ReturnType<typeof watchPlatformAvailability> } {
+    return { ...watch, platformAvailability: watchPlatformAvailability(watch.platforms) };
+  }
+
   app.get('/api/watches', async (req: AuthedRequest, res, next) => {
     try {
-      res.json({ watches: await listWatches(db, req.auth!.workspaceId) });
+      const watches = await listWatches(db, req.auth!.workspaceId);
+      res.json({ watches: watches.map(withPlatformAvailability) });
     } catch (error) {
       next(error);
     }
@@ -3007,9 +3040,8 @@ export function createApp(db: Db) {
   app.post('/api/watches', async (req: AuthedRequest, res) => {
     try {
       const input = brandWatchBodySchema.parse(req.body ?? {});
-      res
-        .status(201)
-        .json({ watch: await createWatch(db, req.auth!.workspaceId, input, new Date()) });
+      const watch = await createWatch(db, req.auth!.workspaceId, input, new Date());
+      res.status(201).json({ watch: withPlatformAvailability(watch) });
     } catch (error) {
       res
         .status(400)
@@ -3039,7 +3071,7 @@ export function createApp(db: Db) {
         res.status(404).json({ error: 'Watch not found' });
         return;
       }
-      res.json({ watch });
+      res.json({ watch: withPlatformAvailability(watch) });
     } catch (error) {
       res
         .status(400)

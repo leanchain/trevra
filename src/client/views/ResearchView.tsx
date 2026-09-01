@@ -17,6 +17,7 @@ import {
   type BrandWatchMention,
   type FeedThread,
   type OutreachOffer,
+  type WatchPlatformReport,
   type WatchTrendPoint
 } from '../api';
 import { RedditAccountPanel } from '../RedditScreen';
@@ -123,6 +124,41 @@ function asResearchBrief(output: unknown): ResearchBriefOutput | null {
     topFinding: value.topFinding,
     findingDetail: value.findingDetail
   };
+}
+
+/**
+ * The credential-gap note for the mentions empty state: the reason for
+ * every platform that isn't `ready`, so a founder whose only real source
+ * needs a credential never reads that as "nobody is talking about us" (the
+ * risk this whole panel exists to avoid).
+ *
+ * `watch.platformAvailability` is computed server-side at read time, so it
+ * is correct even before anyone has clicked "Run now" this session. A more
+ * recent `runReports` (from `runSelectedWatch`, scoped to this same watch by
+ * the caller) is merged over it per platform, since a run can surface a
+ * failure `platformAvailability` alone would not know about.
+ */
+function mergedAvailabilityNote(
+  watch: BrandWatch | null,
+  runReports: WatchPlatformReport[] | null
+): string {
+  if (!watch) return '';
+  const merged = new Map(
+    watch.platformAvailability.map((entry) => [entry.platform, entry] as const)
+  );
+  if (runReports) {
+    for (const report of runReports) {
+      merged.set(report.platform, {
+        platform: report.platform,
+        mode: report.availability.mode,
+        reason: report.availability.reason
+      });
+    }
+  }
+  return [...merged.values()]
+    .filter((entry) => entry.mode !== 'ready')
+    .map((entry) => entry.reason)
+    .join(' ');
 }
 
 /*
@@ -445,10 +481,23 @@ export function ResearchView({
   const [mentionsLoaded, setMentionsLoaded] = useState(false);
   const [mentionsError, setMentionsError] = useState(false);
   const [trend, setTrend] = useState<WatchTrendPoint[]>([]);
-  const [watchAvailabilityNote, setWatchAvailabilityNote] = useState('');
+  // The last "Run now" result for the selected watch, if any -- fresher than
+  // the watch's own `platformAvailability`, and merged over it by
+  // `mergedAvailabilityNote`. Reset whenever the selected watch changes so a
+  // stale run's report never gets attributed to a different watch.
+  const [runReports, setRunReports] = useState<WatchPlatformReport[] | null>(null);
   const [watchDialogOpen, setWatchDialogOpen] = useState(false);
   const [runningWatch, setRunningWatch] = useState(false);
   const [draftingMention, setDraftingMention] = useState<BrandWatchMention | null>(null);
+
+  // Mirrors `selectedWatch` so an in-flight `runSelectedWatch` call can tell,
+  // after each await, whether the selection has since moved on -- a plain
+  // closed-over variable would always read the value from the render that
+  // started the call, never a later one.
+  const selectedWatchRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedWatchRef.current = selectedWatch;
+  }, [selectedWatch]);
 
   useEffect(() => {
     let cancelled = false;
@@ -513,7 +562,7 @@ export function ResearchView({
   }, []);
 
   useEffect(() => {
-    setWatchAvailabilityNote('');
+    setRunReports(null);
     if (!selectedWatch) {
       setMentions([]);
       setTrend([]);
@@ -636,27 +685,30 @@ export function ResearchView({
   }
 
   async function runSelectedWatch(): Promise<void> {
-    if (!selectedWatch) return;
+    const watchId = selectedWatch;
+    if (!watchId) return;
     setRunningWatch(true);
     try {
-      const result = await runWatch(selectedWatch);
-      setWatchAvailabilityNote(
-        result.reports
-          .filter((report) => report.availability.mode !== 'ready')
-          .map((report) => report.availability.reason)
-          .join(' ')
-      );
+      const result = await runWatch(watchId);
       if (result.warnings.length > 0) setToast(result.warnings.join(' '));
+      // The selection can move on while this is in flight (click watch A's
+      // "Run now", then click watch B's pill before A's response lands) -- a
+      // stale response must not clobber whatever is now on screen.
+      if (selectedWatchRef.current !== watchId) return;
+      setRunReports(result.reports);
       const [freshMentions, freshTrend] = await Promise.all([
-        getWatchMentions(selectedWatch),
-        getWatchTrend(selectedWatch)
+        getWatchMentions(watchId),
+        getWatchTrend(watchId)
       ]);
+      if (selectedWatchRef.current !== watchId) return;
       setMentions(freshMentions);
       setMentionsError(false);
       setMentionsLoaded(true);
       setTrend(freshTrend);
     } catch (error) {
-      setToast(error instanceof Error ? error.message : 'Could not run the watch.');
+      if (selectedWatchRef.current === watchId) {
+        setToast(error instanceof Error ? error.message : 'Could not run the watch.');
+      }
     } finally {
       setRunningWatch(false);
     }
@@ -671,6 +723,7 @@ export function ResearchView({
   const showBriefs = platform === 'all' || platform === 'linkedin';
   const showRedditCorpus = platform === 'all' || platform === 'reddit';
   const selectedWatchRow = watches.find((watch) => watch.id === selectedWatch) ?? null;
+  const watchAvailabilityNote = mergedAvailabilityNote(selectedWatchRow, runReports);
 
   return (
     <div className="page-stack">
@@ -822,19 +875,21 @@ export function ResearchView({
                 <p>Where this watch’s keywords came up, and how it was said.</p>
               </div>
               <div className="research-trend" aria-label="Sentiment over the last 30 days">
-                {trend.map((point) => (
-                  <span
-                    key={point.day}
-                    className={`research-trend-bar ${
-                      point.average > 0.15
-                        ? 'is-positive'
-                        : point.average < -0.15
-                          ? 'is-negative'
-                          : 'is-neutral'
-                    }`}
-                    title={`${point.day}: +${point.positive} / ${point.neutral} / -${point.negative}`}
-                  />
-                ))}
+                {mentionsLoaded &&
+                  !mentionsError &&
+                  trend.map((point) => (
+                    <span
+                      key={point.day}
+                      className={`research-trend-bar ${
+                        point.average > 0.15
+                          ? 'is-positive'
+                          : point.average < -0.15
+                            ? 'is-negative'
+                            : 'is-neutral'
+                      }`}
+                      title={`${point.day}: +${point.positive} / ${point.neutral} / -${point.negative}`}
+                    />
+                  ))}
               </div>
             </div>
             <div className="client-table">

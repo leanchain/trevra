@@ -489,6 +489,13 @@ export async function getOutreachOfferDefaults(): Promise<OutreachOffer> {
   return result.offer;
 }
 
+/** A scout's availability for one of a watch's platforms, computed at read time -- see `withPlatformAvailability` in `src/server/app.ts`. */
+export interface WatchPlatformAvailability {
+  platform: string;
+  mode: 'ready' | 'needs-credential' | 'disabled';
+  reason: string;
+}
+
 export interface BrandWatch {
   id: string;
   name: string;
@@ -500,6 +507,8 @@ export interface BrandWatch {
   nextRunAt: string;
   lastRunAt: string | null;
   lastError: string | null;
+  /** Always current as of the request -- correct on first load, not only after a manual "Run now". */
+  platformAvailability: WatchPlatformAvailability[];
 }
 
 export interface BrandWatchMention {
@@ -581,9 +590,7 @@ export interface WatchPlatformReport {
   };
 }
 
-export async function runWatch(
-  id: string
-): Promise<{
+export async function runWatch(id: string): Promise<{
   inserted: number;
   updated: number;
   reports: WatchPlatformReport[];

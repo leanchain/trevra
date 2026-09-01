@@ -1775,6 +1775,34 @@ describe('brand watches', () => {
     await agent.get(`/api/watches/${watchId}/mentions`).expect(404);
   });
 
+  it('reports per-platform availability on create and list, correct before any run', async () => {
+    const agent = await agentWithSession();
+    const created = await agent
+      .post('/api/watches')
+      .send({ ...BODY, platforms: ['hackernews', 'reddit'] })
+      .expect(201);
+    const availability = created.body.watch.platformAvailability as Array<{
+      platform: string;
+      mode: string;
+      reason: string;
+    }>;
+    expect(availability).toHaveLength(2);
+    const hackernews = availability.find((entry) => entry.platform === 'hackernews');
+    expect(hackernews?.mode).toBe('ready');
+    // reddit needs four OAuth env vars this test environment never sets, so
+    // it is the platform that proves the credential gap is reported, not
+    // silently dropped.
+    const reddit = availability.find((entry) => entry.platform === 'reddit');
+    expect(reddit?.mode).toBe('needs-credential');
+    expect(typeof reddit?.reason).toBe('string');
+    expect(reddit?.reason.length).toBeGreaterThan(0);
+
+    // Available on GET too, and before any run -- the whole point is that it
+    // does not depend on "Run now" having been clicked first.
+    const listed = await agent.get('/api/watches').expect(200);
+    expect(listed.body.watches[0].platformAvailability).toEqual(availability);
+  });
+
   it('rejects an invalid cadence and an oversized keyword list', async () => {
     const agent = await agentWithSession();
     await agent
