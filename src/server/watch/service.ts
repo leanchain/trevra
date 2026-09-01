@@ -44,9 +44,16 @@ function collectRunWarnings(
       attributed.add(message);
     }
   }
+  // On the throw path, runBrandWatch's own catch block pushes `failure` onto
+  // `topLevelWarnings` too (so a caller reading `result.warnings` alone still
+  // sees it), which would otherwise duplicate it below: once from the
+  // top-level loop, once from the explicit push at the end of this function.
+  // Mark it attributed here so the loop skips it and it is emitted exactly
+  // once.
+  if (failure) attributed.add(failure);
   // Every report-tied warning is pushed onto `topLevelWarnings` verbatim by
-  // `watchMentions` (same string, both places) -- skip those so they are not
-  // duplicated under `platform: null`.
+  // `watchMentions` (same string, both places) -- skip those (and `failure`,
+  // above) so they are not duplicated under `platform: null`.
   for (const message of topLevelWarnings) {
     if (attributed.has(message)) continue;
     collected.push({ platform: null, reason: message });

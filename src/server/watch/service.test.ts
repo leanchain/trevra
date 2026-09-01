@@ -140,6 +140,37 @@ describe('brand watch service', () => {
     expect(after?.nextRunAt).toBe('2026-09-02T09:00:00.000Z');
   });
 
+  it('does not double up the failure message when a run genuinely throws', async () => {
+    // watchMentions throws synchronously when `platforms` is empty -- a
+    // network-free way to drive runBrandWatch's catch block for real, unlike
+    // the 'records the error' test below (fetchImpl: boom), which skill.ts's
+    // per-platform try/catch degrades to a warning instead of letting
+    // propagate, so `failure` stays null there and this path is never
+    // exercised by it.
+    const watch = await createWatch(
+      db,
+      DEMO_WORKSPACE_ID,
+      { name: 'No platforms', keywords: ['trevra'], platforms: [], cadence: 'daily' },
+      NOW
+    );
+    const result = await runBrandWatch(db, DEMO_WORKSPACE_ID, watch.id, {
+      now: NOW,
+      fetchImpl: okFetch,
+      credentials: noCredentials
+    });
+    expect(result.warnings).toEqual(['A watch run needs at least one platform.']);
+
+    const after = await getWatch(db, DEMO_WORKSPACE_ID, watch.id);
+    expect(after?.lastError).toBe('A watch run needs at least one platform.');
+    // The bug this guards against: `failure` reaches collectRunWarnings both
+    // via the top-level `warnings` array (runBrandWatch's catch pushes it
+    // there too) and via the explicit `if (failure) ...` push, so without
+    // deduping it the empty state would read the same sentence twice.
+    expect(after?.lastRunWarnings).toEqual([
+      { platform: null, reason: 'A watch run needs at least one platform.' }
+    ]);
+  });
+
   it('releases the lease after a run', async () => {
     const watch = await watchFor('daily');
     await runBrandWatch(db, DEMO_WORKSPACE_ID, watch.id, {
