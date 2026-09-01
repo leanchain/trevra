@@ -151,6 +151,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await response.json().catch(() => ({ error: response.statusText }));
     throw new ApiError(body.error ?? 'Request failed', response.status);
   }
+  // 204 No Content has no body to parse -- watches' DELETE is the only route
+  // that returns it today, and every other caller of `request` always gets a
+  // 200 with a JSON body, so this branch changes nothing for them.
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -564,7 +568,7 @@ export async function updateWatch(
 }
 
 export async function deleteWatch(id: string): Promise<void> {
-  await fetch(`/api/watches/${id}`, { method: 'DELETE', credentials: 'include' });
+  await request(`/api/watches/${id}`, { method: 'DELETE' });
 }
 
 export async function runWatch(id: string): Promise<{ inserted: number; warnings: string[] }> {

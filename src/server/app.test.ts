@@ -1794,6 +1794,24 @@ describe('brand watches', () => {
     await agent.patch('/api/watches/bw_missing').send({ cadence: 'weekly' }).expect(404);
   });
 
+  it('404s an unknown watch id even when the patch body is invalid', async () => {
+    const agent = await agentWithSession();
+    await agent.patch('/api/watches/bw_missing').send({ cadence: 'hourly' }).expect(404);
+  });
+
+  it('rejects an out-of-bounds patch on a watch that exists', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    await agent
+      .patch(`/api/watches/${created.body.watch.id}`)
+      .send({ cadence: 'hourly' })
+      .expect(400);
+    await agent
+      .patch(`/api/watches/${created.body.watch.id}`)
+      .send({ keywords: Array.from({ length: 21 }, (_, i) => `k${i}`) })
+      .expect(400);
+  });
+
   it('returns a zero-filled 30-day trend', async () => {
     const agent = await agentWithSession();
     const created = await agent.post('/api/watches').send(BODY).expect(201);
@@ -1802,6 +1820,13 @@ describe('brand watches', () => {
       .expect(200);
     expect(trend.body.points).toHaveLength(30);
     expect(trend.body.points.every((point: { average: number }) => point.average === 0)).toBe(true);
+  });
+
+  it('defaults the trend window to 30 days when days is omitted', async () => {
+    const agent = await agentWithSession();
+    const created = await agent.post('/api/watches').send(BODY).expect(201);
+    const trend = await agent.get(`/api/watches/${created.body.watch.id}/trend`).expect(200);
+    expect(trend.body.points).toHaveLength(30);
   });
 
   it('caps the mention limit rather than trusting the query string', async () => {

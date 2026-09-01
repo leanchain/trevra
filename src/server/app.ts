@@ -3019,7 +3019,15 @@ export function createApp(db: Db) {
 
   app.patch('/api/watches/:id', async (req: AuthedRequest, res) => {
     try {
+      const existing = await getWatch(db, req.auth!.workspaceId, String(req.params.id));
+      if (!existing) {
+        res.status(404).json({ error: 'Watch not found' });
+        return;
+      }
       const patch = brandWatchPatchSchema.parse(req.body ?? {});
+      // Defensive second gate: existing already proved the row is in scope, but
+      // a concurrent delete between the check above and this write should still
+      // read as "not found" rather than throw.
       const watch = await updateWatch(
         db,
         req.auth!.workspaceId,
