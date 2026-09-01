@@ -3,10 +3,9 @@ import { DEMO_WORKSPACE_ID, openDatabase, resetDemoData, type Db } from '../db.j
 import type { CredentialAccessor } from '../research/types.js';
 import type { FetchLike } from '../skills/guard.js';
 import type { SkillContext } from '../skills/types.js';
-import { runSkill } from '../skills/runner.js';
 import { githubScout } from '../outreach/scouts/github.js';
 import { createWatch, listWatchMentions } from './store.js';
-import { watchMentions, watchMentionsSkill } from './skill.js';
+import { watchMentions, watchMentionsSkill, type WatchMentionsResult } from './skill.js';
 
 let db: Db;
 const NOW = new Date('2026-09-01T09:00:00.000Z');
@@ -19,13 +18,6 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await db?.close();
-});
-
-// Additive: only the two new tests below (Finding 2's `runSkill` coverage)
-// stub global fetch. Restoring it here keeps that stub from leaking into any
-// other test file sharing this worker.
-afterEach(() => {
-  vi.unstubAllGlobals();
 });
 
 function ctx(): SkillContext {
@@ -60,6 +52,23 @@ function jsonFetch(routes: Record<string, unknown>): { fetchImpl: FetchLike; cal
       });
     }
   };
+}
+
+/**
+ * Assert `result` satisfies the skill's own published `outputSchema` -- the
+ * same check `runSkill` applies via `outputSchema.safeParse` in
+ * `skills/runner.ts:88`. On failure the message names the offending field(s)
+ * instead of just reporting `false`.
+ */
+function expectValidOutput(result: WatchMentionsResult): void {
+  const parsed = watchMentionsSkill.manifest.outputSchema.safeParse(result);
+  if (!parsed.success) {
+    const issues = parsed.error.issues
+      .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+      .join('; ');
+    expect.fail(`outputSchema rejected the result: ${issues}`);
+  }
+  expect(parsed.success).toBe(true);
 }
 
 describe('gtm.watch-mentions', () => {
@@ -238,38 +247,33 @@ describe('gtm.watch-mentions', () => {
   });
 
   // Closes the reviewer's fourth observation: every other test calls
-  // `watchMentions` directly, so `outputSchema.safeParse` in
-  // `skills/runner.ts:88` never sees a real return value. Going through
-  // `runSkill` is what proves the schema actually accepts what the skill
-  // returns. `runSkill` calls `skill.run(input, ctx)` with no options
-  // argument, so there is no `fetchImpl` seam here -- global `fetch` is
-  // stubbed instead (same pattern as `linkedin/driver-inmail.test.ts`), and
-  // the SSRF guard's DNS pre-flight is left to actually resolve
-  // `hn.algolia.com`, a real public host.
-  it('produces an output the schema accepts and records an ok ledger row via runSkill', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input).includes('hn.algolia.com')) {
-          return new Response(JSON.stringify(HN_HIT), {
-            status: 200,
-            headers: { 'content-type': 'application/json' }
-          });
-        }
-        return new Response('not found', { status: 404 });
-      })
-    );
+  // `watchMentions` directly, so `outputSchema.safeParse` (the same check
+  // `runSkill` applies in `skills/runner.ts:88`) never sees a real return
+  // value. This asserts it against a real result from a fully-injected run
+  // (stubbed `fetchImpl`, stubbed credentials -- no network, no DNS, same as
+  // every other test in this file) rather than going through `runSkill`,
+  // which offers no `fetchImpl` seam and would have to hit the real network
+  // to produce mentions.
+  it('validates against outputSchema when the run produced mentions', async () => {
+    const { fetchImpl } = jsonFetch({ 'hn.algolia.com': HN_HIT });
+    const result = await watchMentions({ keywords: ['trevra'], platforms: ['hackernews'] }, ctx(), {
+      credentials: noCredentials,
+      fetchImpl
+    });
+    expect(result.mentions).toHaveLength(1);
+    expectValidOutput(result);
+  });
 
-    const run = await runSkill(
-      'gtm.watch-mentions',
-      { keywords: ['trevra'], platforms: ['hackernews'] },
-      ctx()
-    );
-
-    expect(run.status).toBe('ok');
-    expect(run.error).toBeNull();
-    const output = run.output as { watchId: string | null; mentions: unknown[] };
-    expect(output.watchId).toBeNull();
-    expect(output.mentions).toHaveLength(1);
+  // Same schema check against the other shape `mentions`/`fresh` can take:
+  // empty, because the only platform is `needs-credential`.
+  it('validates against outputSchema when the only platform needs a credential', async () => {
+    const { fetchImpl } = jsonFetch({});
+    const result = await watchMentions({ keywords: ['trevra'], platforms: ['reddit'] }, ctx(), {
+      credentials: noCredentials,
+      fetchImpl
+    });
+    expect(result.reports[0].availability.mode).toBe('needs-credential');
+    expect(result.mentions).toHaveLength(0);
+    expectValidOutput(result);
   });
 });
