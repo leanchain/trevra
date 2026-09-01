@@ -23,7 +23,14 @@ import {
 import { RedditAccountPanel } from '../RedditScreen';
 import { ResearchScreen } from '../ResearchScreen';
 import { EvidenceList } from './inspector';
-import { chipPoints, factsLine, platformLabel, sentimentChip, whyChips } from './researchFormat';
+import {
+  chipPoints,
+  factsLine,
+  platformLabel,
+  sentimentChip,
+  trendHeadline,
+  whyChips
+} from './researchFormat';
 import { useDialog } from '../ui/dialog';
 
 /*
@@ -52,15 +59,16 @@ const PLATFORM_FILTERS = [
 
 // linkedin is absent on purpose: its scout is permanently disabled by policy,
 // so a watch on it could only ever report that.
-const WATCH_PLATFORMS = [
-  'hackernews',
-  'stackoverflow',
-  'lobsters',
-  'github',
-  'reddit',
-  'mastodon',
-  'devto'
-];
+//
+// devto is absent too, as of the whole-branch fix wave (2026-09-01):
+// devtoScout.search has no keyword search endpoint -- it always loops the
+// four hardcoded DEVTO_TAGS and filters locally, and it never reads
+// ScoutQuery.communities, so the `communities: []` sitewide mechanism every
+// other watch platform relies on is a silent no-op for it. A watch for a
+// brand outside ai/llm/programming/productivity would report "nobody
+// mentions you" having only ever looked at those four tags. Still used by
+// gtm.scout-threads, which never claimed sitewide coverage from it.
+const WATCH_PLATFORMS = ['hackernews', 'stackoverflow', 'lobsters', 'github', 'reddit', 'mastodon'];
 // lobsters dropped from the default set 2026-09-01: it has no server-side
 // search (client-side filter over the current `newest.json` window only) and
 // measured zero mentions for two high-traffic terms. Still selectable in
@@ -163,6 +171,22 @@ function mergedAvailabilityNote(
     .filter((entry) => entry.mode !== 'ready')
     .map((entry) => entry.reason)
     .join(' ');
+}
+
+/**
+ * What actually happened on the watch's last run, per platform -- distinct
+ * from `mergedAvailabilityNote` above, which only ever reports a platform's
+ * static credential/policy MODE. A platform stays `ready` even when every
+ * request it made degraded to a warning (a 403, a timeout, a throttle --
+ * `outreach/scouts/http.ts`'s degrade contract), so a founder reading only
+ * the availability note would see nothing wrong. `watch.lastRunWarnings` is
+ * written by `runBrandWatch` from exactly that degrade path, so it is
+ * current after the worker's own cadence sweep, not only after a manual
+ * "Run now" in this session.
+ */
+function lastRunWarningsNote(watch: BrandWatch | null): string {
+  if (!watch) return '';
+  return watch.lastRunWarnings.map((entry) => entry.reason).join(' ');
 }
 
 /*
@@ -700,15 +724,23 @@ export function ResearchView({
       // stale response must not clobber whatever is now on screen.
       if (selectedWatchRef.current !== watchId) return;
       setRunReports(result.reports);
-      const [freshMentions, freshTrend] = await Promise.all([
+      // Refetched, not patched in place: `runBrandWatch` already persisted
+      // `lastRunAt`/`lastRunWarnings` before this response returned, and a
+      // full refetch is the only way this screen picks them up. Without it
+      // `lastRunAt` stayed null after a manual run and the empty state kept
+      // reading "This watch runs daily; nothing found yet." right after the
+      // founder ran it.
+      const [freshMentions, freshTrend, freshWatches] = await Promise.all([
         getWatchMentions(watchId),
-        getWatchTrend(watchId)
+        getWatchTrend(watchId),
+        getWatches()
       ]);
       if (selectedWatchRef.current !== watchId) return;
       setMentions(freshMentions);
       setMentionsError(false);
       setMentionsLoaded(true);
       setTrend(freshTrend);
+      setWatches(freshWatches);
     } catch (error) {
       if (selectedWatchRef.current === watchId) {
         setToast(error instanceof Error ? error.message : 'Could not run the watch.');
@@ -728,6 +760,7 @@ export function ResearchView({
   const showRedditCorpus = platform === 'all' || platform === 'reddit';
   const selectedWatchRow = watches.find((watch) => watch.id === selectedWatch) ?? null;
   const watchAvailabilityNote = mergedAvailabilityNote(selectedWatchRow, runReports);
+  const watchRunWarningsNote = lastRunWarningsNote(selectedWatchRow);
 
   return (
     <div className="page-stack">
@@ -878,23 +911,37 @@ export function ResearchView({
                 <h3 aria-level={2}>Mentions</h3>
                 <p>Where this watch’s keywords came up, and how it was said.</p>
               </div>
-              <div className="research-trend" aria-label="Sentiment over the last 30 days">
-                {mentionsLoaded &&
-                  !mentionsError &&
-                  trend.map((point) => (
-                    <span
-                      key={point.day}
-                      className={`research-trend-bar ${
-                        point.average > 0.15
-                          ? 'is-positive'
-                          : point.average < -0.15
-                            ? 'is-negative'
-                            : 'is-neutral'
-                      }`}
-                      title={`${point.day}: +${point.positive} / ${point.neutral} / -${point.negative}`}
-                    />
-                  ))}
-              </div>
+              {mentionsLoaded && !mentionsError && (
+                <div className="research-trend-wrap">
+                  <span className="research-trend-headline">{trendHeadline(trend)}</span>
+                  <div className="research-trend" aria-label="Sentiment over the last 30 days">
+                    {trend.map((point) => {
+                      const total = point.positive + point.neutral + point.negative;
+                      const tone =
+                        total === 0
+                          ? 'is-empty'
+                          : point.average > 0.15
+                            ? 'is-positive'
+                            : point.average < -0.15
+                              ? 'is-negative'
+                              : 'is-neutral';
+                      const description =
+                        total === 0
+                          ? `${point.day}: no mentions`
+                          : `${point.day}: +${point.positive} / ${point.neutral} / -${point.negative}`;
+                      return (
+                        <span
+                          key={point.day}
+                          role="img"
+                          aria-label={description}
+                          title={description}
+                          className={`research-trend-bar ${tone}`}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="client-table">
               {mentionsLoaded &&
@@ -916,9 +963,13 @@ export function ResearchView({
                           {chip.text}
                         </span>
                       </div>
-                      <button type="button" onClick={() => setDraftingMention(mention)}>
-                        Draft reply
-                      </button>
+                      {mention.promotedRunId ? (
+                        <span className="client-status">Promoted to a reply run</span>
+                      ) : (
+                        <button type="button" onClick={() => setDraftingMention(mention)}>
+                          Draft reply
+                        </button>
+                      )}
                     </article>
                   );
                 })}
@@ -939,6 +990,7 @@ export function ResearchView({
                     ? 'Nothing found on the last run.'
                     : `This watch runs ${selectedWatchRow?.cadence ?? 'daily'}; nothing found yet.`}
                   {watchAvailabilityNote && <p>{watchAvailabilityNote}</p>}
+                  {watchRunWarningsNote && <p>{watchRunWarningsNote}</p>}
                 </div>
               )}
             </div>

@@ -496,6 +496,12 @@ export interface WatchPlatformAvailability {
   reason: string;
 }
 
+/** Mirrors `WatchRunWarning` from `src/server/watch/store.ts`. */
+export interface WatchRunWarning {
+  platform: string | null;
+  reason: string;
+}
+
 export interface BrandWatch {
   id: string;
   name: string;
@@ -509,6 +515,14 @@ export interface BrandWatch {
   lastError: string | null;
   /** Always current as of the request -- correct on first load, not only after a manual "Run now". */
   platformAvailability: WatchPlatformAvailability[];
+  /**
+   * What the last run actually found per platform, persisted by
+   * `runBrandWatch` from that run's `warnings`/`reports` -- current after the
+   * worker's own cadence sweep, not only after a manual "Run now" in this
+   * session. Distinct from `platformAvailability`: a platform stays `ready`
+   * there even when every request it made degraded to a warning.
+   */
+  lastRunWarnings: WatchRunWarning[];
 }
 
 export interface BrandWatchMention {

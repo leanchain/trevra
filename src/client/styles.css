@@ -1510,6 +1510,16 @@ h1 {
   font-size: 0.85rem;
   opacity: 0.75;
 }
+.research-trend-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.research-trend-headline {
+  font-size: 0.8rem;
+  opacity: 0.75;
+  white-space: nowrap;
+}
 .research-trend {
   display: flex;
   align-items: flex-end;
@@ -1527,6 +1537,11 @@ h1 {
 }
 .research-trend-bar.is-negative {
   background: var(--red);
+}
+.research-trend-bar.is-empty {
+  background: transparent;
+  border: 1px dashed var(--line);
+  opacity: 0.6;
 }
 .research-sentiment.is-positive {
   color: var(--green);

@@ -1,4 +1,4 @@
-import type { FeedThread } from '../api';
+import type { FeedThread, WatchTrendPoint } from '../api';
 
 const PLATFORM_LABELS: Record<string, string> = {
   linkedin: 'LinkedIn',
@@ -145,4 +145,27 @@ export function sentimentChip(mention: { sentimentLabel: string; sentimentSpan: 
   }
   const clipped = span.length > SPAN_MAX ? `${span.slice(0, SPAN_MAX)}…` : span;
   return { tone, text: `“${clipped}”` };
+}
+
+/**
+ * The numeric headline beside the trend bars: `+12 / 4 / -3 · avg 0.31`.
+ *
+ * `average` on each `TrendPoint` is that one day's mean (score_sum / that
+ * day's count); averaging those per-day means again would let a day with one
+ * mention outweigh a day with twenty. The window average is instead the
+ * total score across every day divided by the total mention count, recovered
+ * from the per-day fields already on the wire (`average * count` undoes the
+ * day's own division), so no server change is needed to show it.
+ */
+export function trendHeadline(points: readonly WatchTrendPoint[]): string {
+  const positive = points.reduce((sum, point) => sum + point.positive, 0);
+  const neutral = points.reduce((sum, point) => sum + point.neutral, 0);
+  const negative = points.reduce((sum, point) => sum + point.negative, 0);
+  const total = positive + neutral + negative;
+  const scoreSum = points.reduce(
+    (sum, point) => sum + point.average * (point.positive + point.neutral + point.negative),
+    0
+  );
+  const average = total === 0 ? 0 : scoreSum / total;
+  return `+${positive} / ${neutral} / -${negative} · avg ${average.toFixed(2)}`;
 }
