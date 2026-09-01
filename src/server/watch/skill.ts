@@ -17,10 +17,19 @@ import { scoreSentiment, type Sentiment } from './sentiment.js';
  * Structurally the same loop as `gtm.scout-threads`, and for the same three
  * reasons: availability is reported per platform, one platform's failure is a
  * warning rather than a dead run, and persistence happens once in `store.ts`.
- * It differs in exactly one way -- it passes `communities: []`, so a scout that
- * normally watches five configured repos or subreddits searches sitewide. A
- * brand watch scoped to somebody else's target list would answer "nobody
- * mentions you" without ever having looked.
+ * It differs in one way -- it passes `communities: []` to every scout it
+ * calls. For `github`/`reddit`, which read `ScoutQuery.communities` (the one
+ * contract change documented in the design spec's Sources section), an empty
+ * array means "drop the filter and search sitewide", so a scout that normally
+ * watches five configured repos or subreddits goes sitewide instead. That is
+ * NOT a property of every scout, and must not be assumed of a new one: `devto`
+ * never reads `communities` at all -- `devtoScout.search` always loops the
+ * four hardcoded `DEVTO_TAGS` and filters locally -- so `communities: []` is a
+ * silent no-op for it. A brand watch scoped to somebody else's target list
+ * (or, for devto, to none at all) would answer "nobody mentions you" without
+ * ever having looked, which is why `devto` is not offered as a watch platform
+ * (see `WATCH_PLATFORMS` in `ResearchView.tsx` and the platform enum in
+ * `app.ts`) even though it stays registered for `gtm.scout-threads`.
  */
 
 export interface ScoredMention {
