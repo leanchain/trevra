@@ -3,17 +3,26 @@ import { createPortal } from 'react-dom';
 import { CircleAlert, Database, LoaderCircle, MessageSquare, Newspaper, X } from 'lucide-react';
 import type { ConnectionSummary, SkillRun } from '../../shared/types';
 import {
+  createWatch,
+  draftMentionReply,
   getOutreachOfferDefaults,
   getOutreachThreads,
   getSkillRuns,
+  getWatchMentions,
+  getWatchTrend,
+  getWatches,
+  runWatch,
   startPlaybook,
+  type BrandWatch,
+  type BrandWatchMention,
   type FeedThread,
-  type OutreachOffer
+  type OutreachOffer,
+  type WatchTrendPoint
 } from '../api';
 import { RedditAccountPanel } from '../RedditScreen';
 import { ResearchScreen } from '../ResearchScreen';
 import { EvidenceList } from './inspector';
-import { chipPoints, factsLine, platformLabel, whyChips } from './researchFormat';
+import { chipPoints, factsLine, platformLabel, sentimentChip, whyChips } from './researchFormat';
 import { useDialog } from '../ui/dialog';
 
 /*
@@ -39,6 +48,19 @@ const PLATFORM_FILTERS = [
   'mastodon',
   'stackoverflow'
 ];
+
+// linkedin is absent on purpose: its scout is permanently disabled by policy,
+// so a watch on it could only ever report that.
+const WATCH_PLATFORMS = [
+  'hackernews',
+  'stackoverflow',
+  'lobsters',
+  'github',
+  'reddit',
+  'mastodon',
+  'devto'
+];
+const WATCH_DEFAULT_PLATFORMS = ['hackernews', 'stackoverflow', 'lobsters', 'github'];
 
 const EMPTY_OFFER: OutreachOffer = { name: '', url: '', summary: '', mechanism: '', claims: [] };
 
@@ -109,7 +131,7 @@ function asResearchBrief(output: unknown): ResearchBriefOutput | null {
  * anything; every label says draft, prepare, or approval instead.
  */
 function DraftDialog({
-  entry,
+  title,
   offer,
   setOffer,
   starting,
@@ -117,7 +139,7 @@ function DraftDialog({
   onCancel,
   onSubmit
 }: {
-  entry: FeedThread;
+  title: string;
   offer: OutreachOffer;
   setOffer: (offer: OutreachOffer) => void;
   starting: boolean;
@@ -147,7 +169,7 @@ function DraftDialog({
         <header>
           <div>
             <span className="drawer-kicker">Draft reply</span>
-            <h3 id={titleId}>{entry.row.title}</h3>
+            <h3 id={titleId}>{title}</h3>
           </div>
           <button
             type="button"
@@ -239,6 +261,160 @@ function DraftDialog({
   );
 }
 
+/**
+ * Creates a `BrandWatch` -- structured exactly like `DraftDialog`, since it is
+ * the same drawer chrome (`createPortal`, `.drawer-backdrop`, `.drawer`,
+ * `useDialog`) used for a form instead of an approval.
+ */
+function WatchDialog({
+  onClose,
+  onCreated
+}: {
+  onClose: () => void;
+  onCreated: (watch: BrandWatch) => void;
+}) {
+  const dialog = useRef<HTMLElement>(null);
+  const titleId = useId();
+  const [name, setName] = useState('');
+  const [keywordsText, setKeywordsText] = useState('');
+  const [platforms, setPlatforms] = useState<string[]>(WATCH_DEFAULT_PLATFORMS);
+  const [cadence, setCadence] = useState<'daily' | 'weekly'>('daily');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const close = () => {
+    if (!submitting) onClose();
+  };
+  useDialog(dialog, close);
+
+  const keywords = keywordsText
+    .split(',')
+    .map((keyword) => keyword.trim())
+    .filter((keyword) => keyword !== '');
+  const canSubmit =
+    !submitting && name.trim() !== '' && keywords.length > 0 && platforms.length > 0;
+
+  function togglePlatform(platform: string): void {
+    setPlatforms((current) =>
+      current.includes(platform)
+        ? current.filter((entry) => entry !== platform)
+        : [...current, platform]
+    );
+  }
+
+  async function submit(): Promise<void> {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const watch = await createWatch({ name: name.trim(), keywords, platforms, cadence });
+      onCreated(watch);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not create the watch.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return createPortal(
+    <div className="drawer-backdrop" role="presentation" onClick={close}>
+      <section
+        ref={dialog}
+        className="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header>
+          <div>
+            <span className="drawer-kicker">New watch</span>
+            <h3 id={titleId}>Track a brand or keyword</h3>
+          </div>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Close without creating a watch"
+            disabled={submitting}
+            onClick={close}
+          >
+            <X size={20} />
+          </button>
+        </header>
+        <div className="drawer-body">
+          <label>
+            Name
+            <input type="text" value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+          <label>
+            Keywords (comma-separated)
+            <input
+              type="text"
+              value={keywordsText}
+              onChange={(event) => setKeywordsText(event.target.value)}
+            />
+          </label>
+          <div>
+            <span className="li-filter-label">Platforms</span>
+            <div className="client-why">
+              {WATCH_PLATFORMS.map((platform) => (
+                <label className="client-status" key={platform}>
+                  <input
+                    type="checkbox"
+                    checked={platforms.includes(platform)}
+                    onChange={() => togglePlatform(platform)}
+                  />
+                  {platformLabel(platform)}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
+            <span className="li-filter-label">Cadence</span>
+            <div className="client-why">
+              <label className="client-status">
+                <input
+                  type="radio"
+                  name="watch-cadence"
+                  checked={cadence === 'daily'}
+                  onChange={() => setCadence('daily')}
+                />
+                Daily
+              </label>
+              <label className="client-status">
+                <input
+                  type="radio"
+                  name="watch-cadence"
+                  checked={cadence === 'weekly'}
+                  onChange={() => setCadence('weekly')}
+                />
+                Weekly
+              </label>
+            </div>
+          </div>
+          {error && <div className="error-banner">{error}</div>}
+        </div>
+        <footer>
+          <button type="button" className="secondary-button" disabled={submitting} onClick={close}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={!canSubmit}
+            onClick={() => {
+              void submit();
+            }}
+          >
+            {submitting && <LoaderCircle className="spin" size={16} />}
+            Create watch
+          </button>
+        </footer>
+      </section>
+    </div>,
+    document.body
+  );
+}
+
 export function ResearchView({
   connections,
   setToast
@@ -261,6 +437,18 @@ export function ResearchView({
   const [offer, setOffer] = useState<OutreachOffer>(EMPTY_OFFER);
   const [starting, setStarting] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
+
+  const [watches, setWatches] = useState<BrandWatch[]>([]);
+  const [watchesLoaded, setWatchesLoaded] = useState(false);
+  const [selectedWatch, setSelectedWatch] = useState<string | null>(null);
+  const [mentions, setMentions] = useState<BrandWatchMention[]>([]);
+  const [mentionsLoaded, setMentionsLoaded] = useState(false);
+  const [mentionsError, setMentionsError] = useState(false);
+  const [trend, setTrend] = useState<WatchTrendPoint[]>([]);
+  const [watchAvailabilityNote, setWatchAvailabilityNote] = useState('');
+  const [watchDialogOpen, setWatchDialogOpen] = useState(false);
+  const [runningWatch, setRunningWatch] = useState(false);
+  const [draftingMention, setDraftingMention] = useState<BrandWatchMention | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -302,8 +490,61 @@ export function ResearchView({
     };
   }, []);
 
+  // Loads once. The first watch is selected automatically once the list is
+  // in, via the functional update below, so this effect never needs
+  // `selectedWatch` in its dependency array.
   useEffect(() => {
-    if (!drafting) return;
+    let cancelled = false;
+    getWatches()
+      .then((rows) => {
+        if (cancelled) return;
+        setWatches(rows);
+        setWatchesLoaded(true);
+        setSelectedWatch((current) => current ?? rows[0]?.id ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setWatches([]);
+        setWatchesLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setWatchAvailabilityNote('');
+    if (!selectedWatch) {
+      setMentions([]);
+      setTrend([]);
+      setMentionsError(false);
+      setMentionsLoaded(true);
+      return;
+    }
+    let cancelled = false;
+    setMentionsLoaded(false);
+    Promise.all([getWatchMentions(selectedWatch), getWatchTrend(selectedWatch)])
+      .then(([rows, points]) => {
+        if (cancelled) return;
+        setMentions(rows);
+        setTrend(points);
+        setMentionsError(false);
+        setMentionsLoaded(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMentions([]);
+        setTrend([]);
+        setMentionsError(true);
+        setMentionsLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWatch]);
+
+  useEffect(() => {
+    if (!drafting && !draftingMention) return;
     // Cleared before the prefill resolves (and if it never does) so a new
     // thread's dialog never opens holding the previous thread's edits.
     setOffer(EMPTY_OFFER);
@@ -318,7 +559,21 @@ export function ResearchView({
     return () => {
       cancelled = true;
     };
-  }, [drafting]);
+  }, [drafting, draftingMention]);
+
+  // A 201 only means the run was accepted -- the guard step can still fail
+  // synchronously (e.g. a blocked thread's daily cap or cooldown), landing
+  // the run at `failed` instead of `waiting_approval`. That is an answer, not
+  // a fault: report it as blocked rather than as success (spec §4). Shared by
+  // thread drafts and mention drafts so a promoted mention lands in the same
+  // approval queue, reported the same way.
+  function reportPlaybookOutcome(run: Awaited<ReturnType<typeof startPlaybook>>): void {
+    if (run.status === 'waiting_approval') {
+      setToast(`Draft prepared for approval (run ${run.id}).`);
+    } else {
+      setToast(`Blocked: ${run.error ?? 'The run did not reach approval.'}`);
+    }
+  }
 
   async function startDraft(entry: FeedThread): Promise<void> {
     setStarting(true);
@@ -344,15 +599,7 @@ export function ResearchView({
       });
       setDrafting(null);
       setOffer(EMPTY_OFFER);
-      // A 201 only means the run was accepted -- the guard step can still fail
-      // synchronously (e.g. a blocked thread's daily cap or cooldown), landing
-      // the run at `failed` instead of `waiting_approval`. That is an answer,
-      // not a fault: report it as blocked rather than as success (spec §4).
-      if (run.status === 'waiting_approval') {
-        setToast(`Draft prepared for approval (run ${run.id}).`);
-      } else {
-        setToast(`Blocked: ${run.error ?? 'The run did not reach approval.'}`);
-      }
+      reportPlaybookOutcome(run);
     } catch (error) {
       setDialogError(error instanceof Error ? error.message : 'Could not start the draft.');
     } finally {
@@ -366,6 +613,55 @@ export function ResearchView({
     setDialogError(null);
   }
 
+  async function startMentionDraft(mention: BrandWatchMention): Promise<void> {
+    if (!selectedWatch) return;
+    setStarting(true);
+    setDialogError(null);
+    try {
+      const run = await draftMentionReply(selectedWatch, mention.id, offer);
+      setDraftingMention(null);
+      setOffer(EMPTY_OFFER);
+      reportPlaybookOutcome(run);
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : 'Could not start the draft.');
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  function closeMentionDraftDialog(): void {
+    if (starting) return;
+    setDraftingMention(null);
+    setDialogError(null);
+  }
+
+  async function runSelectedWatch(): Promise<void> {
+    if (!selectedWatch) return;
+    setRunningWatch(true);
+    try {
+      const result = await runWatch(selectedWatch);
+      setWatchAvailabilityNote(
+        result.reports
+          .filter((report) => report.availability.mode !== 'ready')
+          .map((report) => report.availability.reason)
+          .join(' ')
+      );
+      if (result.warnings.length > 0) setToast(result.warnings.join(' '));
+      const [freshMentions, freshTrend] = await Promise.all([
+        getWatchMentions(selectedWatch),
+        getWatchTrend(selectedWatch)
+      ]);
+      setMentions(freshMentions);
+      setMentionsError(false);
+      setMentionsLoaded(true);
+      setTrend(freshTrend);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Could not run the watch.');
+    } finally {
+      setRunningWatch(false);
+    }
+  }
+
   const renderableBriefs = briefs
     .map((run) => ({ run, brief: asResearchBrief(run.output) }))
     .filter(
@@ -374,6 +670,7 @@ export function ResearchView({
 
   const showBriefs = platform === 'all' || platform === 'linkedin';
   const showRedditCorpus = platform === 'all' || platform === 'reddit';
+  const selectedWatchRow = watches.find((watch) => watch.id === selectedWatch) ?? null;
 
   return (
     <div className="page-stack">
@@ -402,6 +699,44 @@ export function ResearchView({
           ))}
         </div>
       </section>
+
+      {watchesLoaded && (
+        <section className="research-watch-bar">
+          <div className="li-filter-row" role="group" aria-label="Watch">
+            <span className="li-filter-label">Watches</span>
+            {watches.map((watch) => (
+              <button
+                key={watch.id}
+                type="button"
+                className={`li-range ${selectedWatch === watch.id ? 'is-active' : ''}`}
+                aria-pressed={selectedWatch === watch.id}
+                onClick={() => setSelectedWatch(watch.id)}
+              >
+                {watch.name}
+              </button>
+            ))}
+            <button type="button" className="li-range" onClick={() => setWatchDialogOpen(true)}>
+              New watch
+            </button>
+          </div>
+          {selectedWatchRow && (
+            <p className="research-watch-meta">
+              Runs {selectedWatchRow.cadence}.{' '}
+              {selectedWatchRow.lastRunAt
+                ? `Last run ${new Date(selectedWatchRow.lastRunAt).toLocaleString()}.`
+                : 'Not run yet.'}{' '}
+              <button type="button" onClick={() => void runSelectedWatch()} disabled={runningWatch}>
+                {runningWatch ? 'Running…' : 'Run now'}
+              </button>
+            </p>
+          )}
+          {watches.length === 0 && (
+            <p className="research-watch-empty">
+              Create a watch to start tracking mentions of your brand or a keyword.
+            </p>
+          )}
+        </section>
+      )}
 
       <div className="research-feed-grid">
         <section className="page-panel research-thread-panel">
@@ -479,6 +814,78 @@ export function ResearchView({
           </div>
         </section>
 
+        {selectedWatch !== null && (
+          <section className="page-panel research-mention-panel">
+            <div className="section-heading">
+              <div>
+                <h3 aria-level={2}>Mentions</h3>
+                <p>Where this watch’s keywords came up, and how it was said.</p>
+              </div>
+              <div className="research-trend" aria-label="Sentiment over the last 30 days">
+                {trend.map((point) => (
+                  <span
+                    key={point.day}
+                    className={`research-trend-bar ${
+                      point.average > 0.15
+                        ? 'is-positive'
+                        : point.average < -0.15
+                          ? 'is-negative'
+                          : 'is-neutral'
+                    }`}
+                    title={`${point.day}: +${point.positive} / ${point.neutral} / -${point.negative}`}
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="client-table">
+              {mentionsLoaded &&
+                !mentionsError &&
+                mentions.map((mention) => {
+                  const chip = sentimentChip(mention);
+                  return (
+                    <article className="client-card-large" key={mention.id}>
+                      <div className="client-avatar large">
+                        {platformLabel(mention.platform).slice(0, 2)}
+                      </div>
+                      <div>
+                        <h3>
+                          <a href={mention.url} target="_blank" rel="noreferrer">
+                            {mention.title || mention.url}
+                          </a>
+                        </h3>
+                        <span className={`client-status research-sentiment ${chip.tone}`}>
+                          {chip.text}
+                        </span>
+                      </div>
+                      <button type="button" onClick={() => setDraftingMention(mention)}>
+                        Draft reply
+                      </button>
+                    </article>
+                  );
+                })}
+              {!mentionsLoaded && (
+                <div className="empty-state">
+                  <LoaderCircle />
+                </div>
+              )}
+              {mentionsLoaded && mentionsError && (
+                <div className="empty-state">
+                  <CircleAlert /> Mentions could not be loaded.
+                </div>
+              )}
+              {mentionsLoaded && !mentionsError && mentions.length === 0 && (
+                <div className="empty-state">
+                  <MessageSquare />
+                  {selectedWatchRow?.lastRunAt
+                    ? 'Nothing found on the last run.'
+                    : `This watch runs ${selectedWatchRow?.cadence ?? 'daily'}; nothing found yet.`}
+                  {watchAvailabilityNote && <p>{watchAvailabilityNote}</p>}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {showBriefs && (
           <section className="page-panel research-brief-panel">
             <div className="section-heading">
@@ -550,7 +957,7 @@ export function ResearchView({
 
       {drafting && (
         <DraftDialog
-          entry={drafting}
+          title={drafting.row.title}
           offer={offer}
           setOffer={setOffer}
           starting={starting}
@@ -558,6 +965,31 @@ export function ResearchView({
           onCancel={closeDraftDialog}
           onSubmit={() => {
             void startDraft(drafting);
+          }}
+        />
+      )}
+
+      {draftingMention && (
+        <DraftDialog
+          title={draftingMention.title || draftingMention.url}
+          offer={offer}
+          setOffer={setOffer}
+          starting={starting}
+          dialogError={dialogError}
+          onCancel={closeMentionDraftDialog}
+          onSubmit={() => {
+            void startMentionDraft(draftingMention);
+          }}
+        />
+      )}
+
+      {watchDialogOpen && (
+        <WatchDialog
+          onClose={() => setWatchDialogOpen(false)}
+          onCreated={(watch) => {
+            setWatches((current) => [...current, watch]);
+            setSelectedWatch(watch.id);
+            setWatchDialogOpen(false);
           }}
         />
       )}

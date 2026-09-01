@@ -118,3 +118,31 @@ export function factsLine(entry: FeedThread, now: Date): string {
     ageLabel(entry, now)
   ].join(' · ');
 }
+
+// 119, not 120: the rendered chip wraps the clipped span in two curly quote
+// marks plus the ellipsis, so 120 characters of span would put the chip's
+// text one character past the 122-character display cap this UI reserves
+// for the line.
+const SPAN_MAX = 119;
+
+/** The sentiment chip: the deciding sentence, quoted, or the bare label when there is none. */
+export function sentimentChip(mention: { sentimentLabel: string; sentimentSpan: string }): {
+  tone: string;
+  text: string;
+} {
+  const tone =
+    mention.sentimentLabel === 'positive'
+      ? 'is-positive'
+      : mention.sentimentLabel === 'negative'
+        ? 'is-negative'
+        : 'is-neutral';
+  const span = mention.sentimentSpan.trim();
+  if (span === '') {
+    return {
+      tone,
+      text: mention.sentimentLabel.charAt(0).toUpperCase() + mention.sentimentLabel.slice(1)
+    };
+  }
+  const clipped = span.length > SPAN_MAX ? `${span.slice(0, SPAN_MAX)}…` : span;
+  return { tone, text: `“${clipped}”` };
+}

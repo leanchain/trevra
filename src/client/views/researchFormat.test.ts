@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { FeedThread } from '../api';
-import { ageLabel, chipPoints, factsLine, whyChips } from './researchFormat';
+import { ageLabel, chipPoints, factsLine, sentimentChip, whyChips } from './researchFormat';
 
 const NOW = new Date('2026-08-19T12:00:00.000Z');
 
@@ -132,5 +132,33 @@ describe('whyChips', () => {
 describe('factsLine', () => {
   it('labels the platform number points, never score', () => {
     expect(factsLine(entry(), NOW)).toBe('Hacker News · 2 comments · 5 points · 2d old');
+  });
+});
+
+describe('sentimentChip', () => {
+  it('maps each label to its tone class', () => {
+    expect(sentimentChip({ sentimentLabel: 'positive', sentimentSpan: 'It is great.' }).tone).toBe(
+      'is-positive'
+    );
+    expect(sentimentChip({ sentimentLabel: 'negative', sentimentSpan: 'It is bad.' }).tone).toBe(
+      'is-negative'
+    );
+    expect(sentimentChip({ sentimentLabel: 'neutral', sentimentSpan: '' }).tone).toBe('is-neutral');
+  });
+
+  it('quotes the deciding span', () => {
+    expect(sentimentChip({ sentimentLabel: 'negative', sentimentSpan: 'It is bad.' }).text).toBe(
+      '“It is bad.”'
+    );
+  });
+
+  it('truncates a long span at the display cap', () => {
+    const chip = sentimentChip({ sentimentLabel: 'positive', sentimentSpan: 'x'.repeat(200) });
+    expect(chip.text.length).toBeLessThanOrEqual(122);
+    expect(chip.text).toContain('…');
+  });
+
+  it('falls back to the label when there is no span', () => {
+    expect(sentimentChip({ sentimentLabel: 'neutral', sentimentSpan: '' }).text).toBe('Neutral');
   });
 });

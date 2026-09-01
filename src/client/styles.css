@@ -1492,11 +1492,50 @@ h1 {
   grid-column: 1 / -1;
 }
 .research-thread-panel,
-.research-brief-panel {
+.research-brief-panel,
+.research-mention-panel {
   min-width: 0;
 }
 .research-brief-panel .client-card-large {
   grid-template-columns: auto minmax(0, 1fr);
+}
+.research-watch-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.research-watch-meta,
+.research-watch-empty {
+  margin: 0;
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+.research-trend {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 24px;
+}
+.research-trend-bar {
+  width: 4px;
+  height: 100%;
+  border-radius: 1px;
+  background: var(--line);
+}
+.research-trend-bar.is-positive {
+  background: var(--green);
+}
+.research-trend-bar.is-negative {
+  background: var(--red);
+}
+.research-sentiment.is-positive {
+  color: var(--green);
+}
+.research-sentiment.is-negative {
+  color: var(--red);
+}
+.research-sentiment.is-neutral {
+  opacity: 0.7;
 }
 .workspace-team .li-filter-row > .ui-button {
   justify-content: center;

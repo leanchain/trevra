@@ -571,7 +571,24 @@ export async function deleteWatch(id: string): Promise<void> {
   await request(`/api/watches/${id}`, { method: 'DELETE' });
 }
 
-export async function runWatch(id: string): Promise<{ inserted: number; warnings: string[] }> {
+/** Mirrors `WatchPlatformReport` from `src/server/watch/skill.ts`, trimmed to the fields the UI reads. */
+export interface WatchPlatformReport {
+  platform: string;
+  availability: {
+    mode: 'ready' | 'needs-credential' | 'disabled';
+    reason: string;
+    docsUrl?: string;
+  };
+}
+
+export async function runWatch(
+  id: string
+): Promise<{
+  inserted: number;
+  updated: number;
+  reports: WatchPlatformReport[];
+  warnings: string[];
+}> {
   return request(`/api/watches/${id}/run`, { method: 'POST', body: '{}' });
 }
 
