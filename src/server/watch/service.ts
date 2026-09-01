@@ -19,17 +19,37 @@ const LEASE = "INTERVAL '10 minutes'";
 /**
  * Flatten each report's per-platform warnings -- already populated even when
  * every request degraded rather than threw, see `outreach/scouts/http.ts` --
- * plus a whole-run failure message, if any, into one persistable list.
+ * plus any top-level warning `watchMentions` pushed that is not tied to a
+ * report, plus a whole-run failure message, if any, into one persistable
+ * list.
+ *
+ * The top-level pass matters on its own: `watchMentions` pushes the
+ * persistence failure from `recordWatchMentions` ("Watch mentions could not
+ * be recorded: ...") onto `result.warnings` alone -- it has no platform to
+ * attach a report to, since every platform's own search already succeeded.
+ * Reading only `report.warnings` misses exactly that message, which is the
+ * one path that loses real data: mentions were found and then never
+ * persisted, `failure` stays null, and every report still says `ready`.
  */
 function collectRunWarnings(
   reports: readonly WatchPlatformReport[],
+  topLevelWarnings: readonly string[],
   failure: string | null
 ): WatchRunWarning[] {
   const collected: WatchRunWarning[] = [];
+  const attributed = new Set<string>();
   for (const report of reports) {
     for (const message of report.warnings) {
       collected.push({ platform: report.platform, reason: message });
+      attributed.add(message);
     }
+  }
+  // Every report-tied warning is pushed onto `topLevelWarnings` verbatim by
+  // `watchMentions` (same string, both places) -- skip those so they are not
+  // duplicated under `platform: null`.
+  for (const message of topLevelWarnings) {
+    if (attributed.has(message)) continue;
+    collected.push({ platform: null, reason: message });
   }
   if (failure) collected.push({ platform: null, reason: failure });
   return collected;
@@ -116,7 +136,7 @@ export async function runBrandWatch(
   // Persisting the per-platform warnings here is what gives the worker's own
   // cadence sweep -- which runs with no session watching -- something to show
   // instead of being indistinguishable from a run that found nothing.
-  const runWarnings = collectRunWarnings(reports, failure);
+  const runWarnings = collectRunWarnings(reports, warnings, failure);
 
   await db
     .prepare(

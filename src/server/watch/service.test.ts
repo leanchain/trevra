@@ -38,6 +38,36 @@ const okFetch: FetchLike = async () =>
     headers: { 'content-type': 'application/json' }
   });
 
+/**
+ * Wraps a real `Db` so the one INSERT `recordWatchMentions` uses fails, while
+ * every other statement (the watch lookup, the run's own final UPDATE) goes
+ * through untouched. Simulates a deadlock/disk-full/constraint failure at
+ * the persistence layer -- store.ts:store.test.ts already covers
+ * `recordWatchMentions` in isolation, but this reproduces the actual
+ * failure boundary: `watchMentions` catches it and pushes a message onto
+ * its TOP-LEVEL `warnings`, never onto any report, so it is the one
+ * scenario `collectRunWarnings` can miss without ever seeing a per-report
+ * warning or a thrown `failure`.
+ */
+function withBrokenMentionInsert(real: Db): Db {
+  return new Proxy(real, {
+    get(target, prop, receiver) {
+      if (prop === 'prepare') {
+        return (sql: string) => {
+          if (sql.includes('INSERT INTO brand_watch_mentions')) {
+            const boom = async () => {
+              throw new Error('simulated persistence failure: disk full');
+            };
+            return { get: boom, all: boom, run: boom };
+          }
+          return target.prepare(sql);
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    }
+  }) as unknown as Db;
+}
+
 async function watchFor(cadence: 'daily' | 'weekly') {
   return createWatch(
     db,
@@ -165,6 +195,36 @@ describe('brand watch service', () => {
     expect(after?.lastRunWarnings.length).toBeGreaterThan(0);
     expect(after?.lastRunWarnings[0]).toMatchObject({ platform: 'hackernews' });
     expect(after?.lastRunWarnings[0].reason).toContain('403');
+  });
+
+  it('surfaces a mention-persistence failure in last_run_warnings even though every platform stayed ready', async () => {
+    // The data-losing path: the scout succeeds and finds a real mention, but
+    // writing it fails. Nothing in `reports` carries this -- every platform
+    // still reports `ready` with no per-report warning -- and `watchMentions`
+    // never throws (it catches the write failure so the reads a platform
+    // already completed are not discarded), so `failure`/`last_error` stay
+    // null too. Only the top-level `warnings` array carries the message.
+    const watch = await watchFor('daily');
+    const result = await runBrandWatch(withBrokenMentionInsert(db), DEMO_WORKSPACE_ID, watch.id, {
+      now: NOW,
+      fetchImpl: okFetch,
+      credentials: noCredentials
+    });
+
+    expect(result.reports.length).toBeGreaterThan(0);
+    expect(result.reports.every((report) => report.warnings.length === 0)).toBe(true);
+    expect(result.warnings.join(' ')).toContain('Watch mentions could not be recorded');
+    // The write genuinely failed -- nothing landed.
+    expect(await listWatchMentions(db, DEMO_WORKSPACE_ID, watch.id)).toHaveLength(0);
+
+    const after = await getWatch(db, DEMO_WORKSPACE_ID, watch.id);
+    expect(after?.lastError).toBeNull();
+    expect(after?.lastRunWarnings).toContainEqual(
+      expect.objectContaining({
+        platform: null,
+        reason: expect.stringContaining('Watch mentions could not be recorded')
+      })
+    );
   });
 
   it('runs a not-yet-due watch when forced', async () => {
