@@ -50,6 +50,7 @@ describe('brand watch store', () => {
     expect(watch.enabled).toBe(true);
     expect(watch.limitPerPlatform).toBe(25);
     expect(watch.lastRunAt).toBeNull();
+    expect(watch.lastRunWarnings).toEqual([]);
     expect(new Date(watch.nextRunAt).getTime()).toBeLessThanOrEqual(NOW.getTime());
   });
 
@@ -166,11 +167,49 @@ describe('brand watch mentions', () => {
     expect(trend.reduce((sum, point) => sum + point.positive, 0)).toBe(1);
   });
 
-  it('buckets on first_seen_at when the platform reported no creation time', async () => {
+  it('buckets on the discovery day (first_seen_at), not the thread’s own creation date', async () => {
+    const watch = await createWatch(db, DEMO_WORKSPACE_ID, INPUT, NOW);
+    // mention_created_at falls inside this same 7-day window. Under the old
+    // COALESCE(mention_created_at, first_seen_at) rule this thread would land
+    // on 2026-08-28, not today -- so unlike the previous version of this test
+    // (which used createdAt: null and got the same bucket under both rules by
+    // coincidence), this fixture actually catches a regression to the old rule.
+    await recordWatchMentions(
+      db,
+      DEMO_WORKSPACE_ID,
+      watch.id,
+      [mention({ createdAt: '2026-08-28T00:00:00.000Z' })],
+      NOW
+    );
+    const trend = await sentimentTrend(db, DEMO_WORKSPACE_ID, watch.id, 7, NOW);
+    expect(trend.find((point) => point.day === '2026-09-01')?.positive).toBe(1);
+    expect(trend.find((point) => point.day === '2026-08-28')?.positive).toBe(0);
+  });
+
+  it('still buckets on first_seen_at when the platform reported no creation time', async () => {
     const watch = await createWatch(db, DEMO_WORKSPACE_ID, INPUT, NOW);
     await recordWatchMentions(db, DEMO_WORKSPACE_ID, watch.id, [mention({ createdAt: null })], NOW);
     const trend = await sentimentTrend(db, DEMO_WORKSPACE_ID, watch.id, 7, NOW);
     expect(trend.find((point) => point.day === '2026-09-01')?.positive).toBe(1);
+  });
+
+  it('a years-old mention_created_at still lands on today’s rollup and appears in a 30-day trend', async () => {
+    const watch = await createWatch(db, DEMO_WORKSPACE_ID, INPUT, NOW);
+    // HN's Algolia /search is relevance-ranked, GitHub sorts by `updated`,
+    // Stack Overflow returns newest-matching -- so a real mention's own
+    // creation date is routinely months or years old. Bucketing on it would
+    // put the mention permanently outside any 30-day discovery window.
+    await recordWatchMentions(
+      db,
+      DEMO_WORKSPACE_ID,
+      watch.id,
+      [mention({ createdAt: '2019-03-04T00:00:00.000Z' })],
+      NOW
+    );
+    const trend = await sentimentTrend(db, DEMO_WORKSPACE_ID, watch.id, 30, NOW);
+    expect(trend).toHaveLength(30);
+    expect(trend[29].day).toBe('2026-09-01');
+    expect(trend[29].positive).toBe(1);
   });
 
   it('gives two watches their own row for the same url', async () => {

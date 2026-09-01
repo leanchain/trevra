@@ -25,6 +25,21 @@ export interface BrandWatch {
   nextRunAt: string;
   lastRunAt: string | null;
   lastError: string | null;
+  /**
+   * What the last run actually found per platform, written by `runBrandWatch`
+   * from that run's `warnings`/`reports`. `last_error` above is set only when
+   * `watchMentions` itself throws; the realistic failure mode (a 403, a
+   * timeout, a throttle) degrades to a warning in `outreach/scouts/http.ts`
+   * and never reaches that throw, so this is what lets a run where every
+   * platform errored be told apart from a run that genuinely found nothing.
+   */
+  lastRunWarnings: WatchRunWarning[];
+}
+
+export interface WatchRunWarning {
+  /** null for a whole-run failure not attributable to one platform. */
+  platform: string | null;
+  reason: string;
 }
 
 export interface BrandWatchInput {
@@ -48,6 +63,7 @@ interface WatchRow {
   next_run_at: string;
   last_run_at: string | null;
   last_error: string | null;
+  last_run_warnings: unknown;
 }
 
 // The pool installs a pass-through parser for timestamptz, so these arrive as
@@ -58,8 +74,13 @@ const WATCH_COLUMNS = `
   id, workspace_id, name, keywords, platforms, cadence, enabled, limit_per_platform,
   TO_CHAR(next_run_at AT TIME ZONE 'UTC', ${ISO}) AS next_run_at,
   TO_CHAR(last_run_at AT TIME ZONE 'UTC', ${ISO}) AS last_run_at,
-  last_error
+  last_error, last_run_warnings
 `;
+
+function parseRunWarnings(value: unknown): WatchRunWarning[] {
+  const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+  return Array.isArray(parsed) ? (parsed as WatchRunWarning[]) : [];
+}
 
 function serialize(row: WatchRow): BrandWatch {
   return {
@@ -73,7 +94,8 @@ function serialize(row: WatchRow): BrandWatch {
     limitPerPlatform: row.limit_per_platform,
     nextRunAt: row.next_run_at,
     lastRunAt: row.last_run_at,
-    lastError: row.last_error
+    lastError: row.last_error,
+    lastRunWarnings: parseRunWarnings(row.last_run_warnings)
   };
 }
 
@@ -286,6 +308,19 @@ function mentionContentHash(thread: Pick<OutreachThread, 'title' | 'content'>): 
  * thread on every run, and counting an update would inflate the trend line the
  * founder makes decisions on -- by exactly the number of times we happened to
  * look.
+ *
+ * Bucketed on `first_seen_at::date` -- the day WE discovered the mention, not
+ * the day the underlying thread was posted (`mention_created_at`). Changed
+ * 2026-09-01 from `COALESCE(mention_created_at, first_seen_at)::date`: a
+ * 30-day trend window means the last 30 days of *discovery*, and a thread's
+ * own age is not what a founder asking "what came up in the last 30 days"
+ * means. None of the credential-free sources are recency-sorted -- HN's
+ * Algolia `/search` is relevance-ranked, GitHub sorts by `updated`, Stack
+ * Overflow returns newest-matching -- so a real mention's `mention_created_at`
+ * is routinely months or years old. Bucketing on it put that mention's
+ * rollup row permanently outside every trend window the UI renders, and
+ * because the rollup increments only on the insert arm, a later re-poll could
+ * never move it into a later window either.
  */
 export async function recordWatchMentions(
   db: Db,
@@ -323,7 +358,7 @@ export async function recordWatchMentions(
            metadata_json = excluded.metadata_json,
            last_seen_at = excluded.last_seen_at
          RETURNING id, (xmax = 0) AS is_new,
-           TO_CHAR(COALESCE(mention_created_at, first_seen_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS bucket`
+           TO_CHAR(first_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS bucket`
       )
       .get<{ id: string; is_new: boolean; bucket: string }>(
         id('bwm'),
