@@ -71,7 +71,7 @@ import {
   updateWatch
 } from './watch/store.js';
 import { runBrandWatch } from './watch/service.js';
-import { WATCH_UNSUPPORTED_PLATFORMS } from './watch/skill.js';
+import { unsupportedWatchPlatformReason } from './watch/skill.js';
 import { handleMcpHttpRequest, rejectMcpNonPost } from './mcp-http.js';
 import {
   decidePlaybookApproval,
@@ -3016,10 +3016,14 @@ export function createApp(db: Db) {
     return platforms.map((platform) => {
       // A row can carry a platform (devto) that `getScout` still resolves for
       // gtm.scout-threads but that a watch must never treat as usable -- see
-      // `WATCH_UNSUPPORTED_PLATFORMS`. Checked before `getScout` so this never
-      // reports a scout's own `ready` (devto's is unconditional) for a
-      // platform a watch cannot actually use.
-      const unsupportedReason = WATCH_UNSUPPORTED_PLATFORMS[platform];
+      // `WATCH_UNSUPPORTED_PLATFORMS` in watch/skill.ts. Checked before
+      // `getScout` so this never reports a scout's own `ready` (devto's is
+      // unconditional) for a platform a watch cannot actually use. Goes
+      // through `unsupportedWatchPlatformReason` rather than indexing the map
+      // directly -- `platform` here is as caller-controlled as it is in
+      // skill.ts (a pre-existing `brand_watches` row is not enum-checked),
+      // so the same prototype-pollution guard applies.
+      const unsupportedReason = unsupportedWatchPlatformReason(platform);
       if (unsupportedReason) {
         return { platform, mode: 'disabled', reason: unsupportedReason };
       }

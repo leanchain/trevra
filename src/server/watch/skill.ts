@@ -49,6 +49,27 @@ export const WATCH_UNSUPPORTED_PLATFORMS: Readonly<Record<string, string>> = {
     'devto has no sitewide keyword search: devtoScout.search always loops four hardcoded tags (ai, llm, programming, productivity) and never reads communities the way github/reddit do, so a watch on it would silently only ever see those four unrelated tag feeds.'
 };
 
+/**
+ * Safe lookup into `WATCH_UNSUPPORTED_PLATFORMS`.
+ *
+ * `platform` here can be an arbitrary caller-controlled string -- this
+ * skill's own `platforms` input is an unconstrained `z.array(z.string())`,
+ * reachable through the skill runner and MCP -- so a bare
+ * `WATCH_UNSUPPORTED_PLATFORMS[platform]` index is a prototype-chain lookup:
+ * `platform: 'constructor'` (or `toString`, `valueOf`, `__proto__`) would
+ * resolve to an inherited function rather than `undefined`. That value is
+ * truthy but not a string, so it would flow into `availability.reason`,
+ * `outputSchema.safeParse` would reject the whole run as producing an
+ * invalid output, and a request that used to get back a clean
+ * `Unknown platform: constructor.` report would instead error. `Object.hasOwn`
+ * rules out every inherited key.
+ */
+export function unsupportedWatchPlatformReason(platform: string): string | undefined {
+  return Object.hasOwn(WATCH_UNSUPPORTED_PLATFORMS, platform)
+    ? WATCH_UNSUPPORTED_PLATFORMS[platform]
+    : undefined;
+}
+
 export interface ScoredMention {
   platform: string;
   externalId: string;
@@ -151,7 +172,7 @@ export async function watchMentions(
   const collected: WatchMentionInput[] = [];
 
   for (const platform of platforms) {
-    const unsupportedReason = WATCH_UNSUPPORTED_PLATFORMS[platform];
+    const unsupportedReason = unsupportedWatchPlatformReason(platform);
     if (unsupportedReason) {
       const message = `${platform} is not usable for watches: ${unsupportedReason}`;
       warnings.push(message);

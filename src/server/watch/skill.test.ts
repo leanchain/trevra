@@ -303,4 +303,26 @@ describe('gtm.watch-mentions', () => {
       spy.mockRestore();
     }
   });
+
+  it('treats a prototype-chain platform name as plainly unknown, not an inherited function', async () => {
+    // WATCH_UNSUPPORTED_PLATFORMS is a plain object literal; a bare index
+    // lookup (`map[platform]`) resolves 'constructor' (also 'toString',
+    // 'valueOf', '__proto__', ...) to an inherited function rather than
+    // `undefined` -- truthy, and not a string, so it would flow into
+    // `availability.reason` and fail `outputSchema.safeParse`. Reachable
+    // directly: `platforms` is an unconstrained `z.array(z.string())`.
+    const result = await watchMentions(
+      { keywords: ['trevra'], platforms: ['constructor'] },
+      ctx(),
+      {
+        credentials: noCredentials,
+        fetchImpl: async () => new Response('not found', { status: 404 })
+      }
+    );
+    expect(result.reports).toHaveLength(1);
+    expect(result.reports[0].availability.mode).toBe('disabled');
+    expect(result.reports[0].availability.reason).toBe('Unknown platform: constructor.');
+    expect(result.mentions).toHaveLength(0);
+    expectValidOutput(result);
+  });
 });
