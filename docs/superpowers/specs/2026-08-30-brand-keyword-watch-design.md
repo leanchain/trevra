@@ -94,9 +94,21 @@ scout's `availability()`:
 | linkedin      | —                           | permanently disabled by policy; never offered as a watch option    |
 
 Default platform set for a new watch: `hackernews`, `stackoverflow`, `github`. `lobsters`,
-`reddit`, `mastodon`, and `devto` are selectable and report their availability mode per
-platform, exactly as `scoutThreads` already does. `lobsters` was measured out of the
-default set — see "Default platform set: measured" below.
+`reddit`, and `mastodon` are selectable and report their availability mode per platform,
+exactly as `scoutThreads` already does. `lobsters` was measured out of the default set —
+see "Default platform set: measured" below.
+
+**`devto` is not offered as a watch platform at all** (changed 2026-09-01, whole-branch fix
+wave). It has no keyword search endpoint of any kind: `devtoScout.search` always loops the
+four hardcoded `DEVTO_TAGS` and filters locally, and unlike `github`/`reddit` it never reads
+`ScoutQuery.communities`, so `communities: []` -- the mechanism every other watch platform
+uses to go sitewide -- is a silent no-op for it. A watch named after a brand outside those
+four tags would report "nobody mentions you" having only ever looked at
+`ai`/`llm`/`programming`/`productivity`, exactly the silent-miss failure the per-platform
+availability reporting exists to prevent, and one `availability.mode: 'ready'` cannot
+surface, because the gap is in what gets searched rather than whether the request succeeded.
+Still registered and used by `gtm.scout-threads`, which never claimed sitewide coverage from
+it.
 
 ### The one contract change
 
@@ -198,8 +210,21 @@ Notes that are requirements, not commentary:
 - `promoted_run_id` is `ON DELETE SET NULL`, not `CASCADE`. Losing a playbook run must not
   delete the mention that caused it.
 - The daily rollup is incremented **only on the insert arm** of the mention upsert, keyed
-  on `COALESCE(mention_created_at, first_seen_at)::date`. Re-polling the same thread must
-  not double-count.
+  on `first_seen_at::date` -- the day the mention was **discovered**, not the day the
+  underlying thread was posted (`mention_created_at`). Re-polling the same thread must not
+  double-count.
+
+  **Changed 2026-09-01 (project owner ruling), was `COALESCE(mention_created_at,
+first_seen_at)::date`.** A 30-day trend window means the last 30 days of _discovery_; a
+  thread's own age is not what a founder asking "what came up in the last 30 days" means.
+  None of the credential-free sources are recency-sorted -- HN's Algolia `/search` is
+  relevance-ranked, GitHub sorts by `updated`, Stack Overflow returns newest-matching -- so a
+  real mention's `mention_created_at` is routinely months or years old. Bucketing on it put
+  that mention's rollup row permanently outside every trend window the UI ever renders, and
+  because the rollup increments only on the insert arm, a later re-poll of the same thread
+  could never move it into a later window either: the founder would see mention cards beside
+  a trend that rendered as 30 flat, empty bars.
+
 - The rollup is a table, not a `GROUP BY` over mentions, so the trend survives a future
   retention cut and does not cost a scan on every page load.
 - The unique index is `(watch_id, platform, external_id)`, so two watches in one workspace
@@ -446,8 +471,10 @@ accessor, which run offline because supplying `fetchImpl` disables the DNS guard
 
 - re-polling a mention updates `last_seen_at`/`score`, creates no second row, and does not
   double-count the daily rollup
-- a new mention increments exactly one rollup row, bucketed on `mention_created_at` when
-  present and `first_seen_at` when null
+- a new mention increments exactly one rollup row, bucketed on `first_seen_at`'s date (the
+  day it was discovered) regardless of `mention_created_at` -- including a mention whose
+  `mention_created_at` is years old, which must still land on the run's own day and appear
+  inside a 30-day trend
 - two watches in one workspace matching the same URL each get their own mention row
 - deleting a watch cascades mentions and rollups; deleting the promoted `playbook_runs` row
   leaves the mention with `promoted_run_id IS NULL`
