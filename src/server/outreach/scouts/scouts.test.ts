@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { CredentialAccessor } from '../../research/types.js';
 import type { FetchLike } from '../../skills/guard.js';
+import { GITHUB_TARGET_REPOS, REDDIT_TARGET_SUBREDDITS } from '../config.js';
 import { getScout, listScouts } from '../registry.js';
 import { devtoScout } from './devto.js';
 import { githubScout } from './github.js';
 import { hackernewsScout } from './hackernews.js';
 import { dedupeById, matchesQuery } from './http.js';
+import { redditScout } from './reddit.js';
 
 // No network and no DNS: supplying fetchImpl puts the SSRF guard in
 // structural-only mode, so these run offline and deterministically.
@@ -254,7 +256,14 @@ describe('scout community scoping', () => {
       { credentials: noCredentials, fetchImpl }
     );
     expect(calls).toHaveLength(1);
-    expect(decodeURIComponent(calls[0])).toContain('repo:');
+    // Byte-exact: a reordered term, a dropped repo, or a stray double space
+    // would all still satisfy a substring check but must fail this one.
+    const expectedQuery = [
+      'agent cost',
+      ...GITHUB_TARGET_REPOS.map((repo) => `repo:${repo}`),
+      'is:issue'
+    ].join(' ');
+    expect(new URL(calls[0]).searchParams.get('q')).toBe(expectedQuery);
   });
 
   it('drops the repo filter when communities is an empty array', async () => {
@@ -276,5 +285,109 @@ describe('scout community scoping', () => {
       { credentials: noCredentials, fetchImpl }
     );
     expect(decodeURIComponent(calls[0])).toContain('repo:acme/widgets');
+  });
+});
+
+describe('reddit scout community scoping', () => {
+  // The four Reddit credentials, present so `search` reaches the URL-building
+  // logic instead of stopping at the `needs-credential` gate that every other
+  // reddit test in this file relies on.
+  const redditCredentials: CredentialAccessor = {
+    get: (name) =>
+      (
+        ({
+          REDDIT_CLIENT_ID: 'id',
+          REDDIT_CLIENT_SECRET: 'secret',
+          REDDIT_USERNAME: 'user',
+          REDDIT_PASSWORD: 'pass'
+        }) as Record<string, string>
+      )[name]
+  };
+
+  /** Serves the OAuth token endpoint plus a stubbed Listing response; only search calls are recorded. */
+  function redditFetch(listing: unknown): { fetchImpl: FetchLike; calls: string[] } {
+    const calls: string[] = [];
+    return {
+      calls,
+      fetchImpl: async (input) => {
+        if (input.includes('access_token')) {
+          return new Response(JSON.stringify({ access_token: 'test-token' }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        calls.push(input);
+        return new Response(JSON.stringify(listing), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+    };
+  }
+
+  const emptyListing = { data: { children: [] } };
+
+  it('keeps the configured subreddit prefix when communities is absent', async () => {
+    const { fetchImpl, calls } = redditFetch(emptyListing);
+    await redditScout.search(
+      { queries: ['token cost'], limit: 10 },
+      { credentials: redditCredentials, fetchImpl }
+    );
+    expect(calls).toHaveLength(1);
+    const expectedPrefix = `https://oauth.reddit.com/r/${REDDIT_TARGET_SUBREDDITS.slice(0, 5).join('+')}/search.json?`;
+    expect(calls[0].startsWith(expectedPrefix)).toBe(true);
+  });
+
+  it('drops the /r/ prefix, searches sitewide, and still parses the Listing response when communities is an empty array', async () => {
+    const listing = {
+      data: {
+        children: [
+          {
+            data: {
+              id: 'abc123',
+              permalink: '/r/webdev/comments/abc123/token_cost/',
+              title: 'Token cost is out of control',
+              selftext: 'We are burning $2k a month.',
+              author: 'dev1',
+              subreddit: 'webdev',
+              score: 42,
+              num_comments: 7,
+              created_utc: 1_785_000_000,
+              over_18: false,
+              upvote_ratio: 0.9
+            }
+          }
+        ]
+      }
+    };
+    const { fetchImpl, calls } = redditFetch(listing);
+    const result = await redditScout.search(
+      { queries: ['trevra'], limit: 10, communities: [] },
+      { credentials: redditCredentials, fetchImpl }
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toContain('/r/');
+    expect(calls[0].startsWith('https://oauth.reddit.com/search?')).toBe(true);
+    // The sitewide endpoint's response shape is assumed identical to the
+    // per-subreddit Listing; this constrains that assumption, not just the URL.
+    expect(result.threads).toHaveLength(1);
+    expect(result.threads[0]).toMatchObject({
+      platform: 'reddit',
+      externalId: 'abc123',
+      community: 'webdev',
+      author: 'dev1',
+      score: 42,
+      numComments: 7
+    });
+  });
+
+  it('scopes to the supplied subreddit when communities is non-empty', async () => {
+    const { fetchImpl, calls } = redditFetch(emptyListing);
+    await redditScout.search(
+      { queries: ['trevra'], limit: 10, communities: ['webdev'] },
+      { credentials: redditCredentials, fetchImpl }
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].startsWith('https://oauth.reddit.com/r/webdev/search.json?')).toBe(true);
   });
 });
