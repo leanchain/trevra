@@ -31,6 +31,7 @@ import {
 } from '../server/linkedin/jobs.js';
 import { hostedExecutionMode, hostedSeatFilter } from '../server/linkedin/hosted-execution.js';
 import { runDueResearchSources } from '../server/research/service.js';
+import { runDueBrandWatches } from '../server/watch/service.js';
 
 const runtime = validateEnvironment();
 // READ AND VALIDATED AT STARTUP, NEVER PER TICK. A shard that is not a
@@ -123,7 +124,8 @@ async function cycle(): Promise<void> {
       runAllAutomationCycles(db),
       runReadyPlaybooks(db),
       runDueAgentSchedules(db),
-      runDueResearchSources(db)
+      runDueResearchSources(db),
+      runDueBrandWatches(db)
     ]);
   } catch (error) {
     console.error('Worker control-plane cycle failed', error);
