@@ -14,6 +14,7 @@ import { channelPlanSkill } from '../channels/plan.js';
 import { channelPrepareSkill } from '../channels/prepare.js';
 import { sourceLeadsSkill } from '../research/source.js';
 import { scoutThreadsSkill } from '../outreach/scout.js';
+import { watchMentionsSkill } from '../watch/skill.js';
 import { scoreThreadsSkill } from '../outreach/scorer.js';
 import { draftReplySkill } from '../outreach/reply.js';
 import { outreachGuardSkill } from '../outreach/safety.js';
@@ -109,6 +110,7 @@ for (const skill of [
   channelPlanSkill,
   channelPrepareSkill,
   scoutThreadsSkill,
+  watchMentionsSkill,
   scoreThreadsSkill,
   outreachGuardSkill,
   draftReplySkill,
@@ -128,13 +130,17 @@ for (const skill of [
 export async function seedSkills(db: Db, now: Date = new Date()): Promise<void> {
   const timestamp = now.toISOString();
   for (const skill of listSkills()) {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO skills (id, name, version, created_at, updated_at)
       VALUES (?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET
         name=excluded.name,
         version=excluded.version,
         updated_at=excluded.updated_at
-    `).run(skill.manifest.id, skill.manifest.name, skill.manifest.version, timestamp, timestamp);
+    `
+      )
+      .run(skill.manifest.id, skill.manifest.name, skill.manifest.version, timestamp, timestamp);
   }
 }
