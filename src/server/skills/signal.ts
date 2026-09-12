@@ -14,7 +14,7 @@ import {
   stripTags
 } from './html.js';
 import { normalizeDomain } from './ladder.js';
-import { createPublicWebCrawler } from '../crawl/public-web.js';
+import { createPublicWebCrawler, type CrawlTelemetry } from '../crawl/public-web.js';
 import { crawlStorefront, type StorefrontProduct } from '../storefront/crawler.js';
 import type { Skill, SkillContext, SkillEvidence } from './types.js';
 
@@ -190,6 +190,8 @@ export interface CaptureOptions {
   now?: Date;
   /** Optional prior from an import/source. Live crawl evidence still wins. */
   platformHint?: 'shopify' | 'woocommerce' | null;
+  /** Operational crawl summary for logs/metrics; never influences signal semantics. */
+  onCrawlTelemetry?: (telemetry: CrawlTelemetry) => void;
 }
 
 export async function captureSnapshot(
@@ -206,9 +208,17 @@ export async function captureSnapshot(
     fetchImpl: options.fetchImpl,
     maxRequests: budget
   });
+  // Preserve room for the non-commerce watches. A product catalog is useful,
+  // but it must not consume the whole account budget and starve careers/pricing.
+  const reserve = (watches.has('hiring') ? 2 : 0) + (watches.has('pricing') ? 2 : 0);
+  const maxCatalogRequests = watches.has('products')
+    ? Math.max(0, Math.min(4, budget - 2 - reserve))
+    : 0;
   const storefront = await crawlStorefront(clean, {
     crawler,
-    platformHint: options.platformHint
+    platformHint: options.platformHint,
+    captureProducts: watches.has('products'),
+    maxCatalogRequests
   });
   const base = new URL(crawler.origin);
   const get = async (url: string) => (await crawler.get(url)).response;
@@ -258,6 +268,8 @@ export async function captureSnapshot(
       ? storefront.productItems.length
       : null;
   const productCapped = watches.has('products') ? storefront.productCapped : false;
+
+  options.onCrawlTelemetry?.(crawler.telemetry());
 
   return {
     domain: clean,

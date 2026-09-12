@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
+import type { CrawlTelemetry } from '../crawl/public-web.js';
 import { collectExternalObservations } from '../observations/collect.js';
 import type { ObservationProvider } from '../observations/types.js';
 import type { FetchLike } from '../skills/guard.js';
@@ -13,8 +14,8 @@ import type { Account, AccountSignal, AccountSource, AccountStatus } from './typ
  * An imported CSV of 500 companies is a snapshot of somebody's guess. What
  * makes it worth opening next Tuesday is that something on it MOVED -- a role
  * opened, a pricing page changed, a headline was rewritten -- and that the move
- * is recent enough to be worth a sentence. This module is the loop that goes
- * and looks, every day, without ever becoming a crawler.
+ * is recent enough to be worth a sentence. This module schedules those looks;
+ * crawl policy itself lives in the reusable public-web crawler.
  *
  * FOUR RULES, and every part of this file exists because of one of them:
  *
@@ -514,6 +515,7 @@ export async function sweepAccount(
   const startedAt = clock();
   let signals: AccountSignal[] = [];
   let error: string | null = null;
+  let crawlTelemetry: CrawlTelemetry | null = null;
 
   try {
     const ctx: SkillContext = { db, workspaceId: account.workspaceId, now: clock };
@@ -525,7 +527,10 @@ export async function sweepAccount(
     const watched = await watchSignals(account.domain, ctx, {
       fetchImpl: deps.fetchImpl,
       now: startedAt,
-      platformHint
+      platformHint,
+      onCrawlTelemetry: (telemetry) => {
+        crawlTelemetry = telemetry;
+      }
     });
     const incoming: IncomingSignal[] = [];
 
@@ -533,7 +538,11 @@ export async function sweepAccount(
       // Native site evidence degraded, but external observation providers may
       // still know something useful about this account. Keep the failure
       // visible while accepting independently evidenced observations below.
-      error = `Nothing could be read from https://${watched.domain}: the homepage returned no usable page.`;
+      const telemetry = crawlTelemetry as CrawlTelemetry | null;
+      error =
+        telemetry?.robots === 'unavailable'
+          ? `Nothing could be read from https://${watched.domain}: robots.txt could not be evaluated safely.`
+          : `Nothing could be read from https://${watched.domain}: the homepage returned no usable page.`;
     } else {
       const observedAt = new Date(watched.snapshot.capturedAt);
       incoming.push(
@@ -591,6 +600,12 @@ export async function sweepAccount(
       account.id
     );
 
+  const telemetry = crawlTelemetry as CrawlTelemetry | null;
+  if (telemetry) {
+    deps.log?.(
+      `Crawl ${account.domain}: ${telemetry.requestsUsed}/${telemetry.requestsUsed + telemetry.requestsRemaining} requests, ${telemetry.bytesRead} bytes, ${telemetry.retries} retries, robots=${telemetry.robots}, delay=${telemetry.crawlDelayMs}ms.`
+    );
+  }
   deps.log?.(
     error === null
       ? `Swept ${account.domain}: ${signals.length} new signal(s), next look ${next.toISOString()}.`
@@ -630,11 +645,10 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTim
  * paced network reads and "sweep everything" is a request for a worker that
  * never returns. Whatever is left stays due and is claimed on the next tick.
  *
- * PACED BETWEEN ACCOUNTS, NOT WITHIN ONE. `signal.ts` already bounds a single
- * account to a handful of pages against one host; the burst worth avoiding is
- * the one visible from outside -- twenty different companies read from the same
- * address inside a second, which is a crawler's traffic shape whatever the
- * intent behind it.
+ * PACED AT BOTH LEVELS. The public-web crawler enforces per-domain request
+ * budgets, robots Crawl-delay and a minimum courtesy delay inside one account;
+ * this loop adds a deterministic gap between accounts so one worker does not
+ * fan out across dozens of companies in a burst.
  */
 export async function runAccountSweep(
   db: Db,
@@ -661,6 +675,7 @@ export async function runAccountSweep(
     const outcome = await sweepAccount(db, account, {
       now: clock,
       fetchImpl: deps.fetchImpl,
+      observationProviders: deps.observationProviders,
       log: deps.log
     });
     result.swept += 1;

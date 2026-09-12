@@ -55,6 +55,12 @@ export interface StorefrontCrawlerOptions {
   crawler?: PublicWebCrawler;
   /** Optional prior only. Trevra still probes the live storefront independently. */
   platformHint?: 'shopify' | 'woocommerce' | null;
+  /** Bound catalog enumeration even when a public endpoint is extremely large. */
+  maxProducts?: number;
+  /** Bound requests spent on commerce endpoints so other observers keep crawl budget. */
+  maxCatalogRequests?: number;
+  /** Consumers that only need homepage/platform evidence can disable catalog acquisition. */
+  captureProducts?: boolean;
 }
 
 type Scores = Map<StorefrontPlatform, number>;
@@ -258,74 +264,161 @@ export async function crawlStorefront(
     options.crawler ??
     (await createPublicWebCrawler(domain, {
       fetchImpl: options.fetchImpl,
-      maxRequests: options.maxRequests ?? 6
+      maxRequests: options.maxRequests ?? 8
     }));
   const clean = crawler.domain;
-  const origin = crawler.origin;
   const warnings: string[] = [];
+  const maxProducts = Math.max(1, Math.min(5_000, Math.trunc(options.maxProducts ?? 1_000)));
+  const maxCatalogRequests = Math.max(0, Math.min(20, Math.trunc(options.maxCatalogRequests ?? 4)));
+  const captureProducts = options.captureProducts ?? true;
 
-  const get = async (url: string): Promise<Probe | null> => (await crawler.get(url)).response;
-
-  const homeUrl = `${origin}/`;
-  const home = await get(homeUrl);
+  const homeUrl = `${crawler.origin}/`;
+  const homeResult = await crawler.get(homeUrl);
+  const home = homeResult.response;
+  if (homeResult.error) warnings.push(`Homepage crawl degraded: ${homeResult.error}.`);
+  if (homeResult.skipped) warnings.push(`Homepage crawl skipped: ${homeResult.skipped}.`);
   const homeHtml =
     home && home.status < 400 && (!home.contentType || home.contentType.includes('html'))
       ? home.text
       : null;
+
   const { scores, signals } = scoreStorefrontPlatforms(homeHtml);
   if (options.platformHint)
     addSignal(scores, signals, options.platformHint, 0.2, `hint:${options.platformHint}`);
 
-  // Direct endpoint probes are stronger than markup. Unknown/headless stores
-  // are probed rather than trusting a stale imported platform tag.
-  const initial = pickPlatform(scores, signals);
-  const candidates = new Set<StorefrontPlatform>();
-  if (initial.platform !== 'other') candidates.add(initial.platform);
-  if (initial.platform === 'other' || initial.confidence < 0.8) {
-    candidates.add('shopify');
-    candidates.add('woocommerce');
-    candidates.add('wordpress');
-  } else if (initial.platform === 'wordpress') {
-    candidates.add('woocommerce');
-  }
-
-  for (const candidate of candidates) {
-    if (crawler.requestsRemaining <= 0) break;
-    if (candidate === 'shopify') {
-      const payload = parseJson(await get(`${origin}/products.json?limit=1`));
-      if (validShopifyProducts(payload))
-        addSignal(scores, signals, 'shopify', 1, 'endpoint:shopify_products');
-    } else if (candidate === 'woocommerce') {
-      const payload = parseJson(await get(`${origin}/wp-json/wc/store/v1/products?per_page=1`));
-      if (validWooProducts(payload))
-        addSignal(scores, signals, 'woocommerce', 1, 'endpoint:wc_store_products');
-    } else if (candidate === 'wordpress') {
-      const payload = parseJson(await get(`${origin}/wp-json/`));
-      if (validWordpressIndex(payload))
-        addSignal(scores, signals, 'wordpress', 0.8, 'endpoint:wp_rest_index');
-    }
-  }
-
-  const picked = pickPlatform(scores, signals);
   let productUrl: string | null = null;
   let productItems: StorefrontProduct[] | null = null;
   let productCapped = false;
 
-  if (picked.platform === 'shopify' && crawler.requestsRemaining > 0) {
-    productUrl = `${origin}/products.json?limit=250`;
-    const payload = parseJson(await get(productUrl));
-    productItems = validShopifyProducts(payload) ? parseProducts(payload, 'shopify') : null;
-    if (productItems) productCapped = productItems.length >= 250;
-  } else if (picked.platform === 'woocommerce' && crawler.requestsRemaining > 0) {
-    productUrl = `${origin}/wp-json/wc/store/v1/products?per_page=100`;
-    const payload = parseJson(await get(productUrl));
-    productItems = validWooProducts(payload) ? parseProducts(payload, 'woocommerce') : null;
-    if (productItems) productCapped = productItems.length >= 100;
+  const readCatalog = async (
+    platform: 'shopify' | 'woocommerce'
+  ): Promise<{ items: StorefrontProduct[]; url: string; capped: boolean } | null> => {
+    const pageSize = platform === 'shopify' ? 250 : 100;
+    const found = new Map<string, StorefrontProduct>();
+    const requestsAtStart = crawler.requestsUsed;
+    let page = 1;
+    let capped = false;
+    let firstUrl = '';
+
+    while (
+      crawler.requestsRemaining > 0 &&
+      crawler.requestsUsed - requestsAtStart < maxCatalogRequests &&
+      found.size < maxProducts
+    ) {
+      const origin = crawler.origin;
+      const url =
+        platform === 'shopify'
+          ? `${origin}/products.json?limit=${pageSize}${page > 1 ? `&page=${page}` : ''}`
+          : `${origin}/wp-json/wc/store/v1/products?per_page=${pageSize}${page > 1 ? `&page=${page}` : ''}`;
+      if (!firstUrl) firstUrl = url;
+      const result = await crawler.get(url);
+      if (result.skipped || result.error || !result.response) {
+        if (page === 1) return null;
+        capped = true;
+        warnings.push(
+          `${platform} catalog pagination stopped at page ${page}: ${result.error ?? result.skipped ?? 'no response'}.`
+        );
+        break;
+      }
+
+      const payload = parseJson(result.response);
+      const valid =
+        platform === 'shopify' ? validShopifyProducts(payload) : validWooProducts(payload);
+      if (!valid) {
+        if (page === 1) return null;
+        capped = true;
+        warnings.push(
+          `${platform} catalog pagination returned an unexpected payload at page ${page}.`
+        );
+        break;
+      }
+
+      const parsed = parseProducts(payload, platform) ?? [];
+      let added = 0;
+      for (const item of parsed) {
+        if (found.has(item.key)) continue;
+        found.set(item.key, item);
+        added += 1;
+        if (found.size >= maxProducts) break;
+      }
+
+      if (parsed.length < pageSize) break;
+      if (added === 0 && page > 1) {
+        capped = true;
+        warnings.push(
+          `${platform} catalog pagination repeated page ${page}; stopped to avoid a loop.`
+        );
+        break;
+      }
+      if (found.size >= maxProducts) {
+        capped = true;
+        break;
+      }
+      if (
+        crawler.requestsRemaining <= 0 ||
+        crawler.requestsUsed - requestsAtStart >= maxCatalogRequests
+      ) {
+        capped = true;
+        break;
+      }
+      page += 1;
+    }
+
+    return {
+      items: [...found.values()].sort((a, b) => a.key.localeCompare(b.key)),
+      url: firstUrl,
+      capped
+    };
+  };
+
+  // A full first catalog page doubles as the platform probe, avoiding the old
+  // probe-then-fetch duplicate request. Unknown/headless sites try only the two
+  // commerce APIs we can actually observe; generic WordPress is not probed just
+  // to prove WordPress exists.
+  const initial = pickPlatform(scores, signals);
+  const candidates: Array<'shopify' | 'woocommerce'> = [];
+  if (captureProducts && maxCatalogRequests > 0) {
+    if (initial.platform === 'shopify' || initial.platform === 'woocommerce') {
+      candidates.push(initial.platform);
+    } else if (initial.platform === 'wordpress') {
+      candidates.push('woocommerce');
+    } else if (initial.platform === 'other') {
+      if (options.platformHint) candidates.push(options.platformHint);
+      if (!candidates.includes('shopify')) candidates.push('shopify');
+      if (!candidates.includes('woocommerce')) candidates.push('woocommerce');
+    }
   }
 
+  const catalogRequestsAtStart = crawler.requestsUsed;
+  for (const candidate of candidates) {
+    if (crawler.requestsUsed - catalogRequestsAtStart >= maxCatalogRequests) break;
+    if (crawler.requestsRemaining <= 0) break;
+    const catalog = await readCatalog(candidate);
+    if (!catalog) continue;
+    addSignal(
+      scores,
+      signals,
+      candidate,
+      1,
+      candidate === 'shopify' ? 'endpoint:shopify_products' : 'endpoint:wc_store_products'
+    );
+    productUrl = catalog.url;
+    productItems = catalog.items;
+    productCapped = catalog.capped;
+    break;
+  }
+
+  const picked = pickPlatform(scores, signals);
+  // HTML can identify a storefront even when its public catalog endpoint is
+  // blocked. Do not reinterpret that operational degradation as an empty store.
+  if (
+    captureProducts &&
+    productItems === null &&
+    (picked.platform === 'shopify' || picked.platform === 'woocommerce')
+  ) {
+    warnings.push(`No usable public ${picked.platform} catalog was captured.`);
+  }
   if (!homeHtml) warnings.push('Homepage could not be captured as HTML.');
-  if (productUrl && productItems === null)
-    warnings.push(`Public catalog endpoint did not return a usable payload: ${productUrl}`);
 
   return {
     domain: clean,
@@ -335,7 +428,7 @@ export async function crawlStorefront(
     platform: picked.platform,
     platformConfidence: picked.confidence,
     platformSignals: picked.signals,
-    productUrl: productItems === null ? null : productUrl,
+    productUrl,
     productItems,
     productCapped,
     requestsUsed: crawler.requestsUsed,

@@ -34,11 +34,31 @@ Today it:
 
 - fetches the live homepage under Trevra's SSRF and request-budget guards;
 - fingerprints Shopify, WooCommerce, WordPress, Magento, Wix, Shopware, BigCommerce, PrestaShop and Webflow;
-- actively probes public Shopify, WooCommerce and WordPress endpoints so headless stores do not depend on homepage fingerprints;
-- captures bounded Shopify and WooCommerce public catalogs for product-launch diffs;
+- probes only the public Shopify/WooCommerce catalog APIs that can contribute product evidence, so generic sites do not pay for an unrelated WordPress REST probe;
+- captures bounded, paginated Shopify and WooCommerce public catalogs for product-launch diffs;
+- detects repeated/ignored pagination and marks the catalog capped instead of looping or pretending the sample is complete;
 - returns homepage HTML to Trevra's ecommerce-app detector so app install/removal signals come from the same independent crawl.
 
 An imported platform tag is only a weak prior. Live endpoint evidence wins. The crawler therefore operates on any Trevra account independently of how that account was sourced.
+
+### Production crawl contract
+
+`PublicWebCrawler` is intentionally stricter than the older one-off `probe()` helper. Scheduled crawling has a different operational burden from a single user-triggered audit.
+
+- Every real request counts toward the domain budget, including retries and redirect hops.
+- Redirects remain HTTPS and inside the requested host or canonical `www` variant; an arbitrary public redirect is not treated as permission to crawl another site.
+- A missing/gone robots resource (`404`/`410`) means no declared restriction; operational failures and other denial/rate-limit statuses such as `401`, `403`, `429`, or `5xx` fail closed for scheduled crawling rather than silently assuming permission.
+- A normal robots `4xx` means no declared restriction; an operational robots failure, `429`, or `5xx` fails closed for scheduled crawling rather than silently assuming permission.
+- `Crawl-delay` is honored. Trevra also applies a 250 ms courtesy delay when no delay is declared.
+- Robots policy is cached for one hour in production, bounded to 1,024 domains per process.
+- A decoded page body is capped at 8 MiB and robots.txt at 512 KiB. Oversized content is a failed read, never a truncated document passed off as complete evidence.
+- Transient `429`/`5xx` responses and transport failures are retried at most twice. `Retry-After` is honored when it fits inside the crawl deadline.
+- One crawl session has a 20-second wall-clock deadline so a slow domain cannot consume an automation lane indefinitely.
+- One session is internally serialized, so future observers can request pages concurrently without racing the shared budget, robots state, or pacing state.
+
+The account watcher reserves part of its page budget for hiring/pricing rather than letting a large catalog starve non-commerce observation. Catalog enumeration is separately capped by product count and request count. When Trevra cannot prove it saw the complete catalog, `productCapped=true`; downstream copy must never turn that into an exact catalog-size claim.
+
+Each scheduled sweep emits crawl telemetry to the existing sweep logger: request budget consumption, bytes read, retries, robots state and effective crawl delay. A provider or crawler failure remains operational degradation and does not become a synthetic "nothing changed" observation.
 
 ## Deployment-owned HTTP observation providers
 

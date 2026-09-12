@@ -15,6 +15,8 @@ file / paste / directory / provider
               v
            accounts
               |
+```
+
 No downstream GTM code should need to know whether an account came from a CSV, a public directory, an internal intelligence service, or a future provider.
 
 ## Implementation status
@@ -29,7 +31,8 @@ No downstream GTM code should need to know whether an account came from a CSV, a
 - [x] Generic deployment-owned HTTP provider contract for optional live intelligence sources.
 - [x] Retention enforcement before provider results are persisted into `accounts`.
 - [ ] Persist detected contact names/emails/phones into the shared contact model once that spine exists.
-```
+
+````
 
 No downstream GTM code should need to know whether an account came from a CSV, a public directory, an internal intelligence service, or a future provider.
 
@@ -60,7 +63,7 @@ Examples:
 ```text
 acme.com
 https://www.example.org/pricing
-```
+````
 
 ```csv
 company,website,tags

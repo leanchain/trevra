@@ -13,15 +13,13 @@ function html(value: string, status = 200): Response {
 }
 
 describe('storefront crawler', () => {
-  it('detects a headless Shopify store by probing the live public catalog', async () => {
+  it('detects a headless Shopify store from the live public catalog without a duplicate probe request', async () => {
     const seen: string[] = [];
     const fetchImpl = async (input: string): Promise<Response> => {
       seen.push(input);
       const url = new URL(input);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
       if (url.pathname === '/') return html('<html><h1>Minimal headless shop</h1></html>');
-      if (url.pathname === '/products.json' && url.searchParams.get('limit') === '1') {
-        return json({ products: [{ id: 1, title: 'Probe' }] });
-      }
       if (url.pathname === '/products.json' && url.searchParams.get('limit') === '250') {
         return json({
           products: [
@@ -43,22 +41,17 @@ describe('storefront crawler', () => {
       { key: '11', label: 'Hiker' }
     ]);
     expect(result.productUrl).toBe('https://shop.example/products.json?limit=250');
-    expect(seen).toContain('https://shop.example/products.json?limit=1');
+    expect(seen.filter((url) => url.includes('/products.json'))).toHaveLength(1);
   });
 
   it('prefers WooCommerce to generic WordPress and captures its catalog', async () => {
     const fetchImpl = async (input: string): Promise<Response> => {
       const url = new URL(input);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
       if (url.pathname === '/') {
         return html(
           '<html><body class="woocommerce"><script src="/wp-content/plugins/woocommerce/a.js"></script></body></html>'
         );
-      }
-      if (
-        url.pathname === '/wp-json/wc/store/v1/products' &&
-        url.searchParams.get('per_page') === '1'
-      ) {
-        return json([{ id: 1, name: 'Probe' }]);
       }
       if (
         url.pathname === '/wp-json/wc/store/v1/products' &&
@@ -74,6 +67,83 @@ describe('storefront crawler', () => {
     expect(result.platform).toBe('woocommerce');
     expect(result.platformSignals).toContain('endpoint:wc_store_products');
     expect(result.productItems).toEqual([{ key: '42', label: 'Boot' }]);
+  });
+
+  it('paginates a large public Shopify catalog within explicit product and request bounds', async () => {
+    const first = Array.from({ length: 250 }, (_, index) => ({
+      id: index + 1,
+      title: `P${index + 1}`
+    }));
+    const fetchImpl = async (input: string): Promise<Response> => {
+      const url = new URL(input);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+      if (url.pathname === '/')
+        return html('<html><script src="https://cdn.shopify.com/a.js"></script></html>');
+      if (url.pathname === '/products.json') {
+        return url.searchParams.get('page') === '2'
+          ? json({ products: [{ id: 251, title: 'P251' }] })
+          : json({ products: first });
+      }
+      return json({}, 404);
+    };
+
+    const result = await crawlStorefront('large.example', {
+      fetchImpl,
+      maxRequests: 8,
+      maxCatalogRequests: 3,
+      maxProducts: 1_000
+    });
+
+    expect(result.productItems).toHaveLength(251);
+    expect(result.productItems).toContainEqual({ key: '251', label: 'P251' });
+    expect(result.productCapped).toBe(false);
+  });
+
+  it('marks the catalog capped when pagination repeats instead of looping forever', async () => {
+    const page = Array.from({ length: 250 }, (_, index) => ({
+      id: index + 1,
+      title: `P${index + 1}`
+    }));
+    let productReads = 0;
+    const fetchImpl = async (input: string): Promise<Response> => {
+      const url = new URL(input);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+      if (url.pathname === '/')
+        return html('<html><script src="https://cdn.shopify.com/a.js"></script></html>');
+      if (url.pathname === '/products.json') {
+        productReads += 1;
+        return json({ products: page });
+      }
+      return json({}, 404);
+    };
+
+    const result = await crawlStorefront('repeat.example', {
+      fetchImpl,
+      maxRequests: 10,
+      maxCatalogRequests: 5
+    });
+
+    expect(productReads).toBe(2);
+    expect(result.productItems).toHaveLength(250);
+    expect(result.productCapped).toBe(true);
+    expect(result.warnings.join(' ')).toMatch(/repeated page/i);
+  });
+
+  it('can fingerprint the homepage without spending any requests on product APIs', async () => {
+    const seen: string[] = [];
+    const result = await crawlStorefront('site.example', {
+      captureProducts: false,
+      fetchImpl: async (input) => {
+        seen.push(input);
+        const url = new URL(input);
+        if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+        return html('<html><body data-wf-domain="site.example"></body></html>');
+      }
+    });
+
+    expect(result.platform).toBe('webflow');
+    expect(result.productItems).toBeNull();
+    expect(seen.some((url) => url.includes('products.json') || url.includes('/wc/'))).toBe(false);
   });
 
   it('carries over the broader ecom platform fingerprints without calling Beseam', () => {

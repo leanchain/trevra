@@ -650,6 +650,51 @@ describe('runAccountSweep', () => {
     expect(result).toEqual({ swept: 1, signalsStored: 1, failed: 0, accountIds: [accountId] });
   });
 
+  it('passes configured external observation providers through the scheduled sweep', async () => {
+    const accountId = await makeAccount({ domain: 'provider.test' });
+    let calls = 0;
+    const provider: ObservationProvider = {
+      key: 'scheduled-provider',
+      name: 'Scheduled provider',
+      docsUrl: null,
+      credentialEnvVar: null,
+      surfaces: ['meta_ads'],
+      availability: () => ({ mode: 'ready', reason: 'test' }),
+      async observe() {
+        calls += 1;
+        return {
+          providerKey: 'scheduled-provider',
+          warnings: [],
+          observations: [
+            {
+              kind: 'meta-ads-started',
+              detail: 'Meta advertising started.',
+              previous: '0',
+              current: '1',
+              evidenceUrl: 'https://www.facebook.com/ads/library/?id=scheduled',
+              observedAt: T0.toISOString()
+            }
+          ]
+        };
+      }
+    };
+
+    const result = await runAccountSweep(db, WORKSPACE_ID, {
+      now: () => T0,
+      fetchImpl: site({
+        '/': home('Provider'),
+        '/careers': careers([]),
+        '/pricing': pricing('29')
+      }),
+      observationProviders: [provider],
+      sleep: async () => undefined
+    });
+
+    expect(calls).toBe(1);
+    expect(result.signalsStored).toBe(2); // first-capture + external observation
+    expect((await signalRows(accountId)).some((row) => row.kind === 'meta-ads-started')).toBe(true);
+  });
+
   it('bounds one pass, and a nonsense ceiling still runs at least one account', async () => {
     await makeAccount({ domain: 'a.test', createdAt: at(-3).toISOString() });
     await makeAccount({ domain: 'b.test', createdAt: at(-2).toISOString() });
