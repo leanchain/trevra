@@ -12,6 +12,10 @@ function html(value: string, status = 200): Response {
   return new Response(value, { status, headers: { 'content-type': 'text/html' } });
 }
 
+function xml(value: string, status = 200): Response {
+  return new Response(value, { status, headers: { 'content-type': 'application/xml' } });
+}
+
 describe('storefront crawler', () => {
   it('detects a headless Shopify store from the live public catalog without a duplicate probe request', async () => {
     const seen: string[] = [];
@@ -127,6 +131,83 @@ describe('storefront crawler', () => {
     expect(result.productItems).toHaveLength(250);
     expect(result.productCapped).toBe(true);
     expect(result.warnings.join(' ')).toMatch(/repeated page/i);
+  });
+
+  it('uses an explicit product sitemap as a platform-agnostic catalog fallback', async () => {
+    const seen: string[] = [];
+    const result = await crawlStorefront('magento.example', {
+      fetchImpl: async (input) => {
+        seen.push(input);
+        const url = new URL(input);
+        if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+        if (url.pathname === '/') return html('<script type="text/x-magento-init">{}</script>');
+        if (url.pathname === '/sitemap.xml') {
+          return xml(`<?xml version="1.0"?><sitemapindex>
+            <sitemap><loc>https://magento.example/sitemap-products.xml</loc></sitemap>
+            <sitemap><loc>https://magento.example/sitemap-pages.xml</loc></sitemap>
+          </sitemapindex>`);
+        }
+        if (url.pathname === '/sitemap-products.xml') {
+          return xml(`<urlset>
+            <url><loc>https://magento.example/running-shoe.html</loc></url>
+            <url><loc>https://magento.example/hiking-boot.html</loc></url>
+          </urlset>`);
+        }
+        return new Response('not found', { status: 404 });
+      }
+    });
+
+    expect(result.platform).toBe('magento');
+    expect(result.productItems).toEqual([
+      { key: '/hiking-boot.html', label: 'hiking boot' },
+      { key: '/running-shoe.html', label: 'running shoe' }
+    ]);
+    expect(result.productUrl).toBe('https://magento.example/sitemap-products.xml');
+    expect(result.productCapped).toBe(false);
+    expect(seen.some((url) => url.includes('sitemap-pages'))).toBe(false);
+  });
+
+  it('accepts only clear product paths from a generic urlset sitemap', async () => {
+    const result = await crawlStorefront('custom.example', {
+      fetchImpl: async (input) => {
+        const url = new URL(input);
+        if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+        if (url.pathname === '/') return html('<html><h1>Custom shop</h1></html>');
+        if (url.pathname === '/sitemap.xml') {
+          return xml(`<urlset>
+            <url><loc>https://custom.example/products/alpha-runner</loc></url>
+            <url><loc>https://custom.example/blog/launch-story</loc></url>
+            <url><loc>https://elsewhere.example/products/not-ours</loc></url>
+          </urlset>`);
+        }
+        return new Response('not found', { status: 404 });
+      }
+    });
+    expect(result.productItems).toEqual([{ key: '/products/alpha-runner', label: 'alpha runner' }]);
+    expect(result.productCapped).toBe(false);
+  });
+
+  it('marks sitemap catalogs capped when the request ceiling leaves product sitemaps unread', async () => {
+    const result = await crawlStorefront('bounded.example', {
+      maxCatalogRequests: 2,
+      fetchImpl: async (input) => {
+        const url = new URL(input);
+        if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+        if (url.pathname === '/') return html('<script type="text/x-magento-init">{}</script>');
+        if (url.pathname === '/sitemap.xml') {
+          return xml(`<sitemapindex>
+            <sitemap><loc>https://bounded.example/product-a.xml</loc></sitemap>
+            <sitemap><loc>https://bounded.example/product-b.xml</loc></sitemap>
+          </sitemapindex>`);
+        }
+        if (url.pathname === '/product-a.xml') {
+          return xml('<urlset><url><loc>https://bounded.example/a.html</loc></url></urlset>');
+        }
+        throw new Error(`unexpected request ${input}`);
+      }
+    });
+    expect(result.productItems).toEqual([{ key: '/a.html', label: 'a' }]);
+    expect(result.productCapped).toBe(true);
   });
 
   it('can fingerprint the homepage without spending any requests on product APIs', async () => {

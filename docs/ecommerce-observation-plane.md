@@ -36,7 +36,8 @@ Today it:
 - fingerprints Shopify, WooCommerce, WordPress, Magento, Wix, Shopware, BigCommerce, PrestaShop and Webflow;
 - probes only the public Shopify/WooCommerce catalog APIs that can contribute product evidence, so generic sites do not pay for an unrelated WordPress REST probe;
 - captures bounded, paginated Shopify and WooCommerce public catalogs for product-launch diffs;
-- detects repeated/ignored pagination and marks the catalog capped instead of looping or pretending the sample is complete;
+- falls back to public product sitemaps for other storefronts: explicit product/catalog sitemap children are trusted as product inventories, while generic sitemaps accept only clear product URL paths;
+- detects repeated/ignored pagination and incomplete sitemap coverage and marks the catalog capped instead of looping or pretending the sample is complete;
 - returns homepage HTML to Trevra's ecommerce-app detector so app install/removal signals come from the same independent crawl;
 - emits `storefront-rebuild` only when two consecutive live captures show a migration between recognized commerce platforms at >=0.8 confidence on both sides; low-confidence/generic-site changes do not qualify;
 - records first-party newsletter signup surfaces and social-profile links as weak presence signals, without pretending presence means activity or growth;

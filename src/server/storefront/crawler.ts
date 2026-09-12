@@ -252,6 +252,73 @@ function parseProducts(
   return [...found.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
+const PRODUCT_SITEMAP_RE = /(?:^|[-_.\/])(products?|catalog)(?:[-_.\/]|$)/i;
+const PRODUCT_PATH_RE = /\/(?:products?|product|catalog\/product|p)\//i;
+
+function xmlText(value: string): string {
+  return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'");
+}
+
+function sitemapLocs(xml: string, kind: 'index' | 'urlset'): string[] {
+  const block = kind === 'index' ? 'sitemap' : 'url';
+  const found: string[] = [];
+  const pattern = new RegExp(
+    `<${block}\\b[^>]*>[\\s\\S]*?<loc\\b[^>]*>([\\s\\S]*?)<\\/loc>[\\s\\S]*?<\\/${block}>`,
+    'gi'
+  );
+  for (const match of xml.matchAll(pattern)) {
+    const loc = xmlText((match[1] ?? '').replace(/<[^>]*>/g, '').trim());
+    if (loc && !found.includes(loc)) found.push(loc);
+  }
+  return found;
+}
+
+function sameStorefrontUrl(urlValue: string, origin: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(urlValue);
+  } catch {
+    return null;
+  }
+  const base = new URL(origin);
+  const sameCanonicalHost =
+    url.hostname === base.hostname ||
+    url.hostname === `www.${base.hostname}` ||
+    base.hostname === `www.${url.hostname}`;
+  return url.protocol === 'https:' && sameCanonicalHost ? url : null;
+}
+
+function sitemapProduct(
+  urlValue: string,
+  origin: string,
+  trustPath: boolean
+): StorefrontProduct | null {
+  const url = sameStorefrontUrl(urlValue, origin);
+  if (!url) return null;
+  if (!trustPath && !PRODUCT_PATH_RE.test(url.pathname)) return null;
+  const path = url.pathname.replace(/\/+$/, '') || '/';
+  if (path === '/') return null;
+  const segment = path.split('/').filter(Boolean).at(-1) ?? path;
+  let decoded = segment;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    // Keep the encoded segment; it is still a stable public identifier.
+  }
+  const label =
+    decoded
+      .replace(/\.(?:html?|php|aspx?)$/i, '')
+      .replace(/[-_]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim() || path;
+  return { key: path, label: label.slice(0, 160) };
+}
+
 /**
  * Crawl the public storefront directly from Trevra. No shared corpus, no
  * cross-product filesystem mount, and no assumption that Beseam has seen it.
@@ -371,6 +438,88 @@ export async function crawlStorefront(
     };
   };
 
+  const readSitemapCatalog = async (
+    requestsAtStart: number
+  ): Promise<{ items: StorefrontProduct[]; url: string; capped: boolean } | null> => {
+    const canRequest = () =>
+      crawler.requestsRemaining > 0 && crawler.requestsUsed - requestsAtStart < maxCatalogRequests;
+    if (!canRequest()) return null;
+
+    const rootUrl = `${crawler.origin}/sitemap.xml`;
+    const root = await crawler.get(rootUrl);
+    if (root.skipped || root.error || !root.response || root.response.status !== 200) return null;
+    const xml = root.response.text;
+    const found = new Map<string, StorefrontProduct>();
+    let capped = false;
+
+    const addLocs = (locs: readonly string[], trustPath: boolean): void => {
+      for (const loc of locs) {
+        const product = sitemapProduct(loc, crawler.origin, trustPath);
+        if (!product || found.has(product.key)) continue;
+        found.set(product.key, product);
+        if (found.size >= maxProducts) {
+          capped = true;
+          break;
+        }
+      }
+    };
+
+    if (/<urlset\b/i.test(xml)) {
+      const locs = sitemapLocs(xml, 'urlset');
+      addLocs(locs, false);
+      if (found.size === 0) return null;
+      if (found.size >= maxProducts && locs.length > found.size) capped = true;
+      return {
+        items: [...found.values()].sort((a, b) => a.key.localeCompare(b.key)),
+        url: rootUrl,
+        capped
+      };
+    }
+
+    if (!/<sitemapindex\b/i.test(xml)) return null;
+    const children = sitemapLocs(xml, 'index')
+      .map((loc) => sameStorefrontUrl(loc, crawler.origin))
+      .filter((url): url is URL => Boolean(url))
+      .filter((url) => PRODUCT_SITEMAP_RE.test(url.pathname));
+    if (children.length === 0) return null;
+
+    let followed = 0;
+    let firstProductSitemap: string | null = null;
+    for (const child of children) {
+      if (!canRequest()) {
+        capped = true;
+        break;
+      }
+      followed += 1;
+      firstProductSitemap ??= child.toString();
+      if (/\.gz$/i.test(child.pathname)) {
+        capped = true;
+        warnings.push(
+          `Compressed product sitemap ${child.toString()} was left unread; catalog is partial.`
+        );
+        continue;
+      }
+      const result = await crawler.get(child.toString());
+      if (result.skipped || result.error || !result.response || result.response.status !== 200) {
+        capped = true;
+        continue;
+      }
+      if (!/<urlset\b/i.test(result.response.text)) {
+        capped = true;
+        continue;
+      }
+      addLocs(sitemapLocs(result.response.text, 'urlset'), true);
+      if (found.size >= maxProducts) break;
+    }
+    if (followed < children.length) capped = true;
+
+    return {
+      items: [...found.values()].sort((a, b) => a.key.localeCompare(b.key)),
+      url: children.length === 1 && firstProductSitemap ? firstProductSitemap : rootUrl,
+      capped
+    };
+  };
+
   // A full first catalog page doubles as the platform probe, avoiding the old
   // probe-then-fetch duplicate request. Unknown/headless sites try only the two
   // commerce APIs we can actually observe; generic WordPress is not probed just
@@ -406,6 +555,20 @@ export async function crawlStorefront(
     productItems = catalog.items;
     productCapped = catalog.capped;
     break;
+  }
+
+  if (
+    captureProducts &&
+    productItems === null &&
+    crawler.requestsUsed - catalogRequestsAtStart < maxCatalogRequests &&
+    crawler.requestsRemaining > 0
+  ) {
+    const sitemap = await readSitemapCatalog(catalogRequestsAtStart);
+    if (sitemap) {
+      productUrl = sitemap.url;
+      productItems = sitemap.items;
+      productCapped = sitemap.capped;
+    }
   }
 
   const picked = pickPlatform(scores, signals);
