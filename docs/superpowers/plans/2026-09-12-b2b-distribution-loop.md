@@ -628,6 +628,8 @@ The human should never wonder whether a generated fact was invented.
 
 # Phase 7 — Evidence cards
 
+**Status: V1 shipped.** Deterministic source-backed cards render to real PNGs in 1:1, 4:5 and 16:9 shapes; Research exposes the 4:5 default as `Draft + card`, and the image is idempotently attached to the existing editable LinkedIn draft. No model/image generation is involved.
+
 This is the first built-in sharing mechanic.
 
 ## 4.1 Deterministic card spec
@@ -662,7 +664,7 @@ Reuse the existing LinkedIn image attachment support.
 
 A card must remain useful if the viewer has never heard of Trevra. Branding is provenance, not the point of the image.
 
-**Gate:** a user can publish an evidence-backed post with a native visual without leaving Trevra.
+**Gate:** a user can publish an evidence-backed post with a native visual without leaving Trevra. **Met for deterministic PNG evidence cards.**
 
 ---
 

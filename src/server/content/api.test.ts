@@ -500,6 +500,29 @@ describe('content opportunity API', () => {
     expect(replay.body.reused).toBe(true);
     expect(replay.body.post.id).toBe(first.body.post.id);
 
+    const card = await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(story.id)}/evidence-card`
+    )
+      .send({ seatKey: 'owner', aspect: 'portrait' })
+      .expect(201);
+    expect(card.body).toMatchObject({
+      reused: false,
+      asset: { format: 'evidence_card' },
+      post: { id: first.body.post.id, status: 'draft' }
+    });
+    expect(card.body.post.media).toHaveLength(1);
+    expect(card.body.post.media[0]).toMatchObject({ mimeType: 'image/png' });
+
+    const cardReplay = await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(story.id)}/evidence-card`
+    )
+      .send({ seatKey: 'owner', aspect: 'portrait' })
+      .expect(200);
+    expect(cardReplay.body.reused).toBe(true);
+    expect(cardReplay.body.post.media).toHaveLength(1);
+
     const foreign = await upsertContentOpportunity(
       db,
       {
@@ -527,6 +550,12 @@ describe('content opportunity API', () => {
     await authed(
       'post',
       `/api/content/opportunities/${encodeURIComponent(foreign.id)}/draft-linkedin`
+    )
+      .send({})
+      .expect(404);
+    await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(foreign.id)}/evidence-card`
     )
       .send({})
       .expect(404);

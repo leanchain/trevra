@@ -307,6 +307,21 @@ export async function updateContentOpportunityStatus(
   return result.opportunity;
 }
 
+export async function draftContentOpportunityEvidenceCard(
+  opportunityId: string,
+  seatKey?: string,
+  aspect: 'square' | 'portrait' | 'wide' = 'portrait'
+): Promise<{
+  asset: import('../server/content/types').ContentAsset;
+  post: LinkedInPost;
+  reused: boolean;
+}> {
+  return request(`/api/content/opportunities/${encodeURIComponent(opportunityId)}/evidence-card`, {
+    method: 'POST',
+    body: JSON.stringify({ seatKey, aspect })
+  });
+}
+
 export async function draftContentOpportunityLinkedIn(
   opportunityId: string,
   seatKey?: string

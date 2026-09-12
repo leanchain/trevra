@@ -20,6 +20,7 @@ import type { MarketPulseSchedule } from '../../server/content/pulse-schedule';
 import type { PublicContentReport } from '../../server/content/public-reports';
 import {
   createWatch,
+  draftContentOpportunityEvidenceCard,
   draftContentOpportunityLinkedIn,
   draftMarketPulse,
   draftMentionReply,
@@ -1049,6 +1050,30 @@ export function ResearchView({
     }
   }
 
+  async function draftStoryWithCard(story: ContentOpportunity): Promise<void> {
+    setStoryBusy(story.id);
+    setStoriesError('');
+    try {
+      const result = await draftContentOpportunityEvidenceCard(
+        story.id,
+        seatKey || undefined,
+        'portrait'
+      );
+      setToast(
+        result.reused
+          ? 'Opened the existing draft with evidence card.'
+          : 'Draft and evidence card created.'
+      );
+      onNavigate(`/outreach/posts?draft=${encodeURIComponent(result.post.id)}`);
+    } catch (error) {
+      setStoriesError(
+        error instanceof Error ? error.message : 'Could not prepare this evidence card.'
+      );
+    } finally {
+      setStoryBusy(null);
+    }
+  }
+
   async function draftStory(story: ContentOpportunity): Promise<void> {
     setStoryBusy(story.id);
     setStoriesError('');
@@ -1408,6 +1433,14 @@ export function ResearchView({
                       onClick={() => void dismissStory(story)}
                     >
                       Dismiss
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={storyBusy === story.id}
+                      onClick={() => void draftStoryWithCard(story)}
+                    >
+                      Draft + card
                     </button>
                     <button
                       type="button"

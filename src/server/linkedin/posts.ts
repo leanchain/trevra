@@ -262,6 +262,27 @@ function isPostImageMime(value: string): value is LinkedInPostImageMime {
   return (LINKEDIN_POST_IMAGE_TYPES as readonly string[]).includes(value);
 }
 
+function normalizePostImageInput(input: { name: string; mimeType: string; bytes: Buffer }): {
+  name: string;
+  mimeType: LinkedInPostImageMime;
+  bytes: Buffer;
+} {
+  if (!isPostImageMime(input.mimeType)) {
+    throw new LinkedInPostsApiError('Posts accept JPEG, PNG, WebP or GIF images only.', 415);
+  }
+  if (input.bytes.byteLength === 0) {
+    throw new LinkedInPostsApiError('That image is empty.');
+  }
+  if (input.bytes.byteLength > LINKEDIN_POST_IMAGE_MAX_BYTES) {
+    throw new LinkedInPostsApiError('Each post image must be 10 MB or smaller.', 413);
+  }
+  return {
+    name: input.name.trim().slice(0, 255) || 'image',
+    mimeType: input.mimeType,
+    bytes: input.bytes
+  };
+}
+
 interface PostMediaRow {
   id: string;
   filename: string;
@@ -312,16 +333,8 @@ export async function addPostImage(
   input: { name: string; mimeType: string; bytes: Buffer },
   now: Date
 ): Promise<LinkedInPost> {
-  if (!isPostImageMime(input.mimeType)) {
-    throw new LinkedInPostsApiError('Posts accept JPEG, PNG, WebP or GIF images only.', 415);
-  }
-  if (input.bytes.byteLength === 0) {
-    throw new LinkedInPostsApiError('That image is empty.');
-  }
-  if (input.bytes.byteLength > LINKEDIN_POST_IMAGE_MAX_BYTES) {
-    throw new LinkedInPostsApiError('Each post image must be 10 MB or smaller.', 413);
-  }
-  const name = input.name.trim().slice(0, 255) || 'image';
+  const normalized = normalizePostImageInput(input);
+  const { name } = normalized;
 
   return db.transaction(async (tx) => {
     // Serialize media changes for one post. Without the parent-row lock, two
@@ -361,12 +374,72 @@ export async function addPostImage(
         postId,
         position,
         name,
-        input.mimeType,
-        input.bytes,
-        input.bytes.byteLength,
+        normalized.mimeType,
+        normalized.bytes,
+        normalized.bytes.byteLength,
         now.toISOString()
       );
     return refreshPostMediaMetadata(tx, workspaceId, postId, now);
+  });
+}
+
+export async function ensurePostImage(
+  db: Db,
+  workspaceId: string,
+  postId: string,
+  input: { name: string; mimeType: string; bytes: Buffer },
+  now: Date
+): Promise<{ post: LinkedInPost; reused: boolean }> {
+  const normalized = normalizePostImageInput(input);
+  return db.transaction(async (tx) => {
+    const locked = await tx
+      .prepare(`SELECT id FROM linkedin_posts WHERE workspace_id = ? AND id = ? FOR UPDATE`)
+      .get<{ id: string }>(workspaceId, postId);
+    if (!locked) throw new LinkedInPostsApiError('No such post.', 404);
+    const post = await getPost(tx, workspaceId, postId);
+    if (!post) throw new LinkedInPostsApiError('No such post.', 404);
+    assertEditable(post);
+
+    const existing = await tx
+      .prepare(
+        `SELECT id FROM linkedin_post_media
+         WHERE workspace_id=? AND post_id=? AND filename=? LIMIT 1`
+      )
+      .get<{ id: string }>(workspaceId, postId, normalized.name);
+    if (existing) {
+      return { post: await refreshPostMediaMetadata(tx, workspaceId, postId, now), reused: true };
+    }
+
+    const count = await tx
+      .prepare(
+        `SELECT COUNT(*)::int AS count FROM linkedin_post_media
+         WHERE workspace_id=? AND post_id=?`
+      )
+      .get<{ count: number }>(workspaceId, postId);
+    const position = Number(count?.count ?? 0);
+    if (position >= LINKEDIN_POST_IMAGE_MAX_COUNT) {
+      throw new LinkedInPostsApiError(
+        `A LinkedIn post can have at most ${LINKEDIN_POST_IMAGE_MAX_COUNT} images.`
+      );
+    }
+    await tx
+      .prepare(
+        `INSERT INTO linkedin_post_media
+          (id,workspace_id,post_id,position,filename,mime_type,bytes,byte_size,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        id('lipostimg'),
+        workspaceId,
+        postId,
+        position,
+        normalized.name,
+        normalized.mimeType,
+        normalized.bytes,
+        normalized.bytes.byteLength,
+        now.toISOString()
+      );
+    return { post: await refreshPostMediaMetadata(tx, workspaceId, postId, now), reused: false };
   });
 }
 

@@ -118,6 +118,7 @@ import { getToday } from './today.js';
 import { buildCompanyChangeOpportunities } from './content/opportunity-builder.js';
 import { listContentOpportunities, setContentOpportunityStatus } from './content/opportunities.js';
 import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
+import { EvidenceCardError, prepareStoryEvidenceCard } from './content/evidence-card.js';
 import { contentPerformanceReport } from './content/performance.js';
 import {
   PublicReportError,
@@ -3000,6 +3001,38 @@ export function createApp(db: Db) {
       next(error);
     }
   });
+
+  app.post(
+    '/api/content/opportunities/:id/evidence-card',
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = z
+          .object({
+            seatKey: z.string().trim().min(1).max(120).optional(),
+            aspect: z.enum(['square', 'portrait', 'wide']).optional()
+          })
+          .strict()
+          .parse(req.body ?? {});
+        const result = await prepareStoryEvidenceCard(
+          db,
+          {
+            workspaceId: req.auth!.workspaceId,
+            opportunityId: String(req.params.id),
+            seatKey: input.seatKey,
+            aspect: input.aspect,
+            actorUserId: req.auth!.userId
+          },
+          new Date()
+        );
+        res.setHeader('Cache-Control', 'no-store');
+        res.status(result.reused ? 200 : 201).json(result);
+      } catch (error) {
+        if (error instanceof EvidenceCardError)
+          return res.status(error.status).json({ error: error.message });
+        next(error);
+      }
+    }
+  );
 
   app.post(
     '/api/content/opportunities/:id/draft-linkedin',
