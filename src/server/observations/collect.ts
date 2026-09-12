@@ -5,6 +5,7 @@ import { interpretMeasurements } from './measurements.js';
 import { recordObservationProviderFailure, recordObservationProviderSuccess } from './health.js';
 import { configuredHttpObservationProviders } from './providers/http.js';
 import { configuredInstagramBusinessDiscoveryProviders } from './providers/instagram.js';
+import { configuredMetaAdLibraryProviders } from './providers/meta-ads.js';
 import { configuredSubstackPublicFeedProviders } from './providers/substack.js';
 import { configuredYouTubeDataApiProviders } from './providers/youtube.js';
 import type {
@@ -42,6 +43,7 @@ export async function collectExternalObservations(
     ...configuredSubstackPublicFeedProviders(),
     ...configuredYouTubeDataApiProviders(),
     ...configuredInstagramBusinessDiscoveryProviders(),
+    ...configuredMetaAdLibraryProviders(),
     ...configuredHttpObservationProviders()
   ];
   const observations: ExternalObservation[] = [];

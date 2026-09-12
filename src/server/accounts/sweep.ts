@@ -560,6 +560,13 @@ export async function sweepAccount(
       );
     }
 
+    const metaPageIds = [
+      ...new Set(
+        account.tags
+          .map((tag) => /^meta-page-id:(\d{5,30})$/.exec(tag.trim())?.[1] ?? null)
+          .filter((value): value is string => Boolean(value))
+      )
+    ].slice(0, 10);
     const external = await collectExternalObservations(account.domain, {
       providers: deps.observationProviders,
       fetchImpl: deps.fetchImpl,
@@ -568,6 +575,7 @@ export async function sweepAccount(
       workspaceId: account.workspaceId,
       context: {
         socialProfiles: watched.snapshot.socialProfiles ?? [],
+        metaPageIds,
         newsletterSignups: watched.snapshot.newsletterSignups ?? [],
         newsletterPublications: watched.snapshot.newsletterPublications ?? []
       }

@@ -60,6 +60,8 @@ export interface ObservationResult {
 
 export interface ObservationAccountContext {
   socialProfiles?: readonly { platform: string; handle: string; url: string }[];
+  /** Verified numeric Facebook Page ids supplied explicitly on the account. Never inferred by name. */
+  metaPageIds?: readonly string[];
   newsletterSignups?: readonly { sourceUrl: string; provider: string | null; key: string }[];
   newsletterPublications?: readonly {
     platform: 'substack';

@@ -83,6 +83,7 @@ async function makeAccount(
     status?: string;
     nextSweepAt?: string | null;
     createdAt?: string;
+    tags?: string[];
   } = {}
 ): Promise<string> {
   const accountId = id('acct');
@@ -100,7 +101,7 @@ async function makeAccount(
       overrides.domain ?? 'acme.test',
       overrides.domain ?? 'acme.test',
       'csv',
-      [],
+      overrides.tags ?? [],
       overrides.status ?? 'active',
       overrides.nextSweepAt ?? null,
       createdAt,
@@ -801,6 +802,49 @@ describe('runAccountSweep', () => {
     expect(calls).toBe(1);
     expect(result.signalsStored).toBe(2); // first-capture + external observation
     expect((await signalRows(accountId)).some((row) => row.kind === 'meta-ads-started')).toBe(true);
+  });
+
+  it('passes only explicitly verified numeric Meta Page ids from account tags', async () => {
+    await makeAccount({
+      domain: 'meta-page.test',
+      tags: [
+        'meta-page-id:123456789012345',
+        'meta-page-id:123456789012345',
+        'meta-page-id:brand-name',
+        'meta-page-id:123',
+        'other:987654321012345'
+      ]
+    });
+    let received: readonly string[] | undefined;
+    const provider: ObservationProvider = {
+      key: 'meta-context-test',
+      name: 'Meta context test',
+      docsUrl: null,
+      credentialEnvVar: null,
+      surfaces: ['meta_ads'],
+      availability: () => ({ mode: 'ready', reason: 'test' }),
+      async observe(_domain, options) {
+        received = options.context?.metaPageIds;
+        return {
+          providerKey: 'meta-context-test',
+          observations: [],
+          measurements: [],
+          warnings: []
+        };
+      }
+    };
+
+    await runAccountSweep(db, WORKSPACE_ID, {
+      now: () => T0,
+      fetchImpl: site({
+        '/': home('Meta Page'),
+        '/careers': careers([]),
+        '/pricing': pricing('29')
+      }),
+      observationProviders: [provider],
+      sleep: async () => undefined
+    });
+    expect(received).toEqual(['123456789012345']);
   });
 
   it('bounds one pass, and a nonsense ceiling still runs at least one account', async () => {

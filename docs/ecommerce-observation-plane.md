@@ -87,6 +87,14 @@ Configure both:
 
 Optional: `TREVRA_META_GRAPH_VERSION` (defaults to `v26.0`; malformed values are rejected). A personal/non-Professional target or an incomplete 30-day media page produces a warning and no fabricated measurement.
 
+### Meta Ad Library
+
+Meta commercial-ad observation is built in, but identity is never guessed. Add a verified Facebook Page id to an account as `meta-page-id:<numeric-page-id>`, then configure both `TREVRA_META_AD_LIBRARY_ACCESS_TOKEN` and `TREVRA_META_AD_LIBRARY_COUNTRIES_JSON` (for example `["DE","FR","GB"]`). The reached-country list is restricted to EU member states and GB because Meta's `ad_type=ALL` commercial-ad API coverage is that surface; Trevra does not present the resulting number as a global active-ad count.
+
+For each verified Page id Trevra queries `ads_archive` with `ad_type=ALL`, `ad_active_status=ACTIVE`, exact `search_page_ids`, and the configured reached countries. Pagination is reconstructed from cursors rather than following Meta's returned `paging.next` URL, so bearer credentials never become a provider-controlled navigation target. Duplicate snapshots are deduped, Page-id mismatches fail closed, and counts above the bounded 1,000-ad window are left unmeasured rather than rounded or truncated. The first exact count is only a baseline; later zero-to-nonzero/rising changes become `meta-ads-started`/`meta-ads-rising` through the shared measurement interpreter.
+
+A brand name, Facebook vanity URL, or site-domain similarity is not enough identity to run this collector. Until a Page id is verified, Meta ads remain unmeasured for that account.
+
 ### Substack public feed
 
 A company-published `*.substack.com` publication is measured through its public `/feed`. This needs no credential. Trevra emits `newsletter.posts_30d` only when an item older than 30 days proves the returned feed covers the whole measurement window. An all-recent feed may be truncated and is therefore left unmeasured.
@@ -99,7 +107,7 @@ The earlier no-credential Atom-feed approach is intentionally not used: live qua
 
 ## Deployment-owned HTTP observation providers
 
-Use `TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON` for collectors that should live outside the Trevra process: Meta Ad Library acquisition, Instagram/TikTok telemetry, newsletter monitoring, or another specialized acquisition service.
+Use `TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON` for collectors that should live outside the Trevra process: additional ad-intelligence vendors, TikTok telemetry, newsletter monitoring, or another specialized acquisition service.
 
 Example:
 
@@ -168,7 +176,7 @@ Raw measurement example:
 
 Trevra accepts only known signal/metric kinds with a valid HTTP(S) evidence URL and a parseable observation time. Provider timestamps more than one hour in the future are rejected so clock errors cannot manufacture recency points.
 
-Meta Ad Library remains on this external-measurement seam rather than using an advertiser-name scraper. Meta's official API can expose all ad types for EU/UK delivery, but a professional implementation still needs a trustworthy advertiser/Page identity mapping; Trevra will not turn a guessed brand-name match into `meta.active_ads`.
+The generic seam remains useful for Meta coverage outside the built-in strict Page-id/EU+UK contract or for a sanctioned third-party data source. Whatever the source, raw `meta.active_ads` measurements still use Trevra's central baseline and scoring semantics.
 
 ## Composite scoring
 

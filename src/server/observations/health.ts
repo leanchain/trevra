@@ -2,6 +2,7 @@ import { id, type Db } from '../db.js';
 import { envCredentials } from '../research/types.js';
 import { configuredHttpObservationProviders } from './providers/http.js';
 import { instagramBusinessDiscoveryProvider } from './providers/instagram.js';
+import { metaAdLibraryProvider } from './providers/meta-ads.js';
 import { substackPublicFeedProvider } from './providers/substack.js';
 import { youtubeDataApiProvider } from './providers/youtube.js';
 import type { ObservationProvider, ObservationSurface } from './types.js';
@@ -174,6 +175,7 @@ export function observationProviderCatalog(): ObservationProvider[] {
   const providers = [
     substackPublicFeedProvider(),
     instagramBusinessDiscoveryProvider(),
+    metaAdLibraryProvider(),
     youtubeDataApiProvider(),
     ...configuredHttpObservationProviders()
   ];

@@ -301,6 +301,31 @@ describe('single-operator production on loopback', () => {
     ).not.toThrow();
   });
 
+  it('validates Meta Ad Library credentials and explicit EU/UK reached-country scope', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_AD_LIBRARY_ACCESS_TOKEN: 'token-only'
+      })
+    ).toThrow(/TREVRA_META_AD_LIBRARY_COUNTRIES_JSON/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_AD_LIBRARY_ACCESS_TOKEN: 'token',
+        TREVRA_META_AD_LIBRARY_COUNTRIES_JSON: JSON.stringify(['US'])
+      })
+    ).toThrow(/EU member states and GB/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_AD_LIBRARY_ACCESS_TOKEN: 'token',
+        TREVRA_META_AD_LIBRARY_COUNTRIES_JSON: JSON.stringify(['DE', 'GB'])
+      })
+    ).not.toThrow();
+  });
+
   it('accepts an optional YouTube Data API key for measured channel activity', () => {
     expect(() =>
       validateEnvironment({ ...production, TREVRA_YOUTUBE_API_KEY: 'youtube-api-key' })
