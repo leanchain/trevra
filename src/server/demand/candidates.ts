@@ -15,7 +15,8 @@ export interface DemandEvidence {
     | 'discovery_plan'
     | 'conversation_message'
     | 'opportunity'
-    | 'linkedin_post_engagement';
+    | 'linkedin_post_engagement'
+    | 'brand_watch_mention';
   sourceId: string;
   label: string;
   category: 'request' | 'history' | 'supporting';
@@ -831,6 +832,163 @@ export async function buildDemandCandidates(
       summary: `${personName} ${interactionKind === 'comment' ? 'commented on' : 'reacted to'} your LinkedIn post while ${accountName} is hot at ${score}/100.`,
       rationale: [
         `recent LinkedIn ${interactionKind === 'comment' ? 'comment' : 'reaction'} provides person-level intent`,
+        `account scorer is hot at ${score}/100 across ${distinctKinds} signal kinds`,
+        'the Person maps to exactly one explicit/verified Account',
+        ...(relationshipState.recentInbound
+          ? ['a recent inbound conversation means the next action is a reply']
+          : []),
+        `${signals.length} source-backed account signal${signals.length === 1 ? '' : 's'} are available for context`
+      ],
+      evidence
+    });
+    seenSourceKeys.add(sourceKey);
+  }
+
+  // Brand/watch counterpart: a mention author can contribute person-level
+  // intent only when the platform+handle is already a deterministic canonical
+  // Person identity. No fuzzy handle cleanup happens here: if Reddit/HN/GitHub
+  // spelling does not exactly match the stored provider identity, the mention
+  // remains research evidence instead of being attached to the wrong human.
+  const watchMentionRows = await db
+    .prepare(
+      `
+      WITH one_account AS (
+        SELECT workspace_id,contact_id,MIN(account_id) AS account_id
+        FROM account_contacts
+        WHERE workspace_id=? AND confidence IN ('explicit','verified')
+        GROUP BY workspace_id,contact_id
+        HAVING COUNT(DISTINCT account_id)=1
+      )
+      SELECT DISTINCT ON (person.id,oa.account_id)
+        mention.id AS mention_id,
+        mention.platform,
+        mention.url,
+        mention.title AS mention_title,
+        mention.content AS mention_content,
+        mention.author,
+        mention.matched_keywords,
+        COALESCE(mention.mention_created_at,mention.first_seen_at) AS mentioned_at,
+        watch.id AS watch_id,
+        watch.name AS watch_name,
+        person.id AS person_id,person.name AS person_name,person.email AS person_email,
+        oa.account_id,
+        account.name AS account_name,account.domain,
+        sc.score,sc.distinct_kinds,sc.newest_signal_at,sc.computed_at
+      FROM brand_watch_mentions mention
+      JOIN brand_watches watch
+        ON watch.workspace_id=mention.workspace_id AND watch.id=mention.watch_id
+      JOIN person_identities identity
+        ON identity.workspace_id=mention.workspace_id
+       AND identity.provider=LOWER(BTRIM(mention.platform))
+       AND identity.identity_type='handle'
+       AND identity.normalized_value=LOWER(BTRIM(mention.author))
+      JOIN contacts person
+        ON person.workspace_id=identity.workspace_id AND person.id=identity.person_id
+      JOIN one_account oa
+        ON oa.workspace_id=person.workspace_id AND oa.contact_id=person.id
+      JOIN accounts account
+        ON account.workspace_id=oa.workspace_id AND account.id=oa.account_id
+      JOIN account_scores sc
+        ON sc.workspace_id=oa.workspace_id AND sc.account_id=oa.account_id
+      WHERE mention.workspace_id=?
+        AND NULLIF(BTRIM(mention.author),'') IS NOT NULL
+        AND mention.promoted_run_id IS NULL
+        AND COALESCE(mention.mention_created_at,mention.first_seen_at)>=?::timestamptz
+        AND sc.tier='hot'
+        AND sc.score>=80
+        AND COALESCE(sc.newest_signal_at,sc.computed_at)>=?::timestamptz
+        AND NOT EXISTS (
+          SELECT 1 FROM opportunities o
+          WHERE o.workspace_id=oa.workspace_id
+            AND o.account_id=oa.account_id
+            AND o.stage NOT IN ('won','lost')
+        )
+      ORDER BY person.id,oa.account_id,
+        COALESCE(mention.mention_created_at,mention.first_seen_at) DESC,mention.id DESC
+      LIMIT 50
+    `
+    )
+    .all<Record<string, unknown>>(workspaceId, workspaceId, personIntentSince, recentSince);
+
+  for (const row of watchMentionRows) {
+    const personId = String(row.person_id);
+    const accountId = String(row.account_id);
+    if (firstPartyAccountIds.has(accountId)) continue;
+    const sourceKey = `demand:${personId}:${accountId}`;
+    if (seenSourceKeys.has(sourceKey)) continue;
+
+    const signals = await loadAccountSignals(db, workspaceId, accountId, signalSince);
+    if (signals.length === 0) continue;
+    const mentionedAt = iso(row.mentioned_at);
+    const ageDays = Math.max(0, (now.getTime() - Date.parse(mentionedAt)) / DAY_MS);
+    if (ageDays > PERSON_INTENT_WINDOW_DAYS) continue;
+    const personIntent = Number(
+      (0.65 * (1 - 0.5 * (ageDays / PERSON_INTENT_WINDOW_DAYS))).toFixed(3)
+    );
+    const score = Math.max(0, Math.min(100, Number(row.score ?? 0)));
+    const distinctKinds = Math.max(0, Number(row.distinct_kinds ?? 0));
+    const personName = String(row.person_name ?? row.person_email ?? row.author ?? 'Known person');
+    const accountName = String(row.account_name ?? row.domain ?? 'Account');
+    const observedAt = iso(row.newest_signal_at ?? row.computed_at);
+    const relationshipState = await loadRelationshipState(
+      db,
+      workspaceId,
+      personId,
+      accountId,
+      now
+    );
+    const recommendedAction: DemandRecommendedAction = relationshipState.recentInbound
+      ? 'reply'
+      : 'prepare_outreach';
+    const mentionText = String(row.mention_content ?? row.mention_title ?? '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 320);
+    const watchName = String(row.watch_name ?? 'watched topic');
+    const evidence: DemandEvidence[] = [
+      {
+        sourceType: 'brand_watch_mention',
+        sourceId: String(row.mention_id),
+        label: `Mentioned ${watchName}`,
+        category: 'supporting',
+        excerpt: mentionText || `${personName} authored a mention matched by ${watchName}.`,
+        externalUrl: row.url ? String(row.url) : null,
+        observedAt: mentionedAt
+      },
+      {
+        sourceType: 'account_score',
+        sourceId: accountId,
+        label: 'Composite account intent',
+        category: 'supporting',
+        excerpt: `${accountName} is hot at ${score}/100 across ${distinctKinds} independent signal kinds.`,
+        observedAt
+      },
+      ...accountSignalEvidence(signals),
+      ...relationshipState.evidence
+    ];
+
+    candidates.push({
+      sourceKey,
+      personId,
+      accountId,
+      personName,
+      accountName,
+      dimensions: {
+        fit: null,
+        accountIntent: Number((score / 100).toFixed(3)),
+        personIntent,
+        firstPartyIntent: 0,
+        relationship: relationshipState.score,
+        recency: recencyFor(mentionedAt, now)
+      },
+      qualification: 'act_now',
+      recommendedAction,
+      title: relationshipState.recentInbound
+        ? `Reply to ${personName} at ${accountName}`
+        : `Talk to ${personName} at ${accountName}`,
+      summary: `${personName} appeared in ${watchName} while ${accountName} is hot at ${score}/100.`,
+      rationale: [
+        `an exact ${String(row.platform)} handle identity ties the watch mention to this Person`,
         `account scorer is hot at ${score}/100 across ${distinctKinds} signal kinds`,
         'the Person maps to exactly one explicit/verified Account',
         ...(relationshipState.recentInbound

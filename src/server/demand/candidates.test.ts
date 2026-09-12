@@ -674,6 +674,178 @@ describe('buildDemandCandidates', () => {
     expect(await buildDemandCandidates(db, workspaceId, NOW)).toEqual([]);
   });
 
+  it('layers a watch mention onto demand only through an exact provider handle identity', async () => {
+    const workspaceId = await seedWorkspace('Watch mention identity');
+    const personId = id('con');
+    await db
+      .prepare(
+        `INSERT INTO contacts
+         (id,workspace_id,name,email,email_normalized,role,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        personId,
+        workspaceId,
+        'Dev Buyer',
+        'devbuyer@watch.example',
+        'devbuyer@watch.example',
+        'VP Engineering',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `INSERT INTO person_identities
+         (id,workspace_id,person_id,provider,identity_type,identity_value,normalized_value,created_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        'pid_watch_buyer',
+        workspaceId,
+        personId,
+        'hackernews',
+        'handle',
+        'devbuyer',
+        'devbuyer',
+        NOW.toISOString()
+      );
+    const account = await createAccount(
+      db,
+      workspaceId,
+      { domain: 'watch-buyer.example', name: 'Watch Buyer Co', source: 'manual' },
+      new Date('2026-09-10T08:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO account_contacts
+         (id,workspace_id,account_id,contact_id,role,source,confidence,created_at,updated_at)
+         VALUES (?,?,?,?,?,'manual','explicit',?,?)`
+      )
+      .run(
+        'ac_watch_buyer',
+        workspaceId,
+        account.id,
+        personId,
+        'VP Engineering',
+        '2026-09-10T08:00:00.000Z',
+        '2026-09-10T08:00:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        workspaceId,
+        account.id,
+        89,
+        'hot',
+        2,
+        '2026-09-12T07:00:00.000Z',
+        '{}',
+        '2026-09-12T07:01:00.000Z'
+      );
+    for (const [index, kind, detail, url] of [
+      [0, 'hiring-up', 'Added platform roles.', 'https://watch-buyer.example/careers'],
+      [1, 'pricing-changed', 'Enterprise pricing changed.', 'https://watch-buyer.example/pricing']
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_watch_buyer_${index}`,
+          workspaceId,
+          account.id,
+          kind,
+          detail,
+          url,
+          `2026-09-12T0${6 + index}:00:00.000Z`,
+          `watch-buyer-${index}`,
+          `2026-09-12T0${6 + index}:00:00.000Z`
+        );
+    }
+    await db
+      .prepare(
+        `INSERT INTO brand_watches
+         (id,workspace_id,name,keywords,platforms,cadence,enabled,limit_per_platform,next_run_at,created_at,updated_at)
+         VALUES (?,?,?,?::text[],?::text[],'daily',TRUE,25,?,?,?)`
+      )
+      .run(
+        'bw_demand_watch',
+        workspaceId,
+        'AI infra watch',
+        ['trevra', 'agent infrastructure'],
+        ['hackernews'],
+        '2026-09-13T08:00:00.000Z',
+        '2026-09-11T08:00:00.000Z',
+        '2026-09-12T07:30:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO brand_watch_mentions
+         (id,workspace_id,watch_id,platform,external_id,url,title,content,author,community,score,
+          num_comments,matched_keywords,sentiment_label,sentiment_score,sentiment_span,sentiment_version,
+          content_hash,mention_created_at,first_seen_at,last_seen_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,0,?::text[],'neutral',0,'',1,?,?,?,?)`
+      )
+      .run(
+        'bwm_demand_watch',
+        workspaceId,
+        'bw_demand_watch',
+        'hackernews',
+        'hn-demand-1',
+        'https://news.ycombinator.com/item?id=12345',
+        'Agent infrastructure choices',
+        'We are evaluating Trevra-style account monitoring for our GTM team.',
+        'devbuyer',
+        'hackernews',
+        14,
+        ['trevra'],
+        'hash-watch-demand',
+        '2026-09-12T07:20:00.000Z',
+        '2026-09-12T07:30:00.000Z',
+        '2026-09-12T07:30:00.000Z'
+      );
+
+    const withIdentity = await buildDemandCandidates(db, workspaceId, NOW);
+
+    expect(withIdentity).toHaveLength(1);
+    expect(withIdentity[0]).toMatchObject({
+      sourceKey: `demand:${personId}:${account.id}`,
+      personId,
+      accountId: account.id,
+      qualification: 'act_now',
+      recommendedAction: 'prepare_outreach',
+      dimensions: {
+        accountIntent: 0.89,
+        firstPartyIntent: 0,
+        relationship: 0
+      }
+    });
+    expect(withIdentity[0]!.dimensions.personIntent).toBeGreaterThan(0.64);
+    expect(withIdentity[0]!.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: 'brand_watch_mention',
+          sourceId: 'bwm_demand_watch',
+          externalUrl: 'https://news.ycombinator.com/item?id=12345'
+        })
+      ])
+    );
+
+    await db.prepare('DELETE FROM person_identities WHERE id=?').run('pid_watch_buyer');
+    const withoutIdentity = await buildDemandCandidates(db, workspaceId, NOW);
+    expect(withoutIdentity).toHaveLength(1);
+    expect(withoutIdentity[0]!.dimensions.personIntent).toBe(0);
+    expect(
+      withoutIdentity[0]!.evidence.some((item) => item.sourceType === 'brand_watch_mention')
+    ).toBe(false);
+  });
+
   it('surfaces a hot account when exactly one explicit contact is already known', async () => {
     const workspaceId = await seedWorkspace('Known contact demand');
     const personId = id('con');
