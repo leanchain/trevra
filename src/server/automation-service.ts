@@ -5,6 +5,7 @@ import { rejectedSignalShapes } from './accounts/store.js';
 import { runRecommendationEngine } from './recommendation-engine.js';
 import { promoteVerifiedDemandRepliesToOpportunities } from './demand/opportunities.js';
 import { buildCompanyChangeOpportunities } from './content/opportunity-builder.js';
+import { runDueMarketPulseSchedules } from './content/pulse-schedule.js';
 
 /**
  * Accounts swept per cycle. Small on purpose: a pass paces itself 20-90s
@@ -89,6 +90,17 @@ export async function runAutomationCycle(db: Db, workspaceId: string): Promise<A
   // second tenant scanner and keeps graph rebuilds network-free.
   try {
     await buildCompanyChangeOpportunities(db, workspaceId, new Date());
+  } catch {
+    result.failed += 1;
+  }
+
+  // Opt-in Market Pulse schedules are DB-only preparation. They reuse this
+  // workspace lease and create ordinary LinkedIn drafts; nothing is published
+  // or externally executed from the automation cycle.
+  try {
+    const pulse = await runDueMarketPulseSchedules(db, workspaceId, new Date());
+    result.prepared += pulse.prepared;
+    result.failed += pulse.failed;
   } catch {
     result.failed += 1;
   }

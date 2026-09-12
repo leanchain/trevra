@@ -13399,6 +13399,93 @@ button:disabled {
   }
 }
 
+/* Deterministic market pulse over the existing account watchlist. */
+.research-pulse-panel,
+.research-pulse-body {
+  min-width: 0;
+}
+.research-pulse-body {
+  display: grid;
+  gap: 12px;
+}
+.research-pulse-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.research-pulse-metrics > div {
+  display: grid;
+  gap: 2px;
+  padding: 10px 11px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--t-surface-2);
+}
+.research-pulse-metrics strong {
+  font-size: var(--t-text-lg);
+}
+.research-pulse-metrics span,
+.research-pulse-actions span,
+.research-pulse-blocker {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.research-pulse-patterns {
+  display: grid;
+  gap: 8px;
+}
+.research-pulse-patterns > article {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.35fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+}
+.research-pulse-patterns > article > div:first-child {
+  display: grid;
+  gap: 3px;
+  text-transform: capitalize;
+}
+.research-pulse-patterns span {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  text-transform: none;
+}
+.research-pulse-examples {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.research-pulse-examples a {
+  overflow-wrap: anywhere;
+  color: inherit;
+  font-size: var(--t-text-xs);
+}
+.research-pulse-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.research-pulse-schedule > span,
+.research-pulse-schedule small {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.research-pulse-schedule small {
+  flex-basis: 100%;
+}
+.research-pulse-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.research-pulse-blocker {
+  margin: -4px 0 0;
+}
+
 /* Evidence-backed market stories: full-width decision surface before the
    platform-specific research feeds. Facts stay individually inspectable so a
    founder never has to trust a score without seeing what produced it. */
@@ -13488,6 +13575,17 @@ button:disabled {
 }
 
 @media (max-width: 760px) {
+  .research-pulse-metrics,
+  .research-pulse-patterns > article {
+    grid-template-columns: 1fr;
+  }
+  .research-pulse-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .research-pulse-actions button {
+    width: 100%;
+  }
   .research-story-card {
     grid-template-columns: auto minmax(0, 1fr);
   }

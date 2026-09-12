@@ -13,13 +13,18 @@ import type { ConnectionSummary, SkillRun } from '../../shared/types';
 import type { ContentOpportunity } from '../../server/content/types';
 import type { ContentPerformanceReport } from '../../server/content/performance';
 import type { ContentDraftStrategy } from '../../server/content/strategy';
+import type { MarketPulse, MarketPulseDays } from '../../server/content/pulse';
+import type { MarketPulseSchedule } from '../../server/content/pulse-schedule';
 import {
   createWatch,
   draftContentOpportunityLinkedIn,
+  draftMarketPulse,
   draftMentionReply,
   getContentDraftStrategies,
   getContentOpportunities,
   getContentPerformance,
+  getMarketPulse,
+  getMarketPulseSchedules,
   getOutreachOfferDefaults,
   getOutreachThreads,
   getSkillRuns,
@@ -28,6 +33,7 @@ import {
   getWatches,
   refreshContentOpportunities,
   runWatch,
+  saveMarketPulseSchedule,
   startPlaybook,
   updateContentOpportunityStatus,
   type BrandWatch,
@@ -517,6 +523,13 @@ export function ResearchView({
   const [performanceError, setPerformanceError] = useState('');
   const [storyBusy, setStoryBusy] = useState<string | null>(null);
   const [refreshingStories, setRefreshingStories] = useState(false);
+  const [pulseDays, setPulseDays] = useState<MarketPulseDays>(7);
+  const [pulse, setPulse] = useState<MarketPulse | null>(null);
+  const [pulseLoaded, setPulseLoaded] = useState(false);
+  const [pulseBusy, setPulseBusy] = useState(false);
+  const [pulseError, setPulseError] = useState('');
+  const [pulseSchedule, setPulseSchedule] = useState<MarketPulseSchedule | null>(null);
+  const [pulseScheduleBusy, setPulseScheduleBusy] = useState(false);
   const [redditOpen, setRedditOpen] = useState(false);
   const [threads, setThreads] = useState<FeedThread[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
@@ -581,6 +594,42 @@ export function ResearchView({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getMarketPulseSchedules()
+      .then((schedules) => {
+        if (cancelled) return;
+        setPulseSchedule(schedules.find((schedule) => schedule.tag === null) ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setPulseSchedule(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPulseLoaded(false);
+    getMarketPulse(pulseDays)
+      .then((next) => {
+        if (cancelled) return;
+        setPulse(next);
+        setPulseError('');
+        setPulseLoaded(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setPulse(null);
+        setPulseError(error instanceof Error ? error.message : 'Could not compile market pulse.');
+        setPulseLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pulseDays]);
 
   useEffect(() => {
     let cancelled = false;
@@ -861,6 +910,50 @@ export function ResearchView({
     }
   }
 
+  async function updatePulseSchedule(mode: 'off' | 'weekly' | 'monthly'): Promise<void> {
+    setPulseScheduleBusy(true);
+    setPulseError('');
+    try {
+      const cadence = mode === 'off' ? (pulseSchedule?.cadence ?? 'weekly') : mode;
+      const schedule = await saveMarketPulseSchedule({ cadence, enabled: mode !== 'off' });
+      setPulseSchedule(schedule);
+    } catch (error) {
+      setPulseError(
+        error instanceof Error ? error.message : 'Could not update recurring pulse drafts.'
+      );
+    } finally {
+      setPulseScheduleBusy(false);
+    }
+  }
+
+  async function draftPulse(): Promise<void> {
+    setPulseBusy(true);
+    setPulseError('');
+    try {
+      const prepared = await draftMarketPulse(pulseDays);
+      setPulse(prepared.pulse);
+      setStories((current) => {
+        const without = current.filter((item) => item.id !== prepared.opportunity.id);
+        return [prepared.opportunity, ...without];
+      });
+      setDraftStrategies(await getContentDraftStrategies(20));
+      const result = await draftContentOpportunityLinkedIn(
+        prepared.opportunity.id,
+        seatKey || undefined
+      );
+      setToast(
+        result.reused ? 'Opened the existing market pulse draft.' : 'Market pulse draft created.'
+      );
+      onNavigate(`/outreach/posts?draft=${encodeURIComponent(result.post.id)}`);
+    } catch (error) {
+      setPulseError(
+        error instanceof Error ? error.message : 'Could not prepare this market pulse.'
+      );
+    } finally {
+      setPulseBusy(false);
+    }
+  }
+
   async function dismissStory(story: ContentOpportunity): Promise<void> {
     setStoryBusy(story.id);
     setStoriesError('');
@@ -935,6 +1028,131 @@ export function ResearchView({
             </button>
           ))}
         </div>
+      </section>
+
+      <section className="page-panel research-pulse-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Market pulse</h3>
+            <p>
+              Cross-account changes from your existing watchlist. Trevra only calls something a
+              pattern when at least two companies independently support it.
+            </p>
+          </div>
+          <div className="li-filter-row" role="group" aria-label="Market pulse period">
+            {([7, 30] as const).map((days) => (
+              <button
+                key={days}
+                type="button"
+                className={`li-range ${pulseDays === days ? 'is-active' : ''}`}
+                aria-pressed={pulseDays === days}
+                onClick={() => setPulseDays(days)}
+              >
+                {days === 7 ? '7 days' : '30 days'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {pulseError ? <div className="error-banner">{pulseError}</div> : null}
+        {!pulseLoaded ? (
+          <div className="empty-state">
+            <LoaderCircle className="spin" size={24} />
+            <p>Compiling source-backed changes across the watchlist…</p>
+          </div>
+        ) : pulse ? (
+          <div className="research-pulse-body">
+            <div className="research-pulse-metrics">
+              <div>
+                <strong>{pulse.accountCount}</strong>
+                <span>watched accounts</span>
+              </div>
+              <div>
+                <strong>{pulse.changedAccountCount}</strong>
+                <span>with changes</span>
+              </div>
+              <div>
+                <strong>{pulse.signalCount}</strong>
+                <span>source-backed changes</span>
+              </div>
+            </div>
+            {pulse.patterns.length > 0 ? (
+              <div className="research-pulse-patterns">
+                {pulse.patterns.slice(0, 3).map((pattern) => (
+                  <article key={pattern.kind}>
+                    <div>
+                      <strong>{pattern.label}</strong>
+                      <span>
+                        {pattern.accountCount} companies · {pattern.signalCount} changes
+                      </span>
+                    </div>
+                    <div className="research-pulse-examples">
+                      {pattern.examples.slice(0, 3).map((example) => (
+                        <a
+                          key={example.signalId}
+                          href={example.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {example.accountName}: {example.detail}
+                        </a>
+                      ))}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="research-watch-empty">{pulse.draftBlocker}</p>
+            )}
+            <div className="research-pulse-schedule">
+              <span>Prepare drafts</span>
+              <div
+                className="li-filter-row"
+                role="group"
+                aria-label="Recurring market pulse drafts"
+              >
+                {(['off', 'weekly', 'monthly'] as const).map((mode) => {
+                  const active =
+                    mode === 'off'
+                      ? !pulseSchedule?.enabled
+                      : pulseSchedule?.enabled && pulseSchedule.cadence === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={`li-range ${active ? 'is-active' : ''}`}
+                      aria-pressed={active}
+                      disabled={pulseScheduleBusy}
+                      onClick={() => void updatePulseSchedule(mode)}
+                    >
+                      {mode === 'off' ? 'Off' : mode === 'weekly' ? 'Weekly' : 'Monthly'}
+                    </button>
+                  );
+                })}
+              </div>
+              {pulseSchedule?.enabled ? (
+                <small>
+                  Next draft {new Date(pulseSchedule.nextRunAt).toLocaleString()}
+                  {pulseSchedule.lastBlocker ? ` · Last run: ${pulseSchedule.lastBlocker}` : ''}
+                </small>
+              ) : null}
+            </div>
+            <div className="research-pulse-actions">
+              <span>{pulse.scopeLabel}</span>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!pulse.canDraft || pulseBusy}
+                onClick={() => void draftPulse()}
+              >
+                {pulseBusy ? <LoaderCircle className="spin" size={15} /> : null}
+                Draft pulse
+              </button>
+            </div>
+            {!pulse.canDraft && pulse.draftBlocker ? (
+              <p className="research-pulse-blocker">{pulse.draftBlocker}</p>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <section className="page-panel research-story-panel">

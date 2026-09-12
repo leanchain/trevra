@@ -52,6 +52,8 @@ import type { PublicSkillManifest } from '../server/skill-api';
 import type { TodayPayload } from '../server/today';
 import type { ContentOpportunity } from '../server/content/types';
 import type { ContentDraftStrategy } from '../server/content/strategy';
+import type { MarketPulse, MarketPulseDays } from '../server/content/pulse';
+import type { MarketPulseCadence, MarketPulseSchedule } from '../server/content/pulse-schedule';
 import type { ContentPerformanceReport } from '../server/content/performance';
 import type { PreparedOutreachResult } from '../server/outreach/prepare';
 import type { GtmIntent, GtmPlan, PreparedGtmPlanResult } from '../server/gtm/intent';
@@ -199,6 +201,37 @@ export async function getContentOpportunities(
 
 export async function getContentPerformance(limit = 100): Promise<ContentPerformanceReport> {
   return request(`/api/content/performance?limit=${encodeURIComponent(String(limit))}`);
+}
+
+export async function getMarketPulse(days: MarketPulseDays = 7): Promise<MarketPulse> {
+  return request(`/api/content/pulse?days=${days}`);
+}
+
+export async function draftMarketPulse(
+  days: MarketPulseDays = 7
+): Promise<{ pulse: MarketPulse; opportunity: ContentOpportunity }> {
+  return request('/api/content/pulse/draft', {
+    method: 'POST',
+    body: JSON.stringify({ days })
+  });
+}
+
+export async function getMarketPulseSchedules(): Promise<MarketPulseSchedule[]> {
+  const result = await request<{ schedules: MarketPulseSchedule[] }>(
+    '/api/content/pulse/schedules'
+  );
+  return result.schedules;
+}
+
+export async function saveMarketPulseSchedule(input: {
+  cadence: MarketPulseCadence;
+  enabled: boolean;
+}): Promise<MarketPulseSchedule> {
+  const result = await request<{ schedule: MarketPulseSchedule }>('/api/content/pulse/schedule', {
+    method: 'PUT',
+    body: JSON.stringify({ ...input, tag: null })
+  });
+  return result.schedule;
 }
 
 export async function getContentDraftStrategies(

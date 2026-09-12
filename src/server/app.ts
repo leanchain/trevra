@@ -120,6 +120,8 @@ import { listContentOpportunities, setContentOpportunityStatus } from './content
 import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
 import { contentPerformanceReport } from './content/performance.js';
 import { contentDraftStrategy } from './content/strategy.js';
+import { compileAccountMarketPulse, materializeAccountMarketPulse } from './content/pulse.js';
+import { listMarketPulseSchedules, upsertMarketPulseSchedule } from './content/pulse-schedule.js';
 import { DemandActionError, prepareDemandAction } from './demand/actions.js';
 import { listConversationMessages, listConversations } from './conversations.js';
 import { listEmailDeliveries } from './email-deliveries.js';
@@ -2707,6 +2709,101 @@ export function createApp(db: Db) {
           limit: input.limit
         })
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/content/pulse', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          days: z.coerce
+            .number()
+            .int()
+            .refine((value) => value === 7 || value === 30)
+            .optional(),
+          tag: z.string().trim().min(1).max(120).optional()
+        })
+        .parse(req.query);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(
+        await compileAccountMarketPulse(
+          db,
+          req.auth!.workspaceId,
+          { days: (input.days ?? 7) as 7 | 30, tag: input.tag ?? null },
+          new Date()
+        )
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/content/pulse/draft', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          days: z
+            .number()
+            .int()
+            .refine((value) => value === 7 || value === 30)
+            .optional(),
+          tag: z.string().trim().min(1).max(120).nullable().optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const result = await materializeAccountMarketPulse(
+        db,
+        req.auth!.workspaceId,
+        { days: (input.days ?? 7) as 7 | 30, tag: input.tag ?? null },
+        new Date()
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      if (!result.opportunity) {
+        return res.status(409).json({
+          error:
+            result.pulse.draftBlocker ?? 'This pulse does not yet contain a cross-account pattern.',
+          pulse: result.pulse
+        });
+      }
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/content/pulse/schedules', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ schedules: await listMarketPulseSchedules(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put('/api/content/pulse/schedule', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          cadence: z.enum(['weekly', 'monthly']),
+          enabled: z.boolean(),
+          tag: z.string().trim().min(1).max(120).nullable().optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const schedule = await upsertMarketPulseSchedule(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          cadence: input.cadence,
+          enabled: input.enabled,
+          tag: input.tag ?? null
+        },
+        new Date()
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ schedule });
     } catch (error) {
       next(error);
     }

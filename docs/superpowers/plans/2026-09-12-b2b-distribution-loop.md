@@ -294,8 +294,18 @@ The drafter may use this later as input, but the calculation itself stays determ
 - [x] Precision guards: multiple candidate People are not auto-selected; Accounts with open opportunities are not re-prospected.
 - [x] Multiple-contact persona/buying-role ranking from the latest saved campaign ICP role, with minimum-score + margin guards and proof evidence.
 - [x] Hot Account with no known Person → account-scoped `person_discovery` recommendation and prefilled LinkedIn company-employee / buyer-role people search; nothing queues until the founder acts.
-- [ ] Recommendation → exact prepared action → conversation/opportunity attribution.
-- [ ] Distribution/content loop feeding Person-intent evidence.
+- [x] Recommendation → exact prepared action → provider-verified conversation reply → Opportunity-lite attribution.
+- [x] Distribution/content loop feeding Person-intent evidence from Trevra-published LinkedIn posts.
+- [x] Evidence-backed story → deterministic LinkedIn draft with canonical `content_asset_id` provenance.
+- [x] Real publish permalink capture → bounded engager observation → Demand Graph qualification.
+- [x] Append-only own-post metrics with tapered 6h/24h lifecycle reads; unreadable metrics stay null.
+- [x] Commercial content attribution: engager → Person → qualified demand → verified reply → Opportunity → won.
+- [x] Outcome-aware draft framing with minimum `n=3` per angle and visible reasoning; commercial outcomes outrank reach.
+- [x] Account-watchlist Market Pulse for 7/30-day windows, including existing Account tag scopes and cross-account evidence guards.
+- [x] Opt-in weekly/monthly Market Pulse draft preparation through the existing workspace automation lease; never auto-publishes.
+- [ ] Evidence-card rendering / native visual attachment.
+- [ ] Brand-watch and saved-filter Market Pulse scopes.
+- [ ] Public reports/indexes, format cloning, and additional publisher adapters.
 
 ## Phase 0 — Demand Graph V1
 
@@ -658,6 +668,8 @@ A card must remain useful if the viewer has never heard of Trevra. Branding is p
 
 # Phase 8 — Feed-post analytics
 
+**Shipped 2026-09-12:** bounded own-post metric reader, real publish-permalink capture, append-only snapshots, tapered lifecycle scheduling, authenticated performance API, Research distribution outcomes, and explicit nulls for unreadable metrics. Post-history velocity and richer per-post UI remain follow-up polish.
+
 This closes the loop and is required before claiming Trevra learns distribution.
 
 ## 5.1 LinkedIn metric collector
@@ -694,6 +706,8 @@ On post history show:
 ---
 
 # Phase 9 — Learning / format selection
+
+**Shipped 2026-09-12:** generation-time feature extraction, deterministic angle buckets with `n`, commercial-outcome attribution, minimum-sample guards, safe heuristic exploration, and visible performance-backed framing hints. Commercial outcomes are compared per post before reach; reach is only a tiebreaker when both buckets have enough readable impression samples. Early-velocity and rolling-baseline refinements remain optional follow-up.
 
 ## 6.1 Feature extraction
 
@@ -739,6 +753,8 @@ The model remains free to produce content, but the evidence for the strategy rec
 ---
 
 # Phase 10 — Recurring Market Pulse
+
+**Shipped 2026-09-12 for Account scopes:** deterministic 7/30-day compiler over the existing active Account watchlist, optional existing Account-tag scope, cross-account pattern gate, source-backed examples, one-click pulse draft, and opt-in weekly/monthly draft preparation. Brand-watch and saved-filter scopes remain extensions of the same compiler contract; no new Market entity was introduced.
 
 Only build after the one-story loop and metrics are working.
 

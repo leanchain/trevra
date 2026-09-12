@@ -48,7 +48,7 @@ async function seedSession(): Promise<string> {
   return token;
 }
 
-function authed(method: 'get' | 'post' | 'patch', path: string) {
+function authed(method: 'get' | 'post' | 'put' | 'patch', path: string) {
   return request(app)[method](path).set('Cookie', `trevra_session=${session}`);
 }
 
@@ -220,6 +220,61 @@ describe('content opportunity API', () => {
     expect(report.body.publications).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ postId: `lipost_${OTHER}` })])
     );
+  });
+
+  it('compiles a workspace-scoped market pulse and persists a recurring draft schedule', async () => {
+    for (const [workspaceId, suffix] of [
+      [WORKSPACE, 'own-a'],
+      [WORKSPACE, 'own-b'],
+      [OTHER, 'foreign']
+    ] as const) {
+      const account = await createAccount(
+        db,
+        workspaceId,
+        {
+          domain: `${suffix}.pulse-api.example`,
+          name: suffix,
+          source: 'manual',
+          tags: ['pulse-api-test']
+        },
+        NOW
+      );
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_pulse_${suffix}`,
+          workspaceId,
+          account.id,
+          'hiring-up',
+          `${suffix} added roles.`,
+          `https://${suffix}.pulse-api.example/careers`,
+          '2026-09-12T10:00:00.000Z',
+          `fp-pulse-${suffix}`,
+          '2026-09-12T10:00:00.000Z'
+        );
+    }
+
+    const pulse = await authed('get', '/api/content/pulse?days=7&tag=pulse-api-test').expect(200);
+    expect(pulse.body).toMatchObject({ accountCount: 2, changedAccountCount: 2, canDraft: true });
+    expect(JSON.stringify(pulse.body)).not.toContain('foreign');
+
+    const saved = await authed('put', '/api/content/pulse/schedule')
+      .send({ cadence: 'weekly', enabled: true, tag: null })
+      .expect(200);
+    expect(saved.body.schedule).toMatchObject({
+      workspaceId: WORKSPACE,
+      cadence: 'weekly',
+      enabled: true,
+      tag: null
+    });
+    const schedules = await authed('get', '/api/content/pulse/schedules').expect(200);
+    expect(schedules.body.schedules).toEqual([
+      expect.objectContaining({ workspaceId: WORKSPACE, cadence: 'weekly', enabled: true })
+    ]);
   });
 
   it('returns draft strategies only for ready stories in the authenticated workspace', async () => {
