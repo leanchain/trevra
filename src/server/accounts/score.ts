@@ -164,6 +164,7 @@ export const SIGNAL_WEIGHTS: Record<AccountSignalKind, number> = {
   'hiring-up': 30,
   'product-launch': 29,
   'pricing-changed': 28,
+  'release-notes-changed': 24,
   'commerce-app-added': 22,
   'storefront-rebuild': 20,
   'newsletter-started': 20,
@@ -200,6 +201,7 @@ const KIND_LABELS: Record<AccountSignalKind, string> = {
   'meta-ads-started': 'Meta ads switching on',
   'meta-ads-rising': 'Meta ad volume rising',
   'product-launch': 'a product launch',
+  'release-notes-changed': 'release notes changing',
   'hiring-up': 'a hiring increase',
   'hiring-down': 'a hiring drop',
   'pricing-changed': 'a pricing change',
@@ -356,6 +358,11 @@ export const COMBINATION_BONUSES: readonly CombinationBonus[] = [
     kinds: ['storefront-rebuild', 'commerce-app-added'],
     bonus: 16,
     why: 'The storefront and its commerce stack changed in the same window, which is the signature of an active rebuild rather than routine content maintenance.'
+  },
+  {
+    kinds: ['release-notes-changed', 'pricing-changed'],
+    bonus: 20,
+    why: 'Release notes and pricing moved in the same window: the product and its commercial packaging are changing together, which is a stronger buying window than either edit alone.'
   },
   {
     kinds: ['hiring-up', 'thread-mention'],

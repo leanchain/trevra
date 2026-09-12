@@ -6,6 +6,7 @@ import {
   diffSnapshots,
   extractJobPostings,
   extractPricingFacts,
+  extractReleaseNotesFacts,
   watchSignals,
   type ResearchSnapshot
 } from './signal.js';
@@ -128,6 +129,56 @@ describe('diffSnapshots', () => {
       (signal) => signal.kind === 'pricing-changed'
     );
     expect(pricing?.detail).toContain('aaaaaaaaaaaaaaaa -> bbbbbbbbbbbbbbbb');
+  });
+
+  it('emits release-note movement only when stable release facts move', () => {
+    const before: ResearchSnapshot = {
+      ...AFTER,
+      headline: BEFORE.headline,
+      jobCount: BEFORE.jobCount,
+      jobTitles: BEFORE.jobTitles,
+      pricingHash: BEFORE.pricingHash,
+      tech: BEFORE.tech,
+      releaseNotesUrl: 'https://acme.test/changelog',
+      releaseNotesHash: 'release-before',
+      releaseNotesFacts: ['Faster exports', 'Role-based access']
+    };
+    const after: ResearchSnapshot = {
+      ...before,
+      capturedAt: '2026-07-02T00:00:00.000Z',
+      releaseNotesHash: 'release-after',
+      releaseNotesFacts: ['AI summaries', 'Faster exports', 'Role-based access']
+    };
+    const release = diffSnapshots(before, after).find(
+      (signal) => signal.kind === 'release-notes-changed'
+    );
+    expect(release?.detail).toContain('added “AI summaries”');
+    expect(release?.previous).toBe('release-before');
+    expect(release?.current).toBe('release-after');
+
+    const copyOnly = diffSnapshots(before, {
+      ...after,
+      releaseNotesHash: 'release-copy-only',
+      releaseNotesFacts: before.releaseNotesFacts
+    });
+    expect(copyOnly.map((signal) => signal.kind)).not.toContain('release-notes-changed');
+  });
+
+  it('does not turn hash churn into a release when both captures have no stable release headings', () => {
+    const before: ResearchSnapshot = {
+      ...AFTER,
+      releaseNotesUrl: 'https://acme.test/changelog',
+      releaseNotesHash: 'release-before',
+      releaseNotesFacts: []
+    };
+    const after: ResearchSnapshot = {
+      ...before,
+      releaseNotesHash: 'release-after',
+      releaseNotesFacts: []
+    };
+    expect(diffSnapshots(before, after).map((signal) => signal.kind)).not.toContain(
+      'release-notes-changed'
+    );
   });
 
   it('emits storefront-rebuild only for high-confidence commerce-platform migrations', () => {
@@ -305,7 +356,19 @@ describe('extractJobPostings', () => {
   });
 });
 
-describe('contentHash and pricing facts', () => {
+describe('release-note facts', () => {
+  it('keeps release-entry headings and drops page labels and date-only headings', () => {
+    expect(
+      extractReleaseNotesFacts(`<h1>Changelog</h1>
+        <h2>September 12, 2026</h2>
+        <h3>AI summaries for every account</h3>
+        <h3>Release notes</h3>
+        <h3>Faster CSV exports</h3>`)
+    ).toEqual(['AI summaries for every account', 'Faster CSV exports']);
+  });
+});
+
+describe('contentHash', () => {
   it('hashes visible text, so a changed build id is not a pricing change', () => {
     const a =
       '<html><script src="/_next/static/abc123/main.js"></script><body><h2>29 EUR</h2></body></html>';
@@ -371,6 +434,50 @@ describe('captureSnapshot', () => {
     expect(snapshot.pricingHash).toHaveLength(16);
     expect(snapshot.pricingFacts).toEqual(['29 EUR per seat']);
     expect(snapshot.tech).toEqual(['segment']);
+  });
+
+  it('captures an explicitly published first-party changelog with stable release facts', async () => {
+    const seen: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(input);
+      seen.push(url.pathname);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+      if (url.pathname === '/') return html('<h1>Acme</h1><a href="/changelog">Changelog</a>');
+      if (url.pathname === '/changelog')
+        return html(
+          '<h1>Changelog</h1><h2>September 12, 2026</h2><h3>AI summaries</h3><h3>Faster exports</h3>'
+        );
+      return new Response('not found', { status: 404 });
+    };
+
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['releases'],
+      fetchImpl,
+      pageBudget: 4
+    });
+
+    expect(snapshot.releaseNotesUrl).toBe('https://acme.test/changelog');
+    expect(snapshot.releaseNotesHash).toHaveLength(16);
+    expect(snapshot.releaseNotesFacts).toEqual(['AI summaries', 'Faster exports']);
+    expect(seen.filter((path) => path === '/changelog')).toHaveLength(1);
+  });
+
+  it('does not treat an unrelated fallback response as a release-notes page', async () => {
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(input);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+      if (url.pathname === '/') return html('<h1>Acme</h1>');
+      if (url.pathname === '/changelog') return html('<h1>Company news</h1><h2>Office party</h2>');
+      return new Response('not found', { status: 404 });
+    };
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['releases'],
+      fetchImpl,
+      pageBudget: 5
+    });
+    expect(snapshot.releaseNotesUrl).toBeNull();
+    expect(snapshot.releaseNotesHash).toBeNull();
+    expect(snapshot.releaseNotesFacts).toBeNull();
   });
 
   it('follows one explicitly published external ATS board under its own robots/request budget', async () => {

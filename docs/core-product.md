@@ -60,7 +60,7 @@ Today's `clients` table plus the marketplace CSV importer is 80% of this.
 
 Per account, on a schedule: public commentary (GitHub, HN, Reddit, Lobsters,
 dev.to, Mastodon, Stack Exchange — **all seven already exist as scouts**), site
-change diffs, pricing changes with visible price/plan evidence, hiring/careers diffs including company-published external ATS boards, ecommerce product/catalog and storefront
+change diffs, pricing changes with visible price/plan evidence, first-party changelog/release-note movement, hiring/careers diffs including company-published external ATS boards, ecommerce product/catalog and storefront
 app changes, first-party newsletter/social surface diffs, built-in Substack/beehiiv and explicitly published first-party RSS/Atom newsletter activity, verified-Page Facebook follower/cadence metrics, strict Page-id Meta Ad Library counts, optional Instagram Business Discovery and YouTube Data API metrics, plus
 deployment-owned observation providers for other expensive external surfaces. Storefront
 crawling runs independently inside Trevra. See `docs/ecommerce-observation-plane.md`.

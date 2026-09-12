@@ -8,6 +8,7 @@ Native account sweeps now cover:
 
 - hiring/careers changes, including explicitly published external ATS boards;
 - pricing and homepage changes; pricing-page hashes remain the deterministic detector, while bounded visible price/plan facts explain the change and suppress copy-only churn when both snapshots contain comparable facts;
+- first-party changelog/release-note movement for B2B products: Trevra follows an explicitly published same-origin Changelog/Release Notes/What's New page (or conservative standard fallback), hashes visible text, and compares bounded release-entry headings so surrounding copy/layout churn does not become a fake release signal;
 - generic site technology changes;
 - Shopify and WooCommerce public product catalogs;
 - ecommerce app installs/removals visible in storefront markup, including Klaviyo, Mailchimp, Omnisend, Brevo, Attentive, Recharge, Gorgias, Yotpo and Judge.me.
@@ -42,7 +43,8 @@ Today it:
 - emits `storefront-rebuild` only when two consecutive live captures show a migration between recognized commerce platforms at >=0.8 confidence on both sides; low-confidence/generic-site changes do not qualify;
 - records first-party newsletter signup surfaces and social-profile links as weak presence signals, without pretending presence means activity or growth;
 - follows at most one same-origin newsletter page and records company-published newsletter feed targets when present;
-- follows at most two explicitly published external ATS boards on a strict allowlist (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, BambooHR, Teamtailor, Recruitee, Jobvite, Workday and Personio), each under its own robots/SSRF/request budget. A same-origin careers wrapper that delegates to an unreadable ATS remains **unmeasured** rather than becoming a false zero-openings signal.
+- follows at most two explicitly published external ATS boards on a strict allowlist (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, BambooHR, Teamtailor, Recruitee, Jobvite, Workday and Personio), each under its own robots/SSRF/request budget. A same-origin careers wrapper that delegates to an unreadable ATS remains **unmeasured** rather than becoming a false zero-openings signal;
+- follows a bounded first-party changelog/release-notes page and emits `release-notes-changed` only when comparable release-entry headings changed. A hash change with unchanged headings is treated as surrounding copy/layout churn, not a release.
 
 An imported platform tag is only a weak prior. Live endpoint evidence wins. The crawler therefore operates on any Trevra account independently of how that account was sourced.
 

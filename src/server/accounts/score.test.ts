@@ -97,7 +97,12 @@ describe('the weight table', () => {
   it('ranks public intent highest, then hiring and pricing, then positioning', () => {
     expect(SIGNAL_WEIGHTS['thread-mention']).toBeGreaterThan(SIGNAL_WEIGHTS['hiring-up']);
     expect(SIGNAL_WEIGHTS['hiring-up']).toBeGreaterThan(SIGNAL_WEIGHTS['pricing-changed']);
-    expect(SIGNAL_WEIGHTS['pricing-changed']).toBeGreaterThan(SIGNAL_WEIGHTS['headline-changed']);
+    expect(SIGNAL_WEIGHTS['pricing-changed']).toBeGreaterThan(
+      SIGNAL_WEIGHTS['release-notes-changed']
+    );
+    expect(SIGNAL_WEIGHTS['release-notes-changed']).toBeGreaterThan(
+      SIGNAL_WEIGHTS['headline-changed']
+    );
     expect(SIGNAL_WEIGHTS['headline-changed']).toBeGreaterThan(SIGNAL_WEIGHTS['tech-added']);
     expect(SIGNAL_WEIGHTS['tech-added']).toBeGreaterThan(SIGNAL_WEIGHTS['tech-removed']);
   });
@@ -239,6 +244,20 @@ describe('layering', () => {
     expect(combination.kinds).toEqual(['hiring-up', 'thread-mention']);
     expect(combination.why).toContain('stated intent with budget behind it');
     expect(combination.bonus).toBeGreaterThan(GENERIC_PAIR_BONUS);
+  });
+
+  it('makes release notes plus pricing a strong B2B buying window', () => {
+    const releaseOnly = score([sig('release-notes-changed', 0)]);
+    const releaseAndPricing = score([sig('release-notes-changed', 0), sig('pricing-changed', 0)]);
+    expect(releaseOnly.tier).toBe('cold');
+    expect(releaseAndPricing.tier).toBe('hot');
+    expect(releaseAndPricing.rationale.combinations[0]).toMatchObject({
+      kinds: ['release-notes-changed', 'pricing-changed'],
+      bonus: 20
+    });
+    expect(releaseAndPricing.rationale.combinations[0].why).toContain(
+      'product and its commercial packaging'
+    );
   });
 
   it('makes an ecommerce buying window hot only when independent store surfaces agree', () => {

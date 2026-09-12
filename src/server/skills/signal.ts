@@ -53,6 +53,7 @@ import type { Skill, SkillContext, SkillEvidence } from './types.js';
 export const SIGNAL_WATCHES = [
   'hiring',
   'pricing',
+  'releases',
   'headline',
   'tech',
   'products',
@@ -67,6 +68,7 @@ export const DEFAULT_PAGE_BUDGET = 10;
 export type SignalKind =
   | 'first-capture'
   | 'product-launch'
+  | 'release-notes-changed'
   | 'hiring-up'
   | 'hiring-down'
   | 'pricing-changed'
@@ -85,6 +87,7 @@ export type SignalKind =
 const SIGNAL_ORDER: readonly SignalKind[] = [
   'first-capture',
   'product-launch',
+  'release-notes-changed',
   'hiring-up',
   'hiring-down',
   'pricing-changed',
@@ -123,6 +126,11 @@ export interface ResearchSnapshot {
   pricingHash: string | null;
   /** Bounded visible price/plan facts from the captured pricing page. Missing means an older snapshot. */
   pricingFacts?: string[] | null;
+  /** First-party changelog/release-notes page when one was captured. */
+  releaseNotesUrl?: string | null;
+  releaseNotesHash?: string | null;
+  /** Bounded stable headings used to distinguish actual release entries from surrounding copy churn. */
+  releaseNotesFacts?: string[] | null;
   /** Public Shopify/WooCommerce catalog endpoint, when one was readable. */
   productUrl: string | null;
   /** Number of records in the bounded public sample. Null means not captured. */
@@ -146,6 +154,24 @@ export interface ResearchSnapshot {
 const CAREERS_LINK_RE =
   /\b(careers?|jobs?|hiring|open (?:roles?|positions?|jobs?|openings?)|join us|work with us|view (?:all )?jobs?)\b/i;
 const PRICING_LINK_RE = /\b(pricing|plans?|packages?)\b/i;
+const RELEASE_LINK_RE =
+  /\b(changelog|release notes?|what(?:'|’)s new|whats new|product updates?|platform updates?|latest releases?)\b/i;
+const RELEASE_HEADING_RE = /<h([2-4])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
+const GENERIC_RELEASE_HEADINGS = new Set([
+  'changelog',
+  'release notes',
+  'releases',
+  "what's new",
+  'whats new',
+  'product updates',
+  'platform updates',
+  'latest updates',
+  'updates',
+  'learn more',
+  'read more'
+]);
+const DATE_ONLY_RELEASE_HEADING_RE =
+  /^(?:(?:mon|tue|wed|thu|fri|sat|sun)(?:day)?[, ]+)?(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})$/i;
 
 const JOB_BOARD_HOSTS =
   /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|bamboohr\.com|teamtailor\.com|recruitee\.com|jobvite\.com|myworkdayjobs\.com|personio\.de|personio\.com)$/i;
@@ -212,6 +238,51 @@ export function extractJobPostings(html: string, pageUrl: string): string[] {
 
 export function contentHash(html: string): string {
   return createHash('sha256').update(stripTags(html)).digest('hex').slice(0, 16);
+}
+
+/**
+ * Stable, human-readable entry headings from a dedicated changelog/release page.
+ * A visible-text hash still detects movement, but when both snapshots have
+ * these facts we require the facts themselves to move before emitting a signal.
+ * That keeps a nav/footer rewrite from masquerading as a product release.
+ */
+export function extractReleaseNotesFacts(html: string): string[] {
+  const seen = new Set<string>();
+  const facts: string[] = [];
+  const add = (raw: string) => {
+    const clean = stripTags(raw).replace(/\s+/g, ' ').trim();
+    if (clean.length < 4 || clean.length > 160) return;
+    const key = clean.toLowerCase().replace(/[“”]/g, '"').replace(/[’]/g, "'");
+    if (GENERIC_RELEASE_HEADINGS.has(key) || DATE_ONLY_RELEASE_HEADING_RE.test(clean)) return;
+    if (seen.has(key)) return;
+    seen.add(key);
+    facts.push(clean);
+  };
+
+  for (const object of extractJsonLd(html)) {
+    if (
+      !isType(object, 'Article') &&
+      !isType(object, 'BlogPosting') &&
+      !isType(object, 'TechArticle') &&
+      !isType(object, 'NewsArticle')
+    )
+      continue;
+    if (typeof object.headline === 'string') add(object.headline);
+    if (facts.length >= 12) break;
+  }
+  if (facts.length < 12) {
+    for (const match of html.matchAll(RELEASE_HEADING_RE)) {
+      add(match[2] ?? '');
+      if (facts.length >= 12) break;
+    }
+  }
+  return facts.sort();
+}
+
+function hasReleaseNotesIdentity(html: string): boolean {
+  return (
+    RELEASE_LINK_RE.test(firstHeading(html) ?? '') || RELEASE_LINK_RE.test(pageTitle(html) ?? '')
+  );
 }
 
 const PRICE_AMOUNT_RE =
@@ -334,6 +405,7 @@ export async function captureSnapshot(
   const reserve =
     (watches.has('hiring') ? 2 : 0) +
     (watches.has('pricing') ? 2 : 0) +
+    (watches.has('releases') ? 1 : 0) +
     (watches.has('newsletter') ? 1 : 0);
   const maxCatalogRequests = watches.has('products')
     ? Math.max(0, Math.min(4, budget - 2 - reserve))
@@ -495,6 +567,33 @@ export async function captureSnapshot(
     }
   }
 
+  let releaseNotesUrl: string | null = null;
+  let releaseNotesHash: string | null = null;
+  let releaseNotesFacts: string[] | null = null;
+  if (watches.has('releases')) {
+    const explicitReleasePaths = discoverPaths(html, base, RELEASE_LINK_RE, []);
+    const releasePaths = [
+      ...explicitReleasePaths,
+      ...['/changelog', '/release-notes', '/whats-new'].filter(
+        (path) => !explicitReleasePaths.includes(path)
+      )
+    ].slice(0, 3);
+    for (const path of releasePaths) {
+      const pageUrl = `${base.origin}${path}`;
+      const response = await get(pageUrl);
+      if (response === null || response.status !== 200) continue;
+      if (response.contentType && !response.contentType.includes('html')) continue;
+      // An explicit company-published "Changelog"/"Release notes" link is
+      // sufficient identity. Blind fallback paths must identify themselves in
+      // the rendered page title/H1 before they can become release evidence.
+      if (!explicitReleasePaths.includes(path) && !hasReleaseNotesIdentity(response.text)) continue;
+      releaseNotesUrl = pageUrl;
+      releaseNotesHash = contentHash(response.text);
+      releaseNotesFacts = extractReleaseNotesFacts(response.text);
+      break;
+    }
+  }
+
   const productUrl = watches.has('products') ? storefront.productUrl : null;
   const productItems: CatalogItem[] = watches.has('products')
     ? (storefront.productItems ?? [])
@@ -520,6 +619,9 @@ export async function captureSnapshot(
     pricingUrl,
     pricingHash,
     pricingFacts,
+    releaseNotesUrl,
+    releaseNotesHash,
+    releaseNotesFacts,
     productUrl,
     productCount,
     productCapped,
@@ -548,6 +650,8 @@ function summarize(snapshot: ResearchSnapshot): string {
   if (snapshot.tech !== null && snapshot.tech.length > 0)
     parts.push(`tech ${snapshot.tech.join(', ')}`);
   if (snapshot.pricingHash) parts.push(`pricing hash ${snapshot.pricingHash}`);
+  if (snapshot.releaseNotesHash)
+    parts.push(`release notes at ${snapshot.releaseNotesUrl ?? snapshot.domain}`);
   return parts.length > 0 ? parts.join('; ') : 'nothing readable';
 }
 
@@ -591,6 +695,43 @@ export function diffSnapshots(
         detail: `${current.domain} added ${added.length} product${added.length === 1 ? '' : 's'} to its public catalog since the last check${named}.`,
         previous: catalogStateHash(previous.productItems),
         current: catalogStateHash(current.productItems)
+      });
+    }
+  }
+
+  if (
+    previous.releaseNotesHash != null &&
+    current.releaseNotesHash != null &&
+    previous.releaseNotesHash !== current.releaseNotesHash
+  ) {
+    const previousFacts = previous.releaseNotesFacts;
+    const currentFacts = current.releaseNotesFacts;
+    const comparableFacts = Array.isArray(previousFacts) && Array.isArray(currentFacts);
+    const removed = comparableFacts
+      ? previousFacts.filter((fact) => !currentFacts.includes(fact))
+      : [];
+    const added = comparableFacts
+      ? currentFacts.filter((fact) => !previousFacts.includes(fact))
+      : [];
+    // When both captures expose stable release-entry headings, surrounding
+    // copy/layout churn is not a product-release signal.
+    if (!comparableFacts || removed.length > 0 || added.length > 0) {
+      const quote = (fact: string) => `“${fact.replace(/[“”\"]/g, "'")}”`;
+      const factDetail = comparableFacts
+        ? [
+            added.length > 0 ? `added ${added.slice(0, 3).map(quote).join('; ')}` : null,
+            removed.length > 0 ? `removed ${removed.slice(0, 2).map(quote).join('; ')}` : null
+          ]
+            .filter(Boolean)
+            .join('; ')
+        : '';
+      signals.push({
+        kind: 'release-notes-changed',
+        detail: factDetail
+          ? `Release notes changed on ${current.releaseNotesUrl ?? current.domain}: ${factDetail}.`
+          : `Release-notes content changed on ${current.releaseNotesUrl ?? current.domain} (${previous.releaseNotesHash} -> ${current.releaseNotesHash}).`,
+        previous: previous.releaseNotesHash,
+        current: current.releaseNotesHash
       });
     }
   }
@@ -808,6 +949,9 @@ const snapshotSchema = z.object({
   pricingUrl: z.string().nullable(),
   pricingHash: z.string().nullable(),
   pricingFacts: z.array(z.string()).max(12).nullable().optional(),
+  releaseNotesUrl: z.string().nullable().default(null),
+  releaseNotesHash: z.string().nullable().default(null),
+  releaseNotesFacts: z.array(z.string()).max(12).nullable().default(null),
   productUrl: z.string().nullable().default(null),
   productCount: z.number().nullable().default(null),
   productCapped: z.boolean().default(false),
@@ -954,15 +1098,17 @@ export async function watchSignals(
         ? snapshot.jobsUrl
         : signal.kind === 'pricing-changed'
           ? snapshot.pricingUrl
-          : signal.kind === 'product-launch'
-            ? snapshot.productUrl
-            : signal.kind === 'storefront-rebuild'
-              ? `https://${clean}`
-              : signal.kind.startsWith('newsletter-signup')
-                ? (snapshot.newsletterSignups?.[0]?.sourceUrl ?? `https://${clean}`)
-                : signal.kind === 'social-profile-added'
-                  ? (snapshot.socialProfiles?.[0]?.url ?? `https://${clean}`)
-                  : `https://${clean}`
+          : signal.kind === 'release-notes-changed'
+            ? snapshot.releaseNotesUrl
+            : signal.kind === 'product-launch'
+              ? snapshot.productUrl
+              : signal.kind === 'storefront-rebuild'
+                ? `https://${clean}`
+                : signal.kind.startsWith('newsletter-signup')
+                  ? (snapshot.newsletterSignups?.[0]?.sourceUrl ?? `https://${clean}`)
+                  : signal.kind === 'social-profile-added'
+                    ? (snapshot.socialProfiles?.[0]?.url ?? `https://${clean}`)
+                    : `https://${clean}`
     }))
   };
 }
@@ -982,6 +1128,7 @@ const outputSchema = z.object({
       kind: z.enum([
         'first-capture',
         'product-launch',
+        'release-notes-changed',
         'hiring-up',
         'hiring-down',
         'pricing-changed',
@@ -1015,7 +1162,7 @@ export const watchSignalSkill: Skill<WatchInput, WatchResult> = {
     name: 'Watch a domain for change signals',
     version: '1.0.0',
     description:
-      'Capture hiring, pricing, headline, ecommerce app, public product catalog, newsletter signup, and published social-profile snapshots for a domain and diff them into evidence-backed change signals.',
+      'Capture hiring, pricing, release notes, headline, ecommerce app, public product catalog, newsletter signup, and published social-profile snapshots for a domain and diff them into evidence-backed change signals.',
     sideEffect: 'network-read',
     requiresApproval: false,
     inputSchema,

@@ -26,6 +26,7 @@ export const ACCOUNT_SIGNAL_KINDS = [
   'meta-ads-started',
   'meta-ads-rising',
   'product-launch',
+  'release-notes-changed',
   'hiring-up',
   'hiring-down',
   'pricing-changed',
