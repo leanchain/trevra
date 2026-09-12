@@ -16,7 +16,8 @@ export interface PublishedSocialProfile {
 }
 
 export interface NewsletterPublicationTarget {
-  platform: 'substack';
+  platform: 'substack' | 'beehiiv';
+  /** Public publication/feed URL explicitly published by the company. */
   url: string;
   feedUrl: string;
 }
@@ -32,6 +33,8 @@ const NEWSLETTER_WORDS =
 const EMAIL_INPUT =
   /<input\b[^>]*(?:type\s*=\s*["']?email\b|name\s*=\s*["'][^"']*email[^"']*["']|autocomplete\s*=\s*["']email["'])[^>]*>/i;
 const FORM_RE = /<form\b[^>]*>[\s\S]*?<\/form>/gi;
+const LINK_TAG_RE = /<link\b[^>]*>/gi;
+const HTML_ATTR_RE = /([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g;
 
 const PROVIDER_MARKERS: ReadonlyArray<readonly [RegExp, string]> = [
   [/klaviyo|kmail-lists\.com/i, 'klaviyo'],
@@ -66,6 +69,43 @@ function normalizeOwnPageUrl(raw: string): string {
   return url.toString();
 }
 
+function tagAttributes(tag: string): Map<string, string> {
+  const attrs = new Map<string, string>();
+  for (const match of tag.matchAll(HTML_ATTR_RE)) {
+    const name = (match[1] ?? '').toLowerCase();
+    if (!name) continue;
+    const value = (match[2] ?? match[3] ?? match[4] ?? '').replace(/&amp;/gi, '&').trim();
+    attrs.set(name, value);
+  }
+  return attrs;
+}
+
+function alternateFeedHrefs(html: string): string[] {
+  const found: string[] = [];
+  for (const tag of html.matchAll(LINK_TAG_RE)) {
+    const attrs = tagAttributes(tag[0]);
+    const rel = (attrs.get('rel') ?? '').toLowerCase().split(/\s+/);
+    const type = (attrs.get('type') ?? '').toLowerCase();
+    const href = attrs.get('href');
+    if (!href || !rel.includes('alternate')) continue;
+    if (type !== 'application/rss+xml' && type !== 'application/atom+xml') continue;
+    found.push(href);
+  }
+  return found;
+}
+
+function beehiivNewsletterFeed(raw: string, base: string): URL | null {
+  try {
+    const url = new URL(raw, base);
+    if (url.protocol !== 'https:' || url.hostname.toLowerCase() !== 'rss.beehiiv.com') return null;
+    if (!/^\/feeds\/[^/]+\.xml$/i.test(url.pathname)) return null;
+    url.hash = '';
+    return url;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Read first-party newsletter signup surfaces and published social profiles
  * from one already-fetched page. This function never follows links and never
@@ -97,6 +137,15 @@ export function discoverSiteSurfaces(html: string, pageUrl: string): SiteSurface
 
   const profiles = new Map<string, PublishedSocialProfile>();
   const publications = new Map<string, NewsletterPublicationTarget>();
+  for (const href of alternateFeedHrefs(html)) {
+    const feed = beehiivNewsletterFeed(href, sourceUrl);
+    if (!feed) continue;
+    publications.set(feed.toString(), {
+      platform: 'beehiiv',
+      url: feed.toString(),
+      feedUrl: feed.toString()
+    });
+  }
   for (const link of extractLinks(html)) {
     try {
       const linked = new URL(link.href, sourceUrl);
@@ -107,6 +156,14 @@ export function discoverSiteSurfaces(html: string, pageUrl: string): SiteSurface
           platform: 'substack',
           url: origin,
           feedUrl: `${origin}/feed`
+        });
+      }
+      const beehiivFeed = beehiivNewsletterFeed(link.href, sourceUrl);
+      if (beehiivFeed) {
+        publications.set(beehiivFeed.toString(), {
+          platform: 'beehiiv',
+          url: beehiivFeed.toString(),
+          feedUrl: beehiivFeed.toString()
         });
       }
     } catch {

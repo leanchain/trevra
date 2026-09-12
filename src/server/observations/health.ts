@@ -1,6 +1,7 @@
 import { id, type Db } from '../db.js';
 import { envCredentials } from '../research/types.js';
 import { configuredHttpObservationProviders } from './providers/http.js';
+import { beehiivPublicFeedProvider } from './providers/beehiiv.js';
 import { instagramBusinessDiscoveryProvider } from './providers/instagram.js';
 import { metaAdLibraryProvider } from './providers/meta-ads.js';
 import { substackPublicFeedProvider } from './providers/substack.js';
@@ -174,6 +175,7 @@ export async function recordObservationProviderFailure(
 export function observationProviderCatalog(): ObservationProvider[] {
   const providers = [
     substackPublicFeedProvider(),
+    beehiivPublicFeedProvider(),
     instagramBusinessDiscoveryProvider(),
     metaAdLibraryProvider(),
     youtubeDataApiProvider(),

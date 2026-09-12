@@ -334,6 +334,37 @@ describe('captureSnapshot', () => {
     ).toEqual(['instagram:acme', 'tiktok:acme']);
   });
 
+  it('follows the newsletter page for publication feeds even when the homepage already has a signup', async () => {
+    const seen: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      const path = new URL(url).pathname;
+      seen.push(path);
+      if (path === '/robots.txt') return new Response('', { status: 404 });
+      if (path === '/')
+        return html(`<form><h2>Subscribe to our newsletter</h2><input type="email"></form>
+          <a href="/newsletter">Newsletter</a>`);
+      if (path === '/newsletter')
+        return html(
+          '<link rel="alternate" type="application/rss+xml" href="https://rss.beehiiv.com/feeds/ArRy5S7Up8.xml">'
+        );
+      return new Response('not found', { status: 404 });
+    };
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['newsletter'],
+      fetchImpl,
+      pageBudget: 4
+    });
+    expect(snapshot.newsletterSignups).toHaveLength(1);
+    expect(snapshot.newsletterPublications).toEqual([
+      {
+        platform: 'beehiiv',
+        url: 'https://rss.beehiiv.com/feeds/ArRy5S7Up8.xml',
+        feedUrl: 'https://rss.beehiiv.com/feeds/ArRy5S7Up8.xml'
+      }
+    ]);
+    expect(seen.filter((path) => path === '/newsletter')).toHaveLength(1);
+  });
+
   it('follows at most one same-origin newsletter page when the homepage only links to it', async () => {
     const seen: string[] = [];
     const fetchImpl: FetchLike = async (url) => {

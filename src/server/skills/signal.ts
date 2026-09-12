@@ -285,9 +285,14 @@ export async function captureSnapshot(
     : null;
 
   // A dedicated first-party newsletter page is common even when the homepage
-  // only carries a footer link. Follow at most one same-origin page and use the
-  // same crawler budget/robots/pacing contract as every other site observer.
-  if (watches.has('newsletter') && html && newsletterSignups?.length === 0) {
+  // already has a signup form. Follow at most one same-origin page whenever
+  // either signup evidence or a public publication feed is still missing, and
+  // use the same crawler budget/robots/pacing contract as every other observer.
+  if (
+    watches.has('newsletter') &&
+    html &&
+    (newsletterSignups?.length === 0 || newsletterPublications?.length === 0)
+  ) {
     const path = discoverPaths(html, base, NEWSLETTER_LINK_RE, [])[0];
     if (path) {
       const response = await crawler.get(`${base.origin}${path}`);
@@ -296,7 +301,12 @@ export async function captureSnapshot(
         (!response.response.contentType || response.response.contentType.includes('html'))
       ) {
         const newsletterSurfaces = discoverSiteSurfaces(response.response.text, response.finalUrl);
-        newsletterSignups = newsletterSurfaces.newsletterSignups;
+        newsletterSignups = [
+          ...(newsletterSignups ?? []),
+          ...newsletterSurfaces.newsletterSignups.filter(
+            (surface) => !(newsletterSignups ?? []).some((existing) => existing.key === surface.key)
+          )
+        ];
         newsletterPublications = [
           ...(newsletterPublications ?? []),
           ...newsletterSurfaces.newsletterPublications.filter(
@@ -656,7 +666,7 @@ const snapshotSchema = z.object({
   newsletterPublications: z
     .array(
       z.object({
-        platform: z.literal('substack'),
+        platform: z.enum(['substack', 'beehiiv']),
         url: z.string(),
         feedUrl: z.string()
       })

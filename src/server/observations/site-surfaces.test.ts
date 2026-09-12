@@ -64,6 +64,23 @@ describe('discoverSiteSurfaces', () => {
     ]);
   });
 
+  it('discovers only explicit beehiiv newsletter RSS feeds, including head alternate links', () => {
+    const result = discoverSiteSurfaces(
+      `<link rel="alternate" type="application/rss+xml" href="https://rss.beehiiv.com/feeds/ArRy5S7Up8.xml" />
+       <a href="https://rss.beehiiv.com/feeds/ArRy5S7Up8.xml">RSS</a>
+       <a href="https://rss.beehiiv.com/podcasts/show.xml">Podcast RSS</a>
+       <div>Powered by beehiiv</div>`,
+      'https://shop.example/'
+    );
+    expect(result.newsletterPublications).toEqual([
+      {
+        platform: 'beehiiv',
+        url: 'https://rss.beehiiv.com/feeds/ArRy5S7Up8.xml',
+        feedUrl: 'https://rss.beehiiv.com/feeds/ArRy5S7Up8.xml'
+      }
+    ]);
+  });
+
   it('dedupes and normalizes social profile links published by the company', () => {
     const result = discoverSiteSurfaces(
       `<a href="https://instagram.com/Acme/">Instagram</a>

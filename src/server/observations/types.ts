@@ -64,7 +64,7 @@ export interface ObservationAccountContext {
   metaPageIds?: readonly string[];
   newsletterSignups?: readonly { sourceUrl: string; provider: string | null; key: string }[];
   newsletterPublications?: readonly {
-    platform: 'substack';
+    platform: 'substack' | 'beehiiv';
     url: string;
     feedUrl: string;
   }[];
