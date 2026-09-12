@@ -202,9 +202,10 @@ export function httpObservationProvider(spec: HttpObservationProviderSpec): Obse
 }
 
 /**
- * Deployment-owned observation adapters. Beseam can sit behind one of these,
- * as can a dedicated Meta Ad Library/social/newsletter collector. Workspaces
- * choose accounts; they never choose an endpoint or secret name.
+ * Deployment-owned observation adapters for acquisition surfaces that do not
+ * belong in the per-domain public-web crawler, such as Meta Ad Library, social
+ * telemetry, or newsletter delivery collectors. Workspaces choose accounts;
+ * they never choose an endpoint or secret name.
  */
 export function configuredHttpObservationProviders(
   raw: string | undefined = process.env.TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON

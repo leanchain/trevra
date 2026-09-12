@@ -33,7 +33,7 @@ No downstream GTM code should need to know whether an account came from a CSV, a
 
 No downstream GTM code should need to know whether an account came from a CSV, a public directory, an internal intelligence service, or a future provider.
 
-Company sourcing and account observation are separate seams. Sourcing answers **which companies belong on the watchlist**; `docs/ecommerce-observation-plane.md` answers **what changed after a company is on it**. In particular, Beseam shop-corpus files may seed accounts through this import path and independently contribute dated product/app/storefront observations through the observation adapter.
+Company sourcing and account observation are separate seams. Sourcing answers **which companies belong on the watchlist**; `docs/ecommerce-observation-plane.md` answers **what changed after a company is on it**.
 
 ## Bring a list
 

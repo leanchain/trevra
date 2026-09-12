@@ -24,34 +24,36 @@ The scorer also has first-class signal kinds for externally acquired observation
 
 Every external event must carry a public evidence URL and an observation timestamp. Unknown signal kinds do not score. A provider failure is reported as degraded acquisition; it is never converted into "nothing happened."
 
-## Beseam shop-corpus adapter
+## Trevra-owned storefront crawler
 
-Set `TREVRA_BESEAM_SHOP_CORPUS_DIR` to Beseam's `pipelines/shop-corpus/domains` directory when both repositories are mounted in the same deployment.
+Storefront crawling runs directly inside Trevra. It does not mount or consume another product's crawl corpus and does not depend on another crawler schedule.
 
-The adapter reads only existing crawl artifacts. It never starts the Beseam crawler itself. For each Trevra account it keeps a namespaced dated baseline in `research_snapshots` and compares later Beseam crawls against it.
+The reusable acquisition boundary is `src/server/crawl/public-web.ts`: one bounded, robots-aware, SSRF-safe crawl session per domain. `src/server/storefront/crawler.ts` is one consumer of that crawler and adds commerce-specific platform/product interpretation. Hiring, pricing and site-change checks share the same session, and future Trevra observers can reuse it without depending on ecommerce code.
 
-Today it contributes:
+Today it:
 
-- new products from `public_data/shopify_products.json` or `public_data/wc_store_products.json`;
-- ecommerce-app changes recovered from the saved homepage HTML;
-- a `storefront-rebuild` only when Beseam's previous and current platform classifications are both at least 0.8 confidence and disagree.
+- fetches the live homepage under Trevra's SSRF and request-budget guards;
+- fingerprints Shopify, WooCommerce, WordPress, Magento, Wix, Shopware, BigCommerce, PrestaShop and Webflow;
+- actively probes public Shopify, WooCommerce and WordPress endpoints so headless stores do not depend on homepage fingerprints;
+- captures bounded Shopify and WooCommerce public catalogs for product-launch diffs;
+- returns homepage HTML to Trevra's ecommerce-app detector so app install/removal signals come from the same independent crawl.
 
-The first Beseam read is a baseline, not a signal. This prevents every product already present in the corpus from being mislabeled as a new launch.
+An imported platform tag is only a weak prior. Live endpoint evidence wins. The crawler therefore operates on any Trevra account independently of how that account was sourced.
 
 ## Deployment-owned HTTP observation providers
 
-Use `TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON` for collectors that should live outside the Trevra process: Meta Ad Library acquisition, Instagram/TikTok telemetry, newsletter monitoring, or a hosted Beseam observation service.
+Use `TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON` for collectors that should live outside the Trevra process: Meta Ad Library acquisition, Instagram/TikTok telemetry, newsletter monitoring, or another specialized acquisition service.
 
 Example:
 
 ```json
 [
   {
-    "key": "beseam-live",
-    "name": "Beseam live observations",
+    "key": "commerce-observer",
+    "name": "Commerce observations",
     "endpoint": "https://observer.example.com/observe",
-    "tokenEnv": "BESEAM_OBSERVER_TOKEN",
-    "surfaces": ["meta_ads", "newsletter", "social", "beseam"]
+    "tokenEnv": "COMMERCE_OBSERVER_TOKEN",
+    "surfaces": ["meta_ads", "newsletter", "social"]
   }
 ]
 ```
@@ -65,7 +67,7 @@ Trevra sends:
 ```json
 {
   "domain": "shop.example",
-  "surfaces": ["meta_ads", "newsletter", "social", "beseam"]
+  "surfaces": ["meta_ads", "newsletter", "social"]
 }
 ```
 

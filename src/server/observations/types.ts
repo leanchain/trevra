@@ -1,4 +1,3 @@
-import type { Db } from '../db.js';
 import type { FetchLike } from '../skills/guard.js';
 import type { CredentialAccessor, ProviderAvailability } from '../research/types.js';
 
@@ -8,8 +7,7 @@ export const OBSERVATION_SURFACES = [
   'newsletter',
   'ecommerce_apps',
   'social',
-  'site',
-  'beseam'
+  'site'
 ] as const;
 
 export type ObservationSurface = (typeof OBSERVATION_SURFACES)[number];
@@ -39,9 +37,6 @@ export interface ObservationProviderOptions {
   credentials: CredentialAccessor;
   fetchImpl?: FetchLike;
   now: Date;
-  /** Present when the provider is running inside an account sweep. */
-  db?: Db;
-  workspaceId?: string;
 }
 
 export interface ObservationProvider {

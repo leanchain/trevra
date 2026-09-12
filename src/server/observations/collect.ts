@@ -1,7 +1,5 @@
-import type { Db } from '../db.js';
 import { envCredentials } from '../research/types.js';
 import type { FetchLike } from '../skills/guard.js';
-import { configuredBeseamCorpusProviders } from './providers/beseam-corpus.js';
 import { configuredHttpObservationProviders } from './providers/http.js';
 import type { ExternalObservation, ObservationProvider } from './types.js';
 
@@ -9,8 +7,6 @@ export interface CollectObservationOptions {
   providers?: readonly ObservationProvider[];
   fetchImpl?: FetchLike;
   now?: Date;
-  db?: Db;
-  workspaceId?: string;
 }
 
 export interface CollectedObservations {
@@ -28,10 +24,7 @@ export async function collectExternalObservations(
   options: CollectObservationOptions = {}
 ): Promise<CollectedObservations> {
   const now = options.now ?? new Date();
-  const providers = options.providers ?? [
-    ...configuredBeseamCorpusProviders(),
-    ...configuredHttpObservationProviders()
-  ];
+  const providers = options.providers ?? configuredHttpObservationProviders();
   const observations: ExternalObservation[] = [];
   const warnings: string[] = [];
 
@@ -45,9 +38,7 @@ export async function collectExternalObservations(
       const result = await provider.observe(domain, {
         credentials: envCredentials,
         fetchImpl: options.fetchImpl,
-        now,
-        db: options.db,
-        workspaceId: options.workspaceId
+        now
       });
       observations.push(...result.observations);
       warnings.push(...result.warnings);

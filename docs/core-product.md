@@ -62,9 +62,8 @@ Per account, on a schedule: public commentary (GitHub, HN, Reddit, Lobsters,
 dev.to, Mastodon, Stack Exchange — **all seven already exist as scouts**), site
 change diffs, hiring/careers page diffs, ecommerce product/catalog and storefront
 app changes, plus deployment-owned observation providers for Meta ads,
-newsletter activity, social growth and other expensive external surfaces. A
-Beseam shop-corpus adapter can reuse dated crawl artifacts without copying the
-Beseam storage model into the account spine. See `docs/ecommerce-observation-plane.md`.
+newsletter activity, social growth and other expensive external surfaces. Storefront
+crawling runs independently inside Trevra. See `docs/ecommerce-observation-plane.md`.
 
 **Works properly when:** every observation carries a **source URL and a
 timestamp**, nothing is inferred without one, a collector that fails says so

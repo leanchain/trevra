@@ -178,7 +178,6 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       TREVRA_SANDBOX_GATEWAY_TOKEN: z.string().optional(),
       TREVRA_REMOTE_ACTION_ADAPTERS_JSON: z.string().optional(),
       TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON: z.string().optional(),
-      TREVRA_BESEAM_SHOP_CORPUS_DIR: z.string().optional(),
       COOKIE_SECURE: booleanString.default(production ? 'true' : 'false'),
       ALLOW_DEMO_AUTH: booleanString.optional(),
       ALLOW_SIMULATED_EXECUTION: booleanString.optional(),

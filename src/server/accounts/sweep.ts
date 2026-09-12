@@ -554,9 +554,7 @@ export async function sweepAccount(
     const external = await collectExternalObservations(account.domain, {
       providers: deps.observationProviders,
       fetchImpl: deps.fetchImpl,
-      now: startedAt,
-      db,
-      workspaceId: account.workspaceId
+      now: startedAt
     });
     incoming.push(
       ...external.observations.map((observation) => ({

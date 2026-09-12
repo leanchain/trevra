@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { id, type Db } from '../db.js';
 import { detectTech, ECOMMERCE_APP_KEYS } from './enrich.js';
-import { createSsrfFetch, validatePublicHost, type FetchLike } from './guard.js';
+import type { FetchLike } from './guard.js';
 import {
   extractJsonLd,
   extractLinks,
@@ -14,7 +14,8 @@ import {
   stripTags
 } from './html.js';
 import { normalizeDomain } from './ladder.js';
-import { probe, type Probe } from './probe.js';
+import { createPublicWebCrawler } from '../crawl/public-web.js';
+import { crawlStorefront, type StorefrontProduct } from '../storefront/crawler.js';
 import type { Skill, SkillContext, SkillEvidence } from './types.js';
 
 /**
@@ -78,12 +79,7 @@ export interface ResearchSignal {
   current: string | null;
 }
 
-export interface CatalogItem {
-  /** Stable platform id/handle used only for diffing, never guessed. */
-  key: string;
-  /** Human-readable product name when the public endpoint exposes one. */
-  label: string;
-}
+export type CatalogItem = StorefrontProduct;
 
 export interface ResearchSnapshot {
   domain: string;
@@ -113,7 +109,6 @@ const JOB_BOARD_HOSTS =
   /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|smartrecruiters\.com|bamboohr\.com|teamtailor\.com|recruitee\.com|jobvite\.com|myworkdayjobs\.com|personio\.de|personio\.com)$/i;
 const JOB_PATH_RE = /\/(jobs?|careers?|positions?|openings?|vacancies)\/[^/]+/i;
 
-/** Navigation and call-to-action text that points AT the list rather than at a role. */
 const GENERIC_JOB_TEXT: ReadonlySet<string> = new Set([
   'career',
   'careers',
@@ -135,14 +130,6 @@ const GENERIC_JOB_TEXT: ReadonlySet<string> = new Set([
   "we're hiring"
 ]);
 
-/**
- * Job titles on a careers page: JSON-LD `JobPosting` first, then links that
- * point at a per-role URL or a known applicant-tracking host.
- *
- * Titles rather than a raw count, because the count alone cannot say WHICH
- * role opened, and "they are hiring a Head of RevOps" is the sentence that
- * earns a reply.
- */
 export function extractJobPostings(html: string, pageUrl: string): string[] {
   const titles = new Set<string>();
   for (const object of extractJsonLd(html)) {
@@ -177,41 +164,6 @@ function catalogStateHash(items: readonly CatalogItem[]): string {
     .slice(0, 16);
 }
 
-function parseCatalogItems(
-  response: Probe,
-  platform: 'shopify' | 'woocommerce'
-): CatalogItem[] | null {
-  if (response.status !== 200) return null;
-  let payload: unknown;
-  try {
-    payload = JSON.parse(response.text);
-  } catch {
-    return null;
-  }
-  const rows =
-    platform === 'shopify'
-      ? payload && typeof payload === 'object' && !Array.isArray(payload)
-        ? (payload as Record<string, unknown>).products
-        : null
-      : payload;
-  if (!Array.isArray(rows)) return null;
-
-  const found = new Map<string, CatalogItem>();
-  for (const raw of rows) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-    const item = raw as Record<string, unknown>;
-    const rawKey = item.id ?? item.handle ?? item.slug;
-    const key =
-      typeof rawKey === 'string' || typeof rawKey === 'number' ? String(rawKey).trim() : '';
-    if (!key || found.has(key)) continue;
-    const rawLabel = item.title ?? item.name ?? item.handle ?? item.slug;
-    const label =
-      typeof rawLabel === 'string' && rawLabel.trim() ? rawLabel.replace(/\s+/g, ' ').trim() : key;
-    found.set(key, { key, label: label.slice(0, 160) });
-  }
-  return [...found.values()].sort((a, b) => a.key.localeCompare(b.key));
-}
-
 /** Links the site itself offers first, declared fallbacks after; at most three. */
 function discoverPaths(
   html: string,
@@ -236,7 +188,7 @@ export interface CaptureOptions {
   watch?: readonly SignalWatch[];
   pageBudget?: number;
   now?: Date;
-  /** Reviewed/imported platform evidence, e.g. Beseam's platform:shopify tag. */
+  /** Optional prior from an import/source. Live crawl evidence still wins. */
   platformHint?: 'shopify' | 'woocommerce' | null;
 }
 
@@ -245,31 +197,29 @@ export async function captureSnapshot(
   options: CaptureOptions = {}
 ): Promise<ResearchSnapshot> {
   const clean = normalizeDomain(domain) || domain.trim().toLowerCase();
-  const resolve = options.fetchImpl === undefined;
-  await validatePublicHost(clean, { resolve });
-  const client = createSsrfFetch({ resolve, fetchImpl: options.fetchImpl });
-  const base = new URL(`https://${clean}`);
   const watches = new Set<SignalWatch>(options.watch ?? SIGNAL_WATCHES);
-
-  let used = 0;
   const budget = Math.max(1, options.pageBudget ?? DEFAULT_PAGE_BUDGET);
-  const get = async (url: string): Promise<Probe | null> => {
-    if (used >= budget) return null;
-    used += 1;
-    return probe(client, url);
-  };
 
-  const home = await get(`${base.origin}/`);
-  const html = home !== null && home.status < 400 ? home.text : '';
+  // One Trevra-owned crawl session is shared by ecommerce and non-ecommerce
+  // observers so robots policy and the request ceiling are enforced once.
+  const crawler = await createPublicWebCrawler(clean, {
+    fetchImpl: options.fetchImpl,
+    maxRequests: budget
+  });
+  const storefront = await crawlStorefront(clean, {
+    crawler,
+    platformHint: options.platformHint
+  });
+  const base = new URL(crawler.origin);
+  const get = async (url: string) => (await crawler.get(url)).response;
 
+  const html = storefront.homeHtml ?? '';
   const headline =
     watches.has('headline') && html
       ? (firstHeading(html) ?? metaContent(html, 'property', 'og:title') ?? pageTitle(html))
       : null;
-  const detectedTech = html ? detectTech(html, home?.headers ?? null) : [];
+  const detectedTech = html ? detectTech(html, storefront.homeHeaders) : [];
   const tech = watches.has('tech') && html ? detectedTech.map((item) => item.key).sort() : null;
-  const detectedPlatform = detectedTech.find((item) => item.platform)?.key ?? null;
-  const platform = detectedPlatform ?? options.platformHint ?? null;
 
   let jobsUrl: string | null = null;
   let jobCount: number | null = null;
@@ -299,26 +249,15 @@ export async function captureSnapshot(
     }
   }
 
-  let productUrl: string | null = null;
-  let productCount: number | null = null;
-  let productCapped = false;
-  let productItems: CatalogItem[] = [];
-  if (watches.has('products') && (platform === 'shopify' || platform === 'woocommerce')) {
-    const path =
-      platform === 'shopify'
-        ? '/products.json?limit=250'
-        : '/wp-json/wc/store/v1/products?per_page=100';
-    const response = await get(`${base.origin}${path}`);
-    if (response !== null) {
-      const parsed = parseCatalogItems(response, platform);
-      if (parsed !== null) {
-        productUrl = `${base.origin}${path}`;
-        productItems = parsed;
-        productCount = parsed.length;
-        productCapped = parsed.length >= (platform === 'shopify' ? 250 : 100);
-      }
-    }
-  }
+  const productUrl = watches.has('products') ? storefront.productUrl : null;
+  const productItems: CatalogItem[] = watches.has('products')
+    ? (storefront.productItems ?? [])
+    : [];
+  const productCount =
+    watches.has('products') && storefront.productItems !== null
+      ? storefront.productItems.length
+      : null;
+  const productCapped = watches.has('products') ? storefront.productCapped : false;
 
   return {
     domain: clean,

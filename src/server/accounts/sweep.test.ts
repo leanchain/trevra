@@ -366,15 +366,15 @@ describe('sweepAccount', () => {
   it('feeds external ecommerce observations through the same evidence and dedupe spine', async () => {
     const accountId = await makeAccount();
     const provider: ObservationProvider = {
-      key: 'beseam-test',
-      name: 'Beseam test observer',
+      key: 'observation-test',
+      name: 'Observation test provider',
       docsUrl: null,
       credentialEnvVar: null,
       surfaces: ['meta_ads', 'social'],
       availability: () => ({ mode: 'ready', reason: 'test' }),
       async observe() {
         return {
-          providerKey: 'beseam-test',
+          providerKey: 'observation-test',
           warnings: [],
           observations: [
             {

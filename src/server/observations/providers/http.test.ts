@@ -13,12 +13,12 @@ const credentials = (values: Record<string, string> = {}): CredentialAccessor =>
 });
 
 const SPEC: HttpObservationProviderSpec = {
-  key: 'beseam',
-  name: 'Beseam observation plane',
+  key: 'commerce-observer',
+  name: 'Commerce observation plane',
   endpoint: 'https://observer.example/observe',
-  tokenEnv: 'BESEAM_OBSERVER_TOKEN',
+  tokenEnv: 'COMMERCE_OBSERVER_TOKEN',
   docsUrl: 'https://observer.example/docs',
-  surfaces: ['meta_ads', 'products', 'newsletter', 'ecommerce_apps', 'social', 'site', 'beseam']
+  surfaces: ['meta_ads', 'products', 'newsletter', 'ecommerce_apps', 'social', 'site']
 };
 
 describe('HTTP ecommerce observation provider', () => {
@@ -27,7 +27,7 @@ describe('HTTP ecommerce observation provider', () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const now = new Date('2026-09-12T08:00:00.000Z');
     const result = await provider.observe('Shop.Example', {
-      credentials: credentials({ BESEAM_OBSERVER_TOKEN: 'secret' }),
+      credentials: credentials({ COMMERCE_OBSERVER_TOKEN: 'secret' }),
       now,
       fetchImpl: async (url, init) => {
         calls.push({ url, init });
@@ -116,7 +116,7 @@ describe('HTTP ecommerce observation provider', () => {
   it('reports missing credentials through availability instead of pretending no signals exist', () => {
     const provider = httpObservationProvider(SPEC);
     expect(provider.availability(credentials())).toMatchObject({ mode: 'needs-credential' });
-    expect(provider.availability(credentials({ BESEAM_OBSERVER_TOKEN: 'x' }))).toMatchObject({
+    expect(provider.availability(credentials({ COMMERCE_OBSERVER_TOKEN: 'x' }))).toMatchObject({
       mode: 'ready'
     });
   });
