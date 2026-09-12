@@ -9,6 +9,7 @@
  */
 
 import { hoverClick, settle, typeLike } from './human.js';
+import { postUrlFor } from './driver-scrape.js';
 import type {
   LinkedInDriverResult,
   LinkedInFailureKind,
@@ -38,6 +39,14 @@ export const POST_SELECTORS = {
   imageInput: 'input[type="file"][accept*="image" i]',
   imagePreview:
     '.share-creation-state__preview img, .share-media__preview img, img[alt*="preview" i]',
+  /**
+   * LinkedIn's success toast commonly exposes a direct "View post" link. Read
+   * its href; never click a generic feed card and never guess which feed item
+   * is ours from text/timing.
+   */
+  publishedPostLink:
+    'div.artdeco-toast-item a[href*="/feed/update/"], div.artdeco-toast-item a[href*="/posts/"], ' +
+    'a[aria-label*="View post" i][href*="/feed/update/"], a[aria-label*="View post" i][href*="/posts/"]',
   challengeForm:
     'form.challenge, input[name="pin"], #captcha-internal, iframe[title*="challenge" i]',
   restrictionNotice: 'text=/temporarily restricted|unusual activity|account has been restricted/i',
@@ -178,7 +187,27 @@ export async function publishPost(
         'The composer is still open after the Post click; whether it was published is unknown.'
       );
     }
-    return { ok: true, failureKind: null };
+
+    // SUCCESS IS ALREADY PROVEN by the composer closing. The permalink is a
+    // second, optional fact: if the success toast exposes a View-post href we
+    // keep it so engagement and metrics can attach to THIS publication. If it
+    // does not, publishing is still successful and the URL stays unknown -- a
+    // missing href must never turn into a guessed feed item or an external-write
+    // retry.
+    let externalRef: string | undefined;
+    const publishedLink = page.locator(POST_SELECTORS.publishedPostLink);
+    if ((await publishedLink.count()) > 0 && publishedLink.first().getAttribute) {
+      const href = await publishedLink.first().getAttribute!('href', { timeout: 5_000 });
+      if (href) {
+        try {
+          const absolute = new URL(href, 'https://www.linkedin.com/').toString();
+          externalRef = postUrlFor(absolute) ?? undefined;
+        } catch {
+          // The post is published; an unreadable optional href cannot unpublish it.
+        }
+      }
+    }
+    return { ok: true, failureKind: null, ...(externalRef ? { externalRef } : {}) };
   } catch (cause) {
     return fail(
       'unknown',

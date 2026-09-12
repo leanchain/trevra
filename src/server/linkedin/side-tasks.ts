@@ -31,7 +31,13 @@ export { VISITS_PER_DAY, VISIT_MINUTES, visitsForDay, type Visit };
 
 /** All supported maintenance jobs, including operator-triggered reads. */
 export type SideTaskName =
-  'inbox' | 'connections' | 'pending_invites' | 'acceptance' | 'withdrawals' | 'lead_sources';
+  | 'inbox'
+  | 'connections'
+  | 'pending_invites'
+  | 'acceptance'
+  | 'withdrawals'
+  | 'lead_sources'
+  | 'post_metrics';
 
 /**
  * Autonomous maintenance only. Explicit queued executors such as withdrawals
@@ -82,7 +88,11 @@ export const SIDE_TASK_MIN_HOURS: Record<SideTaskName, number> = {
   pending_invites: 12,
   acceptance: 10,
   withdrawals: 20,
-  lead_sources: 5
+  lead_sources: 5,
+  // One operator-owned post page, never a profile list. The post-specific due
+  // query below this scheduler may further widen the interval to 24h once a
+  // post is older than three days.
+  post_metrics: 6
 };
 
 /* ---------------------------------------------------------------------------

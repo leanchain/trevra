@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { id, openDatabase, type Db } from '../db.js';
+import { createContentAsset } from '../content/assets.js';
 import { recordAction, type SeatRef } from './actions.js';
 import type {
   LinkedInDriver,
@@ -20,7 +21,7 @@ import {
 } from './jobs.js';
 import { syncThreads } from './inbox.js';
 import { createLeadSource, TREVRA_PUBLISHED_POST_ORIGIN } from './leads.js';
-import { addPostImage, createPost, getPost } from './posts.js';
+import { addPostImage, createPost, getPost, markPostPublished } from './posts.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
 import { parseBackgroundRunDetail, setSeatRestingUntil } from './seat-events.js';
 import { upsertSeat } from './seats.js';
@@ -652,7 +653,13 @@ describe('how often the side-task tick touches LinkedIn', () => {
     );
   }
 
-  function tick(now: Date, driver: LinkedInDriver, companionBrowser = false, database: Db = db) {
+  function tick(
+    now: Date,
+    driver: LinkedInDriver,
+    companionBrowser = false,
+    database: Db = db,
+    extra: Pick<Parameters<typeof runLinkedInSideTasks>[2], 'postMetricsReader' | 'env'> = {}
+  ) {
     return runLinkedInSideTasks(
       database,
       { enabled: true, companionBrowser } as unknown as Parameters<typeof runLinkedInSideTasks>[1],
@@ -665,7 +672,8 @@ describe('how often the side-task tick touches LinkedIn', () => {
         inboxDriver,
         connectionsDriver,
         dayShape: FLAT_DAY_SHAPE,
-        log: () => {}
+        log: () => {},
+        ...extra
       }
     );
   }
@@ -811,6 +819,92 @@ describe('how often the side-task tick touches LinkedIn', () => {
     expect(inboxCalls).toHaveLength(inboxRuns);
     expect(connectionsCalls).toHaveLength(connectionRuns);
     expect(probe.calls).toHaveLength(inboxRuns + connectionRuns);
+  });
+
+  it('reads at most one due own-post metric snapshot inside the bounded visit', async () => {
+    await connectedSeat();
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', 'inbox', VISIT_AT);
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', 'connections', VISIT_AT);
+    const asset = await createContentAsset(
+      db,
+      { workspaceId: WORKSPACE_ID, format: 'text_post', angle: 'observation', body: 'Evidence' },
+      new Date(VISIT_AT.getTime() - 2 * 3_600_000)
+    );
+    const post = await createPost(
+      db,
+      {
+        id: id('lipost'),
+        workspaceId: WORKSPACE_ID,
+        blocks: [{ runs: [{ type: 'text', text: 'Evidence-backed post' }] }],
+        contentAssetId: asset.id
+      },
+      new Date(VISIT_AT.getTime() - 2 * 3_600_000)
+    );
+    const postedUrl = 'https://www.linkedin.com/feed/update/urn:li:activity:metric-test/';
+    await markPostPublished(db, post.id, { postedUrl }, new Date(VISIT_AT.getTime() - 60 * 60_000));
+    const reads: string[] = [];
+    const probe = tickDriver();
+
+    const first = await tick(VISIT_AT, probe.driver, false, db, {
+      postMetricsReader: async (_page, url) => {
+        reads.push(url);
+        return {
+          ok: true,
+          failureKind: null,
+          postUrl: url,
+          metrics: {
+            impressions: 123,
+            reactions: 7,
+            comments: null,
+            reposts: 1,
+            clicks: null,
+            profileViews: null,
+            follows: null
+          },
+          degraded: ['Comments were unavailable.']
+        };
+      }
+    });
+
+    expect(first.ran).toEqual(['post_metrics']);
+    expect(first.postMetrics).toEqual({
+      postId: post.id,
+      stored: true,
+      degraded: ['Comments were unavailable.']
+    });
+    expect(reads).toEqual([postedUrl]);
+    const snapshots = await db
+      .prepare(
+        `SELECT impressions,reactions,comments,reposts
+         FROM content_publication_metrics
+         WHERE workspace_id=? AND channel='linkedin' AND publication_id=?`
+      )
+      .all<Record<string, unknown>>(WORKSPACE_ID, post.id);
+    expect(snapshots).toEqual([{ impressions: 123, reactions: 7, comments: null, reposts: 1 }]);
+
+    // The same short sitting cannot turn analytics into a minute loop.
+    const again = await tick(new Date(VISIT_AT.getTime() + 60_000), probe.driver, false, db, {
+      postMetricsReader: async () => {
+        throw new Error('must not read the post twice in one visit');
+      }
+    });
+    expect(again.ran).toEqual([]);
+    expect(again.skipped).toContain('already happened');
+  });
+
+  it('does not schedule own-post analytics when no provenance-linked post is due', async () => {
+    await connectedSeat();
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', 'inbox', VISIT_AT);
+    await markSideTaskRun(db, WORKSPACE_ID, 'owner', 'connections', VISIT_AT);
+    const probe = tickDriver();
+    const result = await tick(VISIT_AT, probe.driver, false, db, {
+      postMetricsReader: async () => {
+        throw new Error('no post is due');
+      }
+    });
+    expect(result.ran).toEqual([]);
+    expect(result.postMetrics).toBeNull();
+    expect(probe.calls).toEqual([]);
   });
 
   it('reads the connections list unattended and files the invites it proves accepted', async () => {

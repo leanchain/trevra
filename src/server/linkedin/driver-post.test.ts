@@ -6,6 +6,7 @@ type Counts = Record<string, number>;
 
 interface FakeSpec {
   counts?: Counts;
+  hrefs?: Record<string, string>;
   clickError?: string;
   onClick?: (selector: string, counts: Counts) => void;
   /** Whether the compose box still matches AFTER the Post click -- simulates the modal not closing. */
@@ -41,7 +42,9 @@ function fakePage(spec: FakeSpec = {}) {
         uploaded.push({ name: file.name, mimeType: file.mimeType, size: file.buffer.byteLength });
       }
     },
-    textContent: async () => null
+    textContent: async () => null,
+    getAttribute: async (name: string) =>
+      name === 'href' ? (spec.hrefs?.[selector] ?? null) : null
   });
 
   const page: LinkedInPage = {
@@ -98,6 +101,38 @@ describe('publishPost', () => {
     expect(result.ok).toBe(true);
     expect(clicked).toEqual([POST_SELECTORS.startPostButton, POST_SELECTORS.publishPostButton]);
     expect(typed).toEqual(['Hello world']); // this fake has no pressSequentially, so typeLike falls back to fill()
+  });
+
+  it('returns the exact published permalink when LinkedIn exposes it in the success toast', async () => {
+    const { page } = fakePage({
+      counts: {
+        [POST_SELECTORS.startPostButton]: 1,
+        [POST_SELECTORS.postComposeBox]: 1,
+        [POST_SELECTORS.publishPostButton]: 1,
+        [POST_SELECTORS.publishedPostLink]: 1
+      },
+      hrefs: {
+        [POST_SELECTORS.publishedPostLink]: '/feed/update/urn:li:activity:7000000000000000123/'
+      }
+    });
+    const result = await publishPost(page, 'Hello with provenance');
+    expect(result).toMatchObject({
+      ok: true,
+      failureKind: null,
+      externalRef: 'https://www.linkedin.com/feed/update/urn:li:activity:7000000000000000123/'
+    });
+  });
+
+  it('keeps a successful publish successful when no permalink is exposed', async () => {
+    const { page } = fakePage({
+      counts: {
+        [POST_SELECTORS.startPostButton]: 1,
+        [POST_SELECTORS.postComposeBox]: 1,
+        [POST_SELECTORS.publishPostButton]: 1
+      }
+    });
+    const result = await publishPost(page, 'Hello without a visible permalink');
+    expect(result).toEqual({ ok: true, failureKind: null });
   });
 
   it('uploads multiple images before clicking Post', async () => {

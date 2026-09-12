@@ -1,5 +1,6 @@
 import { id, type Db } from '../db.js';
 import { renderPostBody } from '../../shared/linkedin-post-format.js';
+import { appendLinkedInContentMetric } from '../content/performance.js';
 import { companionSeatNeedsAttention } from './companion.js';
 import { ownerSeat, type SeatRef } from './actions.js';
 import {
@@ -25,6 +26,7 @@ import {
   type LinkedInScrapeDriver,
   type LinkedInScrapePage
 } from './driver-scrape.js';
+import { readOwnPostMetrics, type LinkedInOwnPostMetricRead } from './driver-post-metrics.js';
 import {
   isPendingInviteList,
   isRecentConnectionList,
@@ -1001,9 +1003,127 @@ export async function runLinkedInLeadSources(
   return { blocked: null, results };
 }
 
+interface DueContentMetricPost {
+  id: string;
+  postedUrl: string;
+}
+
+/**
+ * Pick at most one provenance-linked own post whose metrics are worth another
+ * page read. New posts wait 30 minutes, update every six hours for their first
+ * three days, then at most once a day until day 30. Older content stops
+ * generating LinkedIn traffic entirely.
+ */
+async function dueContentMetricPost(
+  db: Db,
+  workspaceId: string,
+  seatKey: string,
+  now: Date
+): Promise<DueContentMetricPost | null> {
+  const row = await db
+    .prepare(
+      `
+      SELECT p.id,p.posted_url
+      FROM linkedin_posts p
+      LEFT JOIN LATERAL (
+        SELECT MAX(m.observed_at) AS last_observed_at
+        FROM content_publication_metrics m
+        WHERE m.workspace_id=p.workspace_id
+          AND m.channel='linkedin'
+          AND m.publication_id=p.id
+      ) metric ON TRUE
+      WHERE p.workspace_id=? AND p.seat_key=?
+        AND p.status='posted'
+        AND p.content_asset_id IS NOT NULL
+        AND p.posted_url IS NOT NULL
+        AND p.published_at IS NOT NULL
+        AND p.published_at<=?::timestamptz - INTERVAL '30 minutes'
+        AND p.published_at>=?::timestamptz - INTERVAL '30 days'
+        AND (
+          metric.last_observed_at IS NULL
+          OR (
+            p.published_at>=?::timestamptz - INTERVAL '3 days'
+            AND metric.last_observed_at<=?::timestamptz - INTERVAL '6 hours'
+          )
+          OR (
+            p.published_at<?::timestamptz - INTERVAL '3 days'
+            AND metric.last_observed_at<=?::timestamptz - INTERVAL '24 hours'
+          )
+        )
+      ORDER BY metric.last_observed_at ASC NULLS FIRST,p.published_at DESC,p.id
+      LIMIT 1
+    `
+    )
+    .get<{ id: string; posted_url: string }>(
+      workspaceId,
+      seatKey,
+      now.toISOString(),
+      now.toISOString(),
+      now.toISOString(),
+      now.toISOString(),
+      now.toISOString(),
+      now.toISOString()
+    );
+  return row ? { id: row.id, postedUrl: row.posted_url } : null;
+}
+
+async function observeContentPostMetrics(
+  db: Db,
+  input: {
+    workspaceId: string;
+    seatKey: string;
+    post: DueContentMetricPost;
+    page: LinkedInPage;
+    now: Date;
+    reader?: (page: LinkedInPage, postUrl: string) => Promise<LinkedInOwnPostMetricRead>;
+  }
+): Promise<LinkedInPostMetricObservationResult> {
+  const read = await (input.reader ?? readOwnPostMetrics)(input.page, input.post.postedUrl);
+  if (!read.ok) {
+    if (read.failureKind === 'challenge' || read.failureKind === 'limit_wall') {
+      await recordSeatEvent(
+        db,
+        {
+          workspaceId: input.workspaceId,
+          seatKey: input.seatKey,
+          kind: read.failureKind,
+          url: read.postUrl,
+          detail:
+            read.detail ?? `LinkedIn showed a ${read.failureKind} while reading own-post metrics.`
+        },
+        input.now
+      );
+    }
+    throw new Error(read.detail ?? 'LinkedIn post metrics could not be read.');
+  }
+
+  const values = Object.values(read.metrics);
+  const observed = values.some((value) => value !== null);
+  if (observed) {
+    await appendLinkedInContentMetric(
+      db,
+      {
+        workspaceId: input.workspaceId,
+        postId: input.post.id,
+        observedAt: input.now.toISOString(),
+        ...read.metrics,
+        raw: { degraded: read.degraded }
+      },
+      input.now
+    );
+  }
+  return { postId: input.post.id, stored: observed, degraded: read.degraded };
+}
+
 /* ---------------------------------------------------------------------------
  * The tick
  * ------------------------------------------------------------------------ */
+
+export interface LinkedInPostMetricObservationResult {
+  postId: string;
+  stored: boolean;
+  degraded: string[];
+}
 
 export interface LinkedInSideTaskResult {
   workspaceId: string;
@@ -1013,6 +1133,7 @@ export interface LinkedInSideTaskResult {
   acceptance: AcceptanceDetectionJobResult | null;
   withdrawals: WithdrawalJobResult | null;
   leads: LeadSourceRunResult[];
+  postMetrics: LinkedInPostMetricObservationResult | null;
   /**
    * Which of the five were ATTEMPTED this pass -- a job that ran and failed is
    * listed, because it went to LinkedIn and that is what this field is for.
@@ -1072,7 +1193,10 @@ export async function runLinkedInSideTasks(
     maxAcceptanceChecks?: number;
     maxWithdrawals?: number;
     maxSources?: number;
+    /** Explicit environment seam used by the opt-in published-post observation gate. */
     env?: NodeJS.ProcessEnv;
+    /** Test seam for one operator-owned post read; production uses the bounded driver. */
+    postMetricsReader?: (page: LinkedInPage, postUrl: string) => Promise<LinkedInOwnPostMetricRead>;
     /** The day-shape seam, so a test can assert the cadence without waiting for a Tuesday. */
     dayShape?: DayShapeFn;
   }
@@ -1086,6 +1210,7 @@ export async function runLinkedInSideTasks(
     acceptance: null,
     withdrawals: null,
     leads: [],
+    postMetrics: null,
     ran: [],
     skipped: null
   };
@@ -1198,6 +1323,15 @@ export async function runLinkedInSideTasks(
       .get<{ pending: number }>(options.workspaceId, seatKey, TREVRA_PUBLISHED_POST_ORIGIN);
     if (pendingPublishedPost) scheduledTasks.push('lead_sources');
   }
+
+  // Own-post metrics are not lead sourcing: one page belonging to the operator,
+  // no reactor/commenter profile traversal, and no separate scraping opt-in.
+  // They still share the same short LinkedIn visit and one-task budget, so an
+  // overdue inbox/connection read keeps its priority over analytics.
+  const metricPost = seat.profileUrl
+    ? await dueContentMetricPost(db, options.workspaceId, seatKey, now)
+    : null;
+  if (metricPost) scheduledTasks.push('post_metrics');
 
   const due = new Set(
     dueSideTasks(seat, runs, now, {
@@ -1339,6 +1473,21 @@ export async function runLinkedInSideTasks(
         });
         result.leads = outcome.results;
         if (outcome.blocked) throw new Error(outcome.blocked);
+      }
+    ],
+    [
+      'post_metrics',
+      'own-post metrics',
+      async () => {
+        if (!metricPost) return;
+        result.postMetrics = await observeContentPostMetrics(db, {
+          workspaceId: options.workspaceId,
+          seatKey,
+          post: metricPost,
+          page: session.page,
+          now,
+          reader: options.postMetricsReader
+        });
       }
     ]
   ];
