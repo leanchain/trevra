@@ -430,6 +430,7 @@ import {
 import { rescoreAccounts, rescoreWorkspace } from './accounts/score.js';
 import type { Account, AccountScore, AccountSignal, RankedAccount } from './accounts/types.js';
 import { listProviders as listLeadSourceProviders } from './research/registry.js';
+import { listObservationProviderHealth } from './observations/health.js';
 import {
   envCredentials as leadSourceCredentials,
   type ProviderAvailabilityMode
@@ -6658,6 +6659,16 @@ export function createApp(db: Db) {
           retention: provider.retention,
           availability: provider.availability(leadSourceCredentials)
         }))
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/accounts/observation-providers', async (req: AuthedRequest, res, next) => {
+    try {
+      res.json({
+        providers: await listObservationProviderHealth(db, req.auth!.workspaceId)
       });
     } catch (error) {
       next(error);

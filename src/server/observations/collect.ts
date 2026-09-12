@@ -2,6 +2,7 @@ import { envCredentials } from '../research/types.js';
 import type { Db } from '../db.js';
 import type { FetchLike } from '../skills/guard.js';
 import { interpretMeasurements } from './measurements.js';
+import { recordObservationProviderFailure, recordObservationProviderSuccess } from './health.js';
 import { configuredHttpObservationProviders } from './providers/http.js';
 import { configuredInstagramBusinessDiscoveryProviders } from './providers/instagram.js';
 import { configuredSubstackPublicFeedProviders } from './providers/substack.js';
@@ -61,6 +62,21 @@ export async function collectExternalObservations(
       });
       observations.push(...result.observations);
       warnings.push(...result.warnings);
+      if (options.db && options.workspaceId) {
+        try {
+          await recordObservationProviderSuccess(
+            options.db,
+            options.workspaceId,
+            provider.key,
+            now,
+            result.warnings[0] ?? null
+          );
+        } catch (cause) {
+          warnings.push(
+            `${provider.name} health state could not be persisted: ${cause instanceof Error ? cause.message : String(cause)}.`
+          );
+        }
+      }
       if (result.measurements?.length) {
         if (!options.db || !options.workspaceId) {
           warnings.push(
@@ -83,6 +99,21 @@ export async function collectExternalObservations(
       warnings.push(
         `${provider.name} failed: ${cause instanceof Error ? cause.message : String(cause)}.`
       );
+      if (options.db && options.workspaceId) {
+        try {
+          await recordObservationProviderFailure(
+            options.db,
+            options.workspaceId,
+            provider.key,
+            now,
+            cause
+          );
+        } catch (healthCause) {
+          warnings.push(
+            `${provider.name} failure state could not be persisted: ${healthCause instanceof Error ? healthCause.message : String(healthCause)}.`
+          );
+        }
+      }
     }
   }
 

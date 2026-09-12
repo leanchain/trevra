@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import {
   getAccountSourceProviders,
+  getObservationProviderHealth,
   getRankedAccounts,
   importAccounts,
   rescoreAccounts,
@@ -21,6 +22,7 @@ import {
   type AccountSource,
   type AccountSourceProvider,
   type AccountSourceRunResult,
+  type ObservationProviderHealth,
   type RankedAccount
 } from './api';
 import './account-import-workbench.css';
@@ -153,6 +155,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
   const [sourceUrls, setSourceUrls] = useState('');
   const [sourcing, setSourcing] = useState(false);
   const [sourceRun, setSourceRun] = useState<AccountSourceRunResult | null>(null);
+  const [observationProviders, setObservationProviders] = useState<ObservationProviderHealth[]>([]);
 
   /** The row whose reasoning is open. One at a time; the panel is long. */
   const [openId, setOpenId] = useState<string | null>(null);
@@ -168,7 +171,12 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setAccounts(await getRankedAccounts({ limit: 200 }));
+      const [ranked, providerHealth] = await Promise.all([
+        getRankedAccounts({ limit: 200 }),
+        getObservationProviderHealth().catch(() => [] as ObservationProviderHealth[])
+      ]);
+      setAccounts(ranked);
+      setObservationProviders(providerHealth);
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to load accounts. Try again.'));
@@ -394,6 +402,59 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
             ))}
           </div>
         </section>
+      )}
+
+      {observationProviders.length > 0 && (
+        <details className="mgr-inputs acc-observation-health">
+          <summary>Signal sources</summary>
+          <div className="mgr-inputs-body">
+            <section className="page-panel">
+              <div className="section-heading">
+                <div>
+                  <h3 aria-level={2}>Observation sources</h3>
+                  <p>
+                    Configuration and the last real collector run. Account-specific warnings stay
+                    attached to their source.
+                  </p>
+                </div>
+              </div>
+              <div className="acc-provider-health-list">
+                {observationProviders.map((provider) => {
+                  const unavailable = provider.availability.mode !== 'ready';
+                  const status = unavailable
+                    ? provider.availability.mode
+                    : provider.operationalStatus;
+                  const detail = unavailable
+                    ? provider.availability.reason
+                    : (provider.lastError ??
+                      provider.lastWarning ??
+                      'No collector warning recorded.');
+                  return (
+                    <div className="acc-provider-health-row" key={provider.key}>
+                      <div>
+                        <strong>{provider.name}</strong>
+                        <span className="li-hint">{provider.surfaces.join(' · ')}</span>
+                      </div>
+                      <div className="acc-provider-health-state">
+                        <span className={`acc-provider-health-chip is-${status}`}>
+                          {status.replace('-', ' ')}
+                        </span>
+                        <span className="li-hint">
+                          {provider.lastSuccessAt
+                            ? `Last success ${relativeTime(provider.lastSuccessAt)}`
+                            : detail}
+                        </span>
+                        {provider.lastSuccessAt && (provider.lastError || provider.lastWarning) && (
+                          <span className="li-hint">{detail}</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          </div>
+        </details>
       )}
 
       {accounts.length > 0 ? (

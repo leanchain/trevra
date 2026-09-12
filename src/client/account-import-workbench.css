@@ -188,7 +188,70 @@
   font-family: var(--t-mono);
   font-size: var(--t-text-chip);
 }
+.acc-provider-health-list {
+  display: grid;
+  gap: 8px;
+}
+.acc-provider-health-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--t-line-soft);
+}
+.acc-provider-health-row:last-child {
+  border-bottom: 0;
+}
+.acc-provider-health-row > div:first-child,
+.acc-provider-health-state {
+  display: grid;
+  gap: 4px;
+}
+.acc-provider-health-state {
+  justify-items: end;
+  max-width: 58%;
+  text-align: right;
+}
+.acc-provider-health-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-pill);
+  font-size: var(--t-text-chip);
+  font-weight: 700;
+  text-transform: capitalize;
+}
+.acc-provider-health-chip.is-healthy {
+  color: var(--green);
+  border-color: currentColor;
+}
+.acc-provider-health-chip.is-warning,
+.acc-provider-health-chip.is-stale,
+.acc-provider-health-chip.is-needs-credential {
+  color: var(--amber);
+  border-color: currentColor;
+}
+.acc-provider-health-chip.is-error,
+.acc-provider-health-chip.is-disabled {
+  color: var(--red);
+  border-color: currentColor;
+}
+.acc-provider-health-chip.is-ready {
+  color: var(--muted);
+}
 @media (max-width: 760px) {
+  .acc-provider-health-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .acc-provider-health-state {
+    justify-items: start;
+    max-width: none;
+    text-align: left;
+  }
   .acc-import-workbench-head,
   .acc-import-toolbar {
     align-items: stretch;
