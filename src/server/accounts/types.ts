@@ -23,10 +23,20 @@ export type AccountTier = 'hot' | 'warm' | 'cold';
  */
 export const ACCOUNT_SIGNAL_KINDS = [
   'first-capture',
+  'meta-ads-started',
+  'meta-ads-rising',
+  'product-launch',
   'hiring-up',
   'hiring-down',
   'pricing-changed',
+  'storefront-rebuild',
   'headline-changed',
+  'commerce-app-added',
+  'commerce-app-removed',
+  'newsletter-started',
+  'newsletter-silent',
+  'social-growth',
+  'social-cadence-up',
   'tech-added',
   'tech-removed',
   'thread-mention'

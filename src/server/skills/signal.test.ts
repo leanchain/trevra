@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Db } from '../db.js';
-import { captureSnapshot, contentHash, diffSnapshots, extractJobPostings, watchSignals, type ResearchSnapshot } from './signal.js';
+import {
+  captureSnapshot,
+  contentHash,
+  diffSnapshots,
+  extractJobPostings,
+  watchSignals,
+  type ResearchSnapshot
+} from './signal.js';
 import type { FetchLike } from './guard.js';
 import type { SkillContext } from './types.js';
 
@@ -15,6 +22,13 @@ const BEFORE: ResearchSnapshot = {
   jobTitles: ['Backend Engineer', 'Designer', 'Support Lead'],
   pricingUrl: 'https://acme.test/pricing',
   pricingHash: 'aaaaaaaaaaaaaaaa',
+  productUrl: 'https://acme.test/products.json?limit=250',
+  productCount: 2,
+  productCapped: false,
+  productItems: [
+    { key: '1', label: 'Alpha' },
+    { key: '2', label: 'Beta' }
+  ],
   tech: ['hubspot', 'nextjs']
 };
 
@@ -27,6 +41,13 @@ const AFTER: ResearchSnapshot = {
   jobTitles: ['Backend Engineer', 'Designer', 'Head of RevOps', 'Sales Engineer', 'Support Lead'],
   pricingUrl: 'https://acme.test/pricing',
   pricingHash: 'bbbbbbbbbbbbbbbb',
+  productUrl: 'https://acme.test/products.json?limit=250',
+  productCount: 2,
+  productCapped: false,
+  productItems: [
+    { key: '1', label: 'Alpha' },
+    { key: '2', label: 'Beta' }
+  ],
   tech: ['nextjs', 'segment']
 };
 
@@ -57,9 +78,35 @@ describe('diffSnapshots', () => {
     expect(hiring.current).toBe('5');
 
     expect(signals[1].detail).toContain('aaaaaaaaaaaaaaaa -> bbbbbbbbbbbbbbbb');
-    expect(signals[2].detail).toContain('"Shipping software faster" to "The revenue platform for operators"');
+    expect(signals[2].detail).toContain(
+      '"Shipping software faster" to "The revenue platform for operators"'
+    );
     expect(signals[3].detail).toContain('added segment');
     expect(signals[4].detail).toContain('dropped hubspot');
+  });
+
+  it('detects product launches from the public catalog without treating a baseline as a launch', () => {
+    const launched: ResearchSnapshot = {
+      ...AFTER,
+      productCount: 3,
+      productItems: [...AFTER.productItems, { key: '3', label: 'Gamma Drop' }]
+    };
+    const signals = diffSnapshots(AFTER, launched);
+    expect(signals.map((signal) => signal.kind)).toEqual(['product-launch']);
+    expect(signals[0].detail).toContain('Gamma Drop');
+    expect(signals[0].previous).not.toBe(signals[0].current);
+  });
+
+  it('separates ecommerce app changes from generic stack churn', () => {
+    const changed: ResearchSnapshot = {
+      ...BEFORE,
+      tech: ['hubspot', 'klaviyo', 'recharge']
+    };
+    const signals = diffSnapshots(BEFORE, changed);
+    expect(signals.map((signal) => signal.kind)).toEqual(['commerce-app-added', 'tech-removed']);
+    expect(signals[0].detail).toContain('klaviyo');
+    expect(signals[0].detail).toContain('recharge');
+    expect(signals[1].detail).toContain('nextjs');
   });
 
   it('is deterministic: the same pair diffs identically every time', () => {
@@ -73,13 +120,22 @@ describe('diffSnapshots', () => {
   });
 
   it('reports nothing when the snapshots agree', () => {
-    expect(diffSnapshots(BEFORE, { ...BEFORE, capturedAt: '2026-07-01T00:00:00.000Z' })).toEqual([]);
+    expect(diffSnapshots(BEFORE, { ...BEFORE, capturedAt: '2026-07-01T00:00:00.000Z' })).toEqual(
+      []
+    );
   });
 
   it('never diffs a field that was not captured', () => {
     // The careers page timed out this run. "3 roles -> 0 roles" would be an
     // urgent-looking signal invented by a flaky fetch.
-    const missed: ResearchSnapshot = { ...AFTER, jobCount: null, jobTitles: [], pricingHash: null, headline: null, tech: null };
+    const missed: ResearchSnapshot = {
+      ...AFTER,
+      jobCount: null,
+      jobTitles: [],
+      pricingHash: null,
+      headline: null,
+      tech: null
+    };
     expect(diffSnapshots(BEFORE, missed)).toEqual([]);
     expect(diffSnapshots(missed, BEFORE)).toEqual([]);
   });
@@ -99,14 +155,20 @@ describe('extractJobPostings', () => {
       <a href="https://jobs.lever.co/acme/abc">Backend Engineer</a>
       <a href="/careers">All jobs</a>
       <a href="/about">About</a>`;
-    expect(extractJobPostings(html, 'https://acme.test/careers')).toEqual(['Backend Engineer', 'Head of RevOps', 'Sales Engineer']);
+    expect(extractJobPostings(html, 'https://acme.test/careers')).toEqual([
+      'Backend Engineer',
+      'Head of RevOps',
+      'Sales Engineer'
+    ]);
   });
 });
 
 describe('contentHash', () => {
   it('hashes visible text, so a changed build id is not a pricing change', () => {
-    const a = '<html><script src="/_next/static/abc123/main.js"></script><body><h2>29 EUR</h2></body></html>';
-    const b = '<html><script src="/_next/static/zzz999/main.js"></script><body><h2>29 EUR</h2></body></html>';
+    const a =
+      '<html><script src="/_next/static/abc123/main.js"></script><body><h2>29 EUR</h2></body></html>';
+    const b =
+      '<html><script src="/_next/static/zzz999/main.js"></script><body><h2>29 EUR</h2></body></html>';
     expect(contentHash(a)).toBe(contentHash(b));
     expect(contentHash(a)).not.toBe(contentHash(a.replace('29', '39')));
   });
@@ -124,6 +186,13 @@ function html(text: string): Response {
   return new Response(text, { status: 200, headers: { 'content-type': 'text/html' } });
 }
 
+function json(value: unknown): Response {
+  return new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { 'content-type': 'application/json' }
+  });
+}
+
 describe('captureSnapshot', () => {
   const routes: Record<string, () => Response> = {
     '/': () =>
@@ -135,8 +204,11 @@ describe('captureSnapshot', () => {
     '/pricing': () => html('<body><h2>29 EUR per seat</h2></body>')
   };
 
-  it('captures every watched field, following the site\'s own links', async () => {
-    const snapshot = await captureSnapshot('acme.test', { fetchImpl: site(routes), now: new Date('2026-07-27T00:00:00.000Z') });
+  it("captures every watched field, following the site's own links", async () => {
+    const snapshot = await captureSnapshot('acme.test', {
+      fetchImpl: site(routes),
+      now: new Date('2026-07-27T00:00:00.000Z')
+    });
 
     expect(snapshot.domain).toBe('acme.test');
     expect(snapshot.capturedAt).toBe('2026-07-27T00:00:00.000Z');
@@ -149,11 +221,53 @@ describe('captureSnapshot', () => {
     expect(snapshot.tech).toEqual(['segment']);
   });
 
+  it('captures Shopify products from the bounded public endpoint', async () => {
+    const shop = site({
+      '/': () =>
+        html(
+          '<html><head><script src="https://cdn.shopify.com/shop.js"></script></head><body><h1>Store</h1></body></html>'
+        ),
+      '/products.json': () =>
+        json({
+          products: [
+            { id: 1, title: 'Alpha' },
+            { id: 2, title: 'Beta' }
+          ]
+        })
+    });
+    const snapshot = await captureSnapshot('shop.test', { watch: ['products'], fetchImpl: shop });
+    expect(snapshot.productUrl).toBe('https://shop.test/products.json?limit=250');
+    expect(snapshot.productCount).toBe(2);
+    expect(snapshot.productCapped).toBe(false);
+    expect(snapshot.productItems).toEqual([
+      { key: '1', label: 'Alpha' },
+      { key: '2', label: 'Beta' }
+    ]);
+  });
+
+  it('uses reviewed platform evidence to watch a headless Shopify catalog', async () => {
+    const shop = site({
+      '/': () => html('<html><body><h1>Headless storefront</h1></body></html>'),
+      '/products.json': () => json({ products: [{ id: 11, title: 'Hidden Platform Product' }] })
+    });
+    const snapshot = await captureSnapshot('headless.test', {
+      watch: ['products'],
+      platformHint: 'shopify',
+      fetchImpl: shop
+    });
+    expect(snapshot.productCount).toBe(1);
+    expect(snapshot.productItems[0]).toEqual({ key: '11', label: 'Hidden Platform Product' });
+  });
+
   it('captures only what was asked for, leaving the rest uncaptured', async () => {
-    const snapshot = await captureSnapshot('acme.test', { watch: ['headline'], fetchImpl: site(routes) });
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['headline'],
+      fetchImpl: site(routes)
+    });
     expect(snapshot.headline).toBe('The revenue platform');
     expect(snapshot.jobCount).toBeNull();
     expect(snapshot.pricingHash).toBeNull();
+    expect(snapshot.productCount).toBeNull();
     expect(snapshot.tech).toBeNull();
   });
 
@@ -165,12 +279,15 @@ describe('captureSnapshot', () => {
     });
     expect(snapshot.jobCount).toBeNull();
     expect(snapshot.pricingHash).toBeNull();
+    expect(snapshot.productCount).toBeNull();
     expect(snapshot.headline).toBeNull();
     expect(snapshot.tech).toBeNull();
   });
 
   it('rejects a non-public host before any probe runs', async () => {
-    await expect(captureSnapshot('localhost', { fetchImpl: site({}) })).rejects.toThrow('localhost not allowed');
+    await expect(captureSnapshot('localhost', { fetchImpl: site({}) })).rejects.toThrow(
+      'localhost not allowed'
+    );
   });
 });
 
@@ -181,7 +298,8 @@ describe('gtm.watch-signal persistence', () => {
     const db = {
       prepare(sql: string) {
         return {
-          get: async () => (sql.includes('SELECT') && stored ? { snapshot_json: stored } : undefined),
+          get: async () =>
+            sql.includes('SELECT') && stored ? { snapshot_json: stored } : undefined,
           all: async () => [],
           run: async (...params: unknown[]) => {
             if (sql.includes('INSERT')) inserts.push(params);

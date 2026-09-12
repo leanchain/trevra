@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { browserProviderSettings } from './browser/provider.js';
+import { configuredHttpObservationProviders } from './observations/providers/http.js';
 import { smtpConfig } from './email.js';
 import { companionBrowserConfigured } from './linkedin/companion.js';
 const booleanString = z.enum(['true', 'false']);
@@ -176,6 +177,8 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       TREVRA_SANDBOX_GATEWAY_URL: optionalUrl,
       TREVRA_SANDBOX_GATEWAY_TOKEN: z.string().optional(),
       TREVRA_REMOTE_ACTION_ADAPTERS_JSON: z.string().optional(),
+      TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON: z.string().optional(),
+      TREVRA_BESEAM_SHOP_CORPUS_DIR: z.string().optional(),
       COOKIE_SECURE: booleanString.default(production ? 'true' : 'false'),
       ALLOW_DEMO_AUTH: booleanString.optional(),
       ALLOW_SIMULATED_EXECUTION: booleanString.optional(),
@@ -438,6 +441,15 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
           }
       } catch {
         problems.push('TREVRA_REMOTE_ACTION_ADAPTERS_JSON must contain valid JSON');
+      }
+    }
+    if (base.TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON) {
+      try {
+        configuredHttpObservationProviders(base.TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON);
+      } catch (error) {
+        problems.push(
+          `TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON is invalid: ${error instanceof Error ? error.message : String(error)}`
+        );
       }
     }
     if (problems.length > 0)

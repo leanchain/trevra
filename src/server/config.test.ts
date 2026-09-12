@@ -273,4 +273,36 @@ describe('single-operator production on loopback', () => {
       validateEnvironment({ ...production, NANGO_WEBHOOK_SIGNING_KEY: 'configured' })
     ).toThrow(/NANGO_API_KEY/);
   });
+
+  it('validates deployment-owned ecommerce observation adapters before production boots', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON: JSON.stringify([
+          {
+            key: 'unsafe',
+            name: 'Unsafe observer',
+            endpoint: 'http://observer.example/observe',
+            tokenEnv: 'OBSERVER_TOKEN',
+            surfaces: ['meta_ads']
+          }
+        ])
+      })
+    ).toThrow(/TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON is invalid/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON: JSON.stringify([
+          {
+            key: 'beseam-live',
+            name: 'Beseam live observer',
+            endpoint: 'https://observer.example/observe',
+            tokenEnv: 'OBSERVER_TOKEN',
+            surfaces: ['meta_ads', 'newsletter', 'social']
+          }
+        ])
+      })
+    ).not.toThrow();
+  });
 });

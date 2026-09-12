@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { id, openDatabase, type Db } from '../db.js';
+import type { ObservationProvider } from '../observations/types.js';
 import type { FetchLike } from '../skills/guard.js';
 import {
   DEFAULT_SWEEP_ACCOUNTS,
@@ -46,7 +47,10 @@ function site(pages: Record<string, string>): FetchLike {
   return async (url: string) => {
     const body = pages[new URL(url).pathname];
     if (body === undefined) return new Response('not found', { status: 404 });
-    return new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
+    return new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/html; charset=utf-8' }
+    });
   };
 }
 
@@ -56,7 +60,9 @@ function home(headline: string): string {
 }
 
 function careers(roles: readonly string[]): string {
-  const links = roles.map((role) => `<a href="/careers/${role.toLowerCase().replaceAll(' ', '-')}">${role}</a>`).join('');
+  const links = roles
+    .map((role) => `<a href="/careers/${role.toLowerCase().replaceAll(' ', '-')}">${role}</a>`)
+    .join('');
   return `<html><body><h1>Open roles</h1>${links}</body></html>`;
 }
 
@@ -72,47 +78,75 @@ const deadSite: FetchLike = async () => new Response('gone', { status: 404 });
  * ----------------------------------------------------------------------- */
 
 async function makeAccount(
-  overrides: { domain?: string; status?: string; nextSweepAt?: string | null; createdAt?: string } = {}
+  overrides: {
+    domain?: string;
+    status?: string;
+    nextSweepAt?: string | null;
+    createdAt?: string;
+  } = {}
 ): Promise<string> {
   const accountId = id('acct');
   const createdAt = overrides.createdAt ?? T0.toISOString();
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     INSERT INTO accounts (id, workspace_id, name, domain, source, tags, status, next_sweep_at, created_at, updated_at)
     VALUES (?,?,?,?,?,?::text[],?,?,?,?)
-  `).run(
-    accountId,
-    WORKSPACE_ID,
-    overrides.domain ?? 'acme.test',
-    overrides.domain ?? 'acme.test',
-    'csv',
-    [],
-    overrides.status ?? 'active',
-    overrides.nextSweepAt ?? null,
-    createdAt,
-    createdAt
-  );
+  `
+    )
+    .run(
+      accountId,
+      WORKSPACE_ID,
+      overrides.domain ?? 'acme.test',
+      overrides.domain ?? 'acme.test',
+      'csv',
+      [],
+      overrides.status ?? 'active',
+      overrides.nextSweepAt ?? null,
+      createdAt,
+      createdAt
+    );
   return accountId;
 }
 
 async function loadAccount(accountId: string): Promise<Account> {
-  const [claimed] = await claimDueAccounts(db, WORKSPACE_ID, new Date('2100-01-01T00:00:00.000Z'), 100);
+  const [claimed] = await claimDueAccounts(
+    db,
+    WORKSPACE_ID,
+    new Date('2100-01-01T00:00:00.000Z'),
+    100
+  );
   if (claimed && claimed.id === accountId) return claimed;
   throw new Error('loadAccount is only for single-account fixtures');
 }
 
 async function signalRows(accountId: string) {
-  return db.prepare(`
+  return db
+    .prepare(
+      `
     SELECT kind, detail, previous, current, evidence_url, fingerprint, observed_at
     FROM account_signals WHERE workspace_id=? AND account_id=? ORDER BY created_at ASC, id ASC
-  `).all<{ kind: string; detail: string; previous: string | null; current: string | null; evidence_url: string; fingerprint: string; observed_at: string }>(
-    WORKSPACE_ID,
-    accountId
-  );
+  `
+    )
+    .all<{
+      kind: string;
+      detail: string;
+      previous: string | null;
+      current: string | null;
+      evidence_url: string;
+      fingerprint: string;
+      observed_at: string;
+    }>(WORKSPACE_ID, accountId);
 }
 
 async function bookkeeping(accountId: string) {
-  const row = await db.prepare('SELECT last_swept_at, next_sweep_at, sweep_error FROM accounts WHERE id=?')
-    .get<{ last_swept_at: string | null; next_sweep_at: string | null; sweep_error: string | null }>(accountId);
+  const row = await db
+    .prepare('SELECT last_swept_at, next_sweep_at, sweep_error FROM accounts WHERE id=?')
+    .get<{
+      last_swept_at: string | null;
+      next_sweep_at: string | null;
+      sweep_error: string | null;
+    }>(accountId);
   if (!row) throw new Error('account vanished');
   return row;
 }
@@ -120,7 +154,9 @@ async function bookkeeping(accountId: string) {
 beforeEach(async () => {
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
   await db
-    .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+    .prepare(
+      'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+    )
     .run(WORKSPACE_ID, 'Accounts Sweep Test', T0.toISOString());
   for (const table of ['account_signals', 'account_scores', 'accounts', 'research_snapshots']) {
     await db.prepare(`DELETE FROM ${table} WHERE workspace_id=?`).run(WORKSPACE_ID);
@@ -151,7 +187,9 @@ describe('signalFingerprint', () => {
   });
 
   it('treats "removed" and "now blank" as different observations', () => {
-    expect(signalFingerprint('headline-changed', 'Old', null)).not.toBe(signalFingerprint('headline-changed', 'Old', ''));
+    expect(signalFingerprint('headline-changed', 'Old', null)).not.toBe(
+      signalFingerprint('headline-changed', 'Old', '')
+    );
   });
 });
 
@@ -202,8 +240,20 @@ describe('recordSignals', () => {
       accountId,
       [
         { kind: 'hiring-up', detail: 'No link.', previous: '3', current: '5', evidenceUrl: '' },
-        { kind: 'headline-changed', detail: 'Whitespace is not a link.', previous: 'a', current: 'b', evidenceUrl: '   ' },
-        { kind: 'pricing-changed', detail: 'Linked.', previous: 'x', current: 'y', evidenceUrl: 'https://acme.test/pricing' }
+        {
+          kind: 'headline-changed',
+          detail: 'Whitespace is not a link.',
+          previous: 'a',
+          current: 'b',
+          evidenceUrl: '   '
+        },
+        {
+          kind: 'pricing-changed',
+          detail: 'Linked.',
+          previous: 'x',
+          current: 'y',
+          evidenceUrl: 'https://acme.test/pricing'
+        }
       ],
       T0
     );
@@ -220,7 +270,16 @@ describe('recordSignals', () => {
       db,
       WORKSPACE_ID,
       accountId,
-      [{ kind: 'thread-mention', detail: 'Mentioned.', previous: null, current: 'x', evidenceUrl: 'https://news.test/1', observedAt: at(-72) }],
+      [
+        {
+          kind: 'thread-mention',
+          detail: 'Mentioned.',
+          previous: null,
+          current: 'x',
+          evidenceUrl: 'https://news.test/1',
+          observedAt: at(-72)
+        }
+      ],
       T0
     );
     expect(new Date(stored.observedAt).toISOString()).toBe(at(-72).toISOString());
@@ -257,7 +316,9 @@ describe('claimDueAccounts', () => {
     const accountId = await makeAccount();
     expect(await claimDueAccounts(db, WORKSPACE_ID, T0, 25)).toHaveLength(1);
     // A second worker one second later -- or this one after a crash -- finds nothing.
-    expect(await claimDueAccounts(db, WORKSPACE_ID, new Date(T0.getTime() + 1_000), 25)).toEqual([]);
+    expect(await claimDueAccounts(db, WORKSPACE_ID, new Date(T0.getTime() + 1_000), 25)).toEqual(
+      []
+    );
     // The lease is the first rung of the failure ladder: a crash retries in 2h.
     expect((await bookkeeping(accountId)).next_sweep_at).not.toBeNull();
     expect(await claimDueAccounts(db, WORKSPACE_ID, at(2), 25)).toHaveLength(1);
@@ -302,12 +363,74 @@ describe('sweepAccount', () => {
     expect(gapHours).toBeLessThan(SWEEP_INTERVAL_HOURS + 1);
   });
 
+  it('feeds external ecommerce observations through the same evidence and dedupe spine', async () => {
+    const accountId = await makeAccount();
+    const provider: ObservationProvider = {
+      key: 'beseam-test',
+      name: 'Beseam test observer',
+      docsUrl: null,
+      credentialEnvVar: null,
+      surfaces: ['meta_ads', 'social'],
+      availability: () => ({ mode: 'ready', reason: 'test' }),
+      async observe() {
+        return {
+          providerKey: 'beseam-test',
+          warnings: [],
+          observations: [
+            {
+              kind: 'meta-ads-rising',
+              detail: 'Active Meta ads rose from 7 to 12.',
+              previous: '7',
+              current: '12',
+              evidenceUrl: 'https://www.facebook.com/ads/library/?id=123',
+              observedAt: T0.toISOString()
+            }
+          ]
+        };
+      }
+    };
+    const pages = {
+      '/': home('Shipping software faster'),
+      '/careers': careers(['Backend Engineer']),
+      '/pricing': pricing('29')
+    };
+
+    const first = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => T0,
+      fetchImpl: site(pages),
+      observationProviders: [provider]
+    });
+    expect(first.error).toBeNull();
+    expect(new Set(first.signals.map((signal) => signal.kind))).toEqual(
+      new Set(['first-capture', 'meta-ads-rising'])
+    );
+    expect(
+      (await signalRows(accountId)).some((row) =>
+        row.evidence_url.includes('facebook.com/ads/library')
+      )
+    ).toBe(true);
+
+    const second = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => at(24),
+      fetchImpl: site(pages),
+      observationProviders: [provider]
+    });
+    expect(second.signals).toEqual([]);
+  });
+
   it('stores nothing on a re-sweep of an unchanged site', async () => {
     const accountId = await makeAccount();
-    const pages = { '/': home('Shipping software faster'), '/careers': careers(['Backend Engineer']), '/pricing': pricing('29') };
+    const pages = {
+      '/': home('Shipping software faster'),
+      '/careers': careers(['Backend Engineer']),
+      '/pricing': pricing('29')
+    };
 
     await sweepAccount(db, await loadAccount(accountId), { now: () => T0, fetchImpl: site(pages) });
-    const second = await sweepAccount(db, await loadAccount(accountId), { now: () => at(24), fetchImpl: site(pages) });
+    const second = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => at(24),
+      fetchImpl: site(pages)
+    });
 
     expect(second.error).toBeNull();
     expect(second.signals).toEqual([]);
@@ -339,10 +462,22 @@ describe('sweepAccount', () => {
     const A = 'Shipping software faster';
     const B = 'The revenue platform for operators';
 
-    await sweepAccount(db, await loadAccount(accountId), { now: () => T0, fetchImpl: site({ ...base, '/': home(A) }) });
-    const toB = await sweepAccount(db, await loadAccount(accountId), { now: () => at(24), fetchImpl: site({ ...base, '/': home(B) }) });
-    const backToA = await sweepAccount(db, await loadAccount(accountId), { now: () => at(48), fetchImpl: site({ ...base, '/': home(A) }) });
-    const toBAgain = await sweepAccount(db, await loadAccount(accountId), { now: () => at(72), fetchImpl: site({ ...base, '/': home(B) }) });
+    await sweepAccount(db, await loadAccount(accountId), {
+      now: () => T0,
+      fetchImpl: site({ ...base, '/': home(A) })
+    });
+    const toB = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => at(24),
+      fetchImpl: site({ ...base, '/': home(B) })
+    });
+    const backToA = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => at(48),
+      fetchImpl: site({ ...base, '/': home(A) })
+    });
+    const toBAgain = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => at(72),
+      fetchImpl: site({ ...base, '/': home(B) })
+    });
 
     expect(toB.signals).toHaveLength(1);
     // A -> B and B -> A are different events and both are news.
@@ -356,11 +491,19 @@ describe('sweepAccount', () => {
     const accountId = await makeAccount();
     await sweepAccount(db, await loadAccount(accountId), {
       now: () => T0,
-      fetchImpl: site({ '/': home('Acme'), '/careers': careers(['Backend Engineer']), '/pricing': pricing('29') })
+      fetchImpl: site({
+        '/': home('Acme'),
+        '/careers': careers(['Backend Engineer']),
+        '/pricing': pricing('29')
+      })
     });
     const second = await sweepAccount(db, await loadAccount(accountId), {
       now: () => at(24),
-      fetchImpl: site({ '/': home('Acme'), '/careers': careers(['Backend Engineer', 'Head of RevOps']), '/pricing': pricing('29') })
+      fetchImpl: site({
+        '/': home('Acme'),
+        '/careers': careers(['Backend Engineer', 'Head of RevOps']),
+        '/pricing': pricing('29')
+      })
     });
     expect(second.signals.map((signal) => signal.kind)).toEqual(['hiring-up']);
     expect(second.signals[0].evidenceUrl).toBe('https://acme.test/careers');
@@ -370,7 +513,10 @@ describe('sweepAccount', () => {
   it('records a dead host as a sweep_error instead of throwing, and backs off 2h, 6h, then a day', async () => {
     const accountId = await makeAccount();
 
-    const first = await sweepAccount(db, await loadAccount(accountId), { now: () => T0, fetchImpl: deadSite });
+    const first = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => T0,
+      fetchImpl: deadSite
+    });
     expect(first.error).toContain('acme.test');
     expect(first.signals).toEqual([]);
     expect(await signalRows(accountId)).toEqual([]);
@@ -379,20 +525,29 @@ describe('sweepAccount', () => {
     expect(new Date(book.next_sweep_at!).getTime() - T0.getTime()).toBe(2 * HOUR);
 
     // Second failure: we waited the 2h rung, so the next wait is 6h.
-    const second = await sweepAccount(db, (await claimDueAccounts(db, WORKSPACE_ID, at(2), 1))[0], { now: () => at(2), fetchImpl: deadSite });
+    const second = await sweepAccount(db, (await claimDueAccounts(db, WORKSPACE_ID, at(2), 1))[0], {
+      now: () => at(2),
+      fetchImpl: deadSite
+    });
     expect(second.error).not.toBeNull();
     book = await bookkeeping(accountId);
     expect(new Date(book.next_sweep_at!).getTime() - at(2).getTime()).toBe(6 * HOUR);
 
     // Third: 6h was waited, so it is a day from here on.
-    await sweepAccount(db, (await claimDueAccounts(db, WORKSPACE_ID, at(8), 1))[0], { now: () => at(8), fetchImpl: deadSite });
+    await sweepAccount(db, (await claimDueAccounts(db, WORKSPACE_ID, at(8), 1))[0], {
+      now: () => at(8),
+      fetchImpl: deadSite
+    });
     book = await bookkeeping(accountId);
     expect(new Date(book.next_sweep_at!).getTime() - at(8).getTime()).toBe(24 * HOUR);
   });
 
   it('records a host it is not allowed to touch as an error, not an exception', async () => {
     const accountId = await makeAccount({ domain: 'printer.local' });
-    const outcome = await sweepAccount(db, await loadAccount(accountId), { now: () => T0, fetchImpl: deadSite });
+    const outcome = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => T0,
+      fetchImpl: deadSite
+    });
     expect(outcome.error).toContain('.local');
     expect((await bookkeeping(accountId)).sweep_error).toBe(outcome.error);
   });
@@ -404,7 +559,11 @@ describe('sweepAccount', () => {
 
     await sweepAccount(db, (await claimDueAccounts(db, WORKSPACE_ID, at(2), 1))[0], {
       now: () => at(2),
-      fetchImpl: site({ '/': home('Back up'), '/careers': careers(['Backend Engineer']), '/pricing': pricing('29') })
+      fetchImpl: site({
+        '/': home('Back up'),
+        '/careers': careers(['Backend Engineer']),
+        '/pricing': pricing('29')
+      })
     });
     expect((await bookkeeping(accountId)).sweep_error).toBeNull();
   });
@@ -430,16 +589,25 @@ describe('nextSweepAt', () => {
     const account = { id: 'acct_x', sweepError: null, lastSweptAt: null };
     const success = nextSweepAt(account, T0, null);
     expect(success.getTime()).toBe(nextSweepAt(account, T0, null).getTime());
-    const driftMinutes = Math.abs(success.getTime() - T0.getTime() - SWEEP_INTERVAL_HOURS * HOUR) / 60_000;
+    const driftMinutes =
+      Math.abs(success.getTime() - T0.getTime() - SWEEP_INTERVAL_HOURS * HOUR) / 60_000;
     expect(driftMinutes).toBeLessThanOrEqual(30);
     // Two accounts do not line up on the same minute every night.
-    expect(nextSweepAt({ ...account, id: 'acct_y' }, T0, null).getTime()).not.toBe(success.getTime());
+    expect(nextSweepAt({ ...account, id: 'acct_y' }, T0, null).getTime()).not.toBe(
+      success.getTime()
+    );
 
     expect(sweepBackoffHours({ sweepError: null, lastSweptAt: null }, T0)).toBe(2);
-    expect(sweepBackoffHours({ sweepError: 'down', lastSweptAt: at(-2).toISOString() }, T0)).toBe(6);
-    expect(sweepBackoffHours({ sweepError: 'down', lastSweptAt: at(-6).toISOString() }, T0)).toBe(24);
+    expect(sweepBackoffHours({ sweepError: 'down', lastSweptAt: at(-2).toISOString() }, T0)).toBe(
+      6
+    );
+    expect(sweepBackoffHours({ sweepError: 'down', lastSweptAt: at(-6).toISOString() }, T0)).toBe(
+      24
+    );
     // A worker that was off for a week does not come back and hammer the host.
-    expect(sweepBackoffHours({ sweepError: 'down', lastSweptAt: at(-168).toISOString() }, T0)).toBe(24);
+    expect(sweepBackoffHours({ sweepError: 'down', lastSweptAt: at(-168).toISOString() }, T0)).toBe(
+      24
+    );
   });
 });
 
@@ -472,7 +640,11 @@ describe('runAccountSweep', () => {
     const accountId = await makeAccount({ domain: 'acme.test' });
     const result = await runAccountSweep(db, WORKSPACE_ID, {
       now: () => T0,
-      fetchImpl: site({ '/': home('Acme'), '/careers': careers(['Backend Engineer']), '/pricing': pricing('29') }),
+      fetchImpl: site({
+        '/': home('Acme'),
+        '/careers': careers(['Backend Engineer']),
+        '/pricing': pricing('29')
+      }),
       sleep: async () => undefined
     });
     expect(result).toEqual({ swept: 1, signalsStored: 1, failed: 0, accountIds: [accountId] });
@@ -483,15 +655,29 @@ describe('runAccountSweep', () => {
     await makeAccount({ domain: 'b.test', createdAt: at(-2).toISOString() });
     await makeAccount({ domain: 'c.test', createdAt: at(-1).toISOString() });
 
-    const capped = await runAccountSweep(db, WORKSPACE_ID, { now: () => T0, fetchImpl: deadSite, sleep: async () => undefined }, { maxAccounts: 2 });
+    const capped = await runAccountSweep(
+      db,
+      WORKSPACE_ID,
+      { now: () => T0, fetchImpl: deadSite, sleep: async () => undefined },
+      { maxAccounts: 2 }
+    );
     expect(capped.swept).toBe(2);
 
-    const one = await runAccountSweep(db, WORKSPACE_ID, { now: () => at(3), fetchImpl: deadSite, sleep: async () => undefined }, { maxAccounts: 0 });
+    const one = await runAccountSweep(
+      db,
+      WORKSPACE_ID,
+      { now: () => at(3), fetchImpl: deadSite, sleep: async () => undefined },
+      { maxAccounts: 0 }
+    );
     expect(one.swept).toBe(1);
   });
 
   it('is a no-op for a workspace with nothing to sweep', async () => {
-    const result = await runAccountSweep(db, 'ws_nobody', { now: () => T0, fetchImpl: deadSite, sleep: async () => undefined });
+    const result = await runAccountSweep(db, 'ws_nobody', {
+      now: () => T0,
+      fetchImpl: deadSite,
+      sleep: async () => undefined
+    });
     expect(result).toEqual({ swept: 0, signalsStored: 0, failed: 0, accountIds: [] });
   });
 });

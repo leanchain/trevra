@@ -151,66 +151,32 @@ export const FRESH_DAYS = 7;
  * "several different things moved here, recently" and nothing weaker.
  */
 export const SIGNAL_WEIGHTS: Record<AccountSignalKind, number> = {
-  // ZERO, BY CONTRACT AND BY ARGUMENT. `first-capture` says we looked at this
-  // company for the first time, which is a fact about US, not about them. A
-  // baseline is the ruler, not the measurement; any weight here would score
-  // every freshly imported CSV row above every quiet account we have watched
-  // all year, which is exactly backwards.
+  // A baseline is a ruler, not a movement.
   'first-capture': 0,
 
-  // THE HIGHEST SINGLE SIGNAL WE CAN READ: public intent, in the prospect's own
-  // words, timestamped and quotable. Every other kind is us INFERRING a state
-  // of mind from a diff; this one is a human describing their problem in a
-  // thread we can link to. It is also the only kind that makes the opening
-  // sentence write itself, which is what turns a score into a sent message.
-  // Still under `HOT_SCORE`: someone complaining in public is a person with a
-  // problem, not yet a company with a project.
+  // Direct public intent remains the strongest single observation Trevra sees.
   'thread-mention': 34,
 
-  // MONEY COMMITTED TO A PROBLEM, WITH A JOB TITLE ATTACHED. A new role is a
-  // budget line that survived somebody's approval, it names the function that
-  // owns our category, and it is checkable by the recipient -- the three
-  // properties that make an opener land. Just below `thread-mention` because it
-  // is an inference (they hired, therefore they care) rather than a statement.
+  // Ecommerce-specific evidence. None can make an account hot alone; the value
+  // comes from independent surfaces moving together.
+  'meta-ads-rising': 32,
+  'meta-ads-started': 30,
   'hiring-up': 30,
-
-  // THEY ARE REPACKAGING HOW THEY SELL. A pricing page does not change by
-  // accident: someone re-tiered, re-named or re-priced, which means the
-  // commercial story is open inside that company right now and there is a human
-  // who owns it. Marginally under `hiring-up` only because a pricing diff can
-  // be a copy edit, where a new role cannot be.
+  'product-launch': 29,
   'pricing-changed': 28,
-
-  // POSITIONING DRIFT. Rewriting the homepage headline means the story changed
-  // -- new segment, new wedge, new funding narrative -- and that is worth
-  // knowing. It is MODERATE rather than strong because a story is not a
-  // purchase, and because headlines get A/B tested by people whose job is
-  // headlines, with no budget and no project behind the change.
+  'commerce-app-added': 22,
+  'storefront-rebuild': 20,
+  'newsletter-started': 20,
+  'social-growth': 18,
   'headline-changed': 16,
-
-  // THEY INSTALLED SOMETHING. Real, deliberate, and occasionally the perfect
-  // opening ("you just put in Segment"). Moderate rather than strong for one
-  // honest reason: this is our NOISIEST read. A tag manager, a CDN migration or
-  // a marketing site rebuild all shake the detected stack without anyone having
-  // decided anything, so it earns a seat at the table and never the head of it.
   'tech-added': 15,
-
-  // WEAK POSITIVE, AND KEPT DELIBERATELY LOW. Ripping a tool out means a gap
-  // exists, which is now and then the best opening in this entire list. But our
-  // detector's false negatives MANUFACTURE this signal -- a script moved behind
-  // a tag manager reads as a removal -- so it may corroborate a decision and
-  // must never carry one.
+  'social-cadence-up': 14,
+  'newsletter-silent': 10,
+  'commerce-app-removed': 8,
   'tech-removed': 6,
 
-  // NEGATIVE, AND THE SIGN IS THE POINT. For most sellers a shrinking team is a
-  // shrinking budget and a hiring freeze upstream of it, so contraction should
-  // move an account DOWN the list, not up it by virtue of having "activity".
-  // Kept small (-4, not -20) because we are reading a careers page, not a P&L:
-  // roles also disappear because they were filled, and a company that closes
-  // three roles and changes its pricing is repositioning, not dying. The sign
-  // matters far more than the magnitude -- with a negative weight, an account
-  // whose only news is a contraction scores zero and is never surfaced, which
-  // is the correct outcome for a seller with a finite week.
+  // A shrinking team is weak negative evidence. A closed role can also mean it
+  // was filled, so contraction never outweighs corroborating positive movement.
   'hiring-down': -4
 };
 
@@ -225,10 +191,20 @@ const KIND_ORDER: readonly string[] = ACCOUNT_SIGNAL_KINDS;
 /** How each kind is said out loud, for the generic combination sentence. */
 const KIND_LABELS: Record<AccountSignalKind, string> = {
   'first-capture': 'a baseline capture',
+  'meta-ads-started': 'Meta ads switching on',
+  'meta-ads-rising': 'Meta ad volume rising',
+  'product-launch': 'a product launch',
   'hiring-up': 'a hiring increase',
   'hiring-down': 'a hiring drop',
   'pricing-changed': 'a pricing change',
+  'storefront-rebuild': 'a storefront rebuild',
   'headline-changed': 'a homepage rewrite',
+  'commerce-app-added': 'a new ecommerce app',
+  'commerce-app-removed': 'an ecommerce app disappearing',
+  'newsletter-started': 'newsletter activity starting',
+  'newsletter-silent': 'newsletter activity going quiet',
+  'social-growth': 'social audience growth',
+  'social-cadence-up': 'social posting cadence rising',
   'tech-added': 'a new tool on their site',
   'tech-removed': 'a tool disappearing from their site',
   'thread-mention': 'a public thread'
@@ -336,6 +312,41 @@ export interface CombinationBonus {
  * which would make the gate a formality.
  */
 export const COMBINATION_BONUSES: readonly CombinationBonus[] = [
+  {
+    kinds: ['meta-ads-rising', 'product-launch'],
+    bonus: 24,
+    why: 'Ad spend is ramping while new products are landing: budget and launch pressure moved together, which is a much stronger buying window than either event alone.'
+  },
+  {
+    kinds: ['meta-ads-started', 'product-launch'],
+    bonus: 22,
+    why: 'They switched paid acquisition on around a product launch, so the store is actively creating demand rather than merely maintaining the catalog.'
+  },
+  {
+    kinds: ['product-launch', 'commerce-app-added'],
+    bonus: 20,
+    why: 'A product launch and a new commerce app landed in the same window: the merchandising event is being backed by new operating infrastructure.'
+  },
+  {
+    kinds: ['meta-ads-rising', 'social-growth'],
+    bonus: 18,
+    why: 'Paid activity and audience growth are rising together, which makes the growth motion visible on two independent surfaces instead of only inside an ad account.'
+  },
+  {
+    kinds: ['commerce-app-added', 'newsletter-started'],
+    bonus: 16,
+    why: 'A retention tool appeared as newsletter activity started, which is consistent with a newly activated lifecycle-marketing program rather than an idle script install.'
+  },
+  {
+    kinds: ['product-launch', 'social-growth'],
+    bonus: 16,
+    why: 'A product launch is landing alongside measurable audience growth, so the launch has external attention behind it rather than being only a catalog edit.'
+  },
+  {
+    kinds: ['storefront-rebuild', 'commerce-app-added'],
+    bonus: 16,
+    why: 'The storefront and its commerce stack changed in the same window, which is the signature of an active rebuild rather than routine content maintenance.'
+  },
   {
     kinds: ['hiring-up', 'thread-mention'],
     bonus: 22,
@@ -485,7 +496,10 @@ export interface ScoreAccountResult {
  * on the screen. A score of 100 that shows "(capped: -52.5)" is a score an
  * operator can argue with; a bare 100 is one they can only distrust.
  */
-export function scoreAccount(signals: readonly AccountSignal[], opts: ScoreAccountOptions): ScoreAccountResult {
+export function scoreAccount(
+  signals: readonly AccountSignal[],
+  opts: ScoreAccountOptions
+): ScoreAccountResult {
   const windowDays = Math.max(1, opts.windowDays ?? DEFAULT_WINDOW_DAYS);
   const nowMs = opts.now.getTime();
 
@@ -586,7 +600,8 @@ export function scoreAccount(signals: readonly AccountSignal[], opts: ScoreAccou
   // corroboration for everything behind it, and its absence is what makes the
   // rest an archive rather than a lead. Only charged against an account that
   // actually earned points -- there is nothing to make stale at zero.
-  const newestAge = inWindow.length > 0 ? Math.min(...inWindow.map((entry) => entry.ageDays)) : null;
+  const newestAge =
+    inWindow.length > 0 ? Math.min(...inWindow.map((entry) => entry.ageDays)) : null;
   if (total > 0 && newestAge !== null && newestAge > DEFAULT_HALF_LIFE_DAYS) {
     penalties.push({
       reason: `Nothing here is recent -- the freshest signal is ${newestAge} days old, past the ${DEFAULT_HALF_LIFE_DAYS}-day half-life, and nothing new has corroborated it since.`,
@@ -606,11 +621,18 @@ export function scoreAccount(signals: readonly AccountSignal[], opts: ScoreAccou
 
   if (total > 100) {
     const delta = round1(100 - total);
-    penalties.push({ reason: 'Capped at 100; the evidence went past the top of the scale.', points: delta });
+    penalties.push({
+      reason: 'Capped at 100; the evidence went past the top of the scale.',
+      points: delta
+    });
     total = round1(total + delta);
   } else if (total < 0) {
     const delta = round1(0 - total);
-    penalties.push({ reason: 'Floored at 0; a score is a ranking position and there is nothing below the bottom of the list.', points: delta });
+    penalties.push({
+      reason:
+        'Floored at 0; a score is a ranking position and there is nothing below the bottom of the list.',
+      points: delta
+    });
     total = round1(total + delta);
   }
 
@@ -645,8 +667,33 @@ export function rationaleTotal(rationale: ScoreRationale): number {
  * The sentence.
  * ------------------------------------------------------------------------ */
 
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
-const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'] as const;
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec'
+] as const;
+const NUMBER_WORDS = [
+  'zero',
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten'
+] as const;
 
 function numberWord(value: number): string {
   return NUMBER_WORDS[value] ?? String(value);
@@ -702,7 +749,9 @@ function summarize(args: {
   rejected: boolean;
 }): string {
   const { components, distinctKinds, windowDays, rejected } = args;
-  const rejectedTail = rejected ? ', and you have already marked this exact combination not a fit' : '';
+  const rejectedTail = rejected
+    ? ', and you have already marked this exact combination not a fit'
+    : '';
 
   if (components.length === 0) {
     return `Nothing has been observed on this account in the last ${windowDays} days.`;
@@ -722,14 +771,16 @@ function summarize(args: {
   const newestByKind = new Map<string, number>();
   for (const component of named) {
     const current = newestByKind.get(component.kind);
-    if (current === undefined || component.ageDays < current) newestByKind.set(component.kind, component.ageDays);
+    if (current === undefined || component.ageDays < current)
+      newestByKind.set(component.kind, component.ageDays);
   }
   const freshest = Math.min(...named.map((component) => component.ageDays));
   const allFresh = [...newestByKind.values()].every((age) => age <= FRESH_DAYS);
 
   let verdict: string;
   if (distinctKinds <= 1) {
-    verdict = 'one kind of signal, and one kind of signal is a coincidence until something else moves';
+    verdict =
+      'one kind of signal, and one kind of signal is a coincidence until something else moves';
   } else if (allFresh && distinctKinds === 2) {
     verdict = 'two independent signals, both fresh';
   } else if (allFresh) {
@@ -777,7 +828,9 @@ function compareIds(a: AccountSignal, b: AccountSignal): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-function newestSignalTimestamp(entries: readonly { signal: AccountSignal; ageDays: number }[]): string | null {
+function newestSignalTimestamp(
+  entries: readonly { signal: AccountSignal; ageDays: number }[]
+): string | null {
   let newest: { signal: AccountSignal; ageDays: number } | null = null;
   for (const entry of entries) {
     const observedMs = parseTime(entry.signal.observedAt);
@@ -880,11 +933,17 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
  * decision without a reason attached. Both return `null`/absent rather than a
  * zero, so a caller can tell "we scored it at 0" from "we did not score it".
  */
-async function activeAccountIds(db: Db, workspaceId: string, accountIds?: readonly string[]): Promise<string[]> {
+async function activeAccountIds(
+  db: Db,
+  workspaceId: string,
+  accountIds?: readonly string[]
+): Promise<string[]> {
   if (accountIds) {
     if (accountIds.length === 0) return [];
     const rows = await db
-      .prepare(`SELECT id FROM accounts WHERE workspace_id=? AND id = ANY(?::text[]) AND status='active' ORDER BY id`)
+      .prepare(
+        `SELECT id FROM accounts WHERE workspace_id=? AND id = ANY(?::text[]) AND status='active' ORDER BY id`
+      )
       .all<{ id: string }>(workspaceId, [...new Set(accountIds)]);
     return rows.map((row) => row.id);
   }
@@ -1025,7 +1084,11 @@ export async function rescoreAccounts(
  * first, and a ranked list whose order depends on the order the job happened to
  * visit rows in is a list that cannot be reproduced or defended.
  */
-export async function rescoreWorkspace(db: Db, workspaceId: string, opts: RescoreOptions = {}): Promise<number> {
+export async function rescoreWorkspace(
+  db: Db,
+  workspaceId: string,
+  opts: RescoreOptions = {}
+): Promise<number> {
   const now = opts.now ?? new Date();
   const ids = await activeAccountIds(db, workspaceId);
   let scored = 0;

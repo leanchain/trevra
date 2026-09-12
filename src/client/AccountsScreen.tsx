@@ -89,10 +89,20 @@ const TIER_LABELS: Record<AccountScore['tier'], string> = {
  */
 const KIND_LABELS: Record<string, string> = {
   'first-capture': 'First read of the site',
+  'meta-ads-started': 'Meta ads switched on',
+  'meta-ads-rising': 'Meta ad volume is rising',
+  'product-launch': 'New products appeared',
   'hiring-up': 'More roles on the careers page',
   'hiring-down': 'Fewer roles on the careers page',
   'pricing-changed': 'The pricing page changed',
+  'storefront-rebuild': 'The storefront was rebuilt',
   'headline-changed': 'The homepage pitch changed',
+  'commerce-app-added': 'An ecommerce app appeared',
+  'commerce-app-removed': 'An ecommerce app disappeared',
+  'newsletter-started': 'Newsletter activity started',
+  'newsletter-silent': 'Newsletter activity went quiet',
+  'social-growth': 'Social audience growth',
+  'social-cadence-up': 'Social posting accelerated',
   'tech-added': 'A technology appeared on the site',
   'tech-removed': 'A technology went off the site',
   'thread-mention': 'Mentioned in a public thread'
