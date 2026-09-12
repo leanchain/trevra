@@ -373,6 +373,307 @@ describe('buildDemandCandidates', () => {
     expect(candidates[0]?.accountId).toBe(firstSeed.accountId);
   });
 
+  it('layers recent engagement on a Trevra-published LinkedIn post onto a hot Account', async () => {
+    const workspaceId = await seedWorkspace('Published post engagement');
+    const personId = id('con');
+    const profileUrl = 'https://www.linkedin.com/in/post-engager/';
+    await db
+      .prepare(
+        `INSERT INTO contacts
+         (id,workspace_id,name,email,email_normalized,linkedin_url,linkedin_url_normalized,role,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        personId,
+        workspaceId,
+        'Jordan Lee',
+        'jordan@engager.example',
+        'jordan@engager.example',
+        profileUrl,
+        profileUrl.toLowerCase(),
+        'VP Engineering',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    const account = await createAccount(
+      db,
+      workspaceId,
+      { domain: 'engager.example', name: 'Engager Co', source: 'manual' },
+      new Date('2026-09-10T08:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO account_contacts
+         (id,workspace_id,account_id,contact_id,role,source,confidence,created_at,updated_at)
+         VALUES (?,?,?,?,?,'manual','explicit',?,?)`
+      )
+      .run(
+        'ac_post_engager',
+        workspaceId,
+        account.id,
+        personId,
+        'VP Engineering',
+        '2026-09-10T08:00:00.000Z',
+        '2026-09-10T08:00:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        workspaceId,
+        account.id,
+        91,
+        'hot',
+        2,
+        '2026-09-12T07:00:00.000Z',
+        '{}',
+        '2026-09-12T07:01:00.000Z'
+      );
+    for (const [index, kind, detail, url] of [
+      [0, 'hiring-up', 'Added platform roles.', 'https://engager.example/careers'],
+      [1, 'tech-added', 'Added an infrastructure tool.', 'https://engager.example/']
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_post_engagement_${index}`,
+          workspaceId,
+          account.id,
+          kind,
+          detail,
+          url,
+          `2026-09-12T0${6 + index}:00:00.000Z`,
+          `post-engagement-${index}`,
+          `2026-09-12T0${6 + index}:00:00.000Z`
+        );
+    }
+    const postedUrl = 'https://www.linkedin.com/posts/trevra-market-signal-123';
+    await db
+      .prepare(
+        `INSERT INTO linkedin_posts
+         (id,workspace_id,seat_key,status,posted_url,published_at,created_at,updated_at)
+         VALUES (?,?,?,'posted',?,?,?,?)`
+      )
+      .run(
+        'lipost_demand_engagement',
+        workspaceId,
+        'owner',
+        postedUrl,
+        '2026-09-12T06:00:00.000Z',
+        '2026-09-12T05:50:00.000Z',
+        '2026-09-12T06:00:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO linkedin_lead_sources
+         (id,workspace_id,kind,url,status,requested_at,finished_at,result_count,created_at,updated_at,seat_key)
+         VALUES (?,?,? ,?,'completed',?,?,1,?,?,?)`
+      )
+      .run(
+        'llsrc_demand_engagement',
+        workspaceId,
+        'post',
+        `${postedUrl}/`,
+        '2026-09-12T06:05:00.000Z',
+        '2026-09-12T07:30:00.000Z',
+        '2026-09-12T06:05:00.000Z',
+        '2026-09-12T07:30:00.000Z',
+        'owner'
+      );
+    await db
+      .prepare(
+        `INSERT INTO linkedin_leads
+         (id,workspace_id,source_id,profile_url,name,first_name,last_name,company,post_url,interaction_kind,created_at,seat_key)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        'lilead_demand_engagement',
+        workspaceId,
+        'llsrc_demand_engagement',
+        profileUrl,
+        'Jordan Lee',
+        'Jordan',
+        'Lee',
+        'Engager Co',
+        postedUrl,
+        'comment',
+        '2026-09-12T07:30:00.000Z',
+        'owner'
+      );
+
+    const candidates = await buildDemandCandidates(db, workspaceId, NOW);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      sourceKey: `demand:${personId}:${account.id}`,
+      personId,
+      accountId: account.id,
+      personName: 'Jordan Lee',
+      accountName: 'Engager Co',
+      qualification: 'act_now',
+      recommendedAction: 'prepare_outreach',
+      dimensions: {
+        accountIntent: 0.91,
+        firstPartyIntent: 0,
+        relationship: 0
+      }
+    });
+    expect(candidates[0]!.dimensions.personIntent).toBeGreaterThan(0.79);
+    expect(candidates[0]!.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: 'linkedin_post_engagement',
+          sourceId: 'lilead_demand_engagement',
+          externalUrl: postedUrl
+        })
+      ])
+    );
+
+    await db
+      .prepare(
+        "UPDATE account_scores SET tier='warm',score=60 WHERE workspace_id=? AND account_id=?"
+      )
+      .run(workspaceId, account.id);
+    expect(await buildDemandCandidates(db, workspaceId, NOW)).toEqual([]);
+  });
+
+  it('does not map a post engager to demand when their Account association is ambiguous', async () => {
+    const workspaceId = await seedWorkspace('Ambiguous post engager');
+    const personId = id('con');
+    const profileUrl = 'https://www.linkedin.com/in/ambiguous-engager/';
+    await db
+      .prepare(
+        `INSERT INTO contacts
+         (id,workspace_id,name,email,email_normalized,linkedin_url,linkedin_url_normalized,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        personId,
+        workspaceId,
+        'Taylor Kim',
+        'taylor@ambiguous.example',
+        'taylor@ambiguous.example',
+        profileUrl,
+        profileUrl.toLowerCase(),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    const first = await createAccount(
+      db,
+      workspaceId,
+      { domain: 'ambiguous-one.example', name: 'Ambiguous One', source: 'manual' },
+      NOW
+    );
+    const second = await createAccount(
+      db,
+      workspaceId,
+      { domain: 'ambiguous-two.example', name: 'Ambiguous Two', source: 'manual' },
+      NOW
+    );
+    for (const [index, account] of [first, second].entries()) {
+      await db
+        .prepare(
+          `INSERT INTO account_contacts
+           (id,workspace_id,account_id,contact_id,source,confidence,created_at,updated_at)
+           VALUES (?,?,?,?,'manual','explicit',?,?)`
+        )
+        .run(
+          `ac_ambiguous_post_${index}`,
+          workspaceId,
+          account.id,
+          personId,
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+      await db
+        .prepare(
+          `INSERT INTO account_scores
+           (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+           VALUES (?,?,90,'hot',2,?,'{}',?)`
+        )
+        .run(workspaceId, account.id, '2026-09-12T07:00:00.000Z', '2026-09-12T07:01:00.000Z');
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_ambiguous_post_${index}`,
+          workspaceId,
+          account.id,
+          'hiring-up',
+          'Hiring increased.',
+          `https://${account.domain}/careers`,
+          '2026-09-12T07:00:00.000Z',
+          `ambiguous-post-${index}`,
+          '2026-09-12T07:00:00.000Z'
+        );
+    }
+    const postedUrl = 'https://www.linkedin.com/posts/trevra-ambiguous-456';
+    await db
+      .prepare(
+        `INSERT INTO linkedin_posts
+         (id,workspace_id,seat_key,status,posted_url,published_at,created_at,updated_at)
+         VALUES (?,?,?,'posted',?,?,?,?)`
+      )
+      .run(
+        'lipost_ambiguous_engagement',
+        workspaceId,
+        'owner',
+        postedUrl,
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `INSERT INTO linkedin_lead_sources
+         (id,workspace_id,kind,url,status,requested_at,finished_at,result_count,created_at,updated_at,seat_key)
+         VALUES (?,?,? ,?,'completed',?,?,1,?,?,?)`
+      )
+      .run(
+        'llsrc_ambiguous_engagement',
+        workspaceId,
+        'post',
+        postedUrl,
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString(),
+        NOW.toISOString(),
+        'owner'
+      );
+    await db
+      .prepare(
+        `INSERT INTO linkedin_leads
+         (id,workspace_id,source_id,profile_url,name,first_name,last_name,company,post_url,interaction_kind,created_at,seat_key)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        'lilead_ambiguous_engagement',
+        workspaceId,
+        'llsrc_ambiguous_engagement',
+        profileUrl,
+        'Taylor Kim',
+        'Taylor',
+        'Kim',
+        'Ambiguous',
+        postedUrl,
+        'comment',
+        '2026-09-12T07:30:00.000Z',
+        'owner'
+      );
+
+    expect(await buildDemandCandidates(db, workspaceId, NOW)).toEqual([]);
+  });
+
   it('surfaces a hot account when exactly one explicit contact is already known', async () => {
     const workspaceId = await seedWorkspace('Known contact demand');
     const personId = id('con');

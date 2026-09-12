@@ -14,7 +14,8 @@ export interface DemandEvidence {
     | 'campaign_brief'
     | 'discovery_plan'
     | 'conversation_message'
-    | 'opportunity';
+    | 'opportunity'
+    | 'linkedin_post_engagement';
   sourceId: string;
   label: string;
   category: 'request' | 'history' | 'supporting';
@@ -57,6 +58,7 @@ const DAY_MS = 86_400_000;
 const FIRST_PARTY_WINDOW_DAYS = 14;
 const SIGNAL_WINDOW_DAYS = 60;
 const DORMANT_OPPORTUNITY_DAYS = 14;
+const PERSON_INTENT_WINDOW_DAYS = 30;
 const MAX_ACCOUNT_SIGNAL_EVIDENCE = 4;
 
 /**
@@ -681,6 +683,166 @@ export async function buildDemandCandidates(
     seenSourceKeys.add(sourceKey);
   }
 
+  // Person-intent counterpart: somebody engaged with a Trevra-published
+  // LinkedIn post, resolves to a canonical Person, and has exactly one explicit
+  // or verified Account association. Engagement is NEVER sufficient on its
+  // own: the Account must independently be hot with inspectable source-backed
+  // signals. This makes the post engagement a layer on demand, not a vanity
+  // metric promoted into pipeline.
+  const personIntentSince = new Date(
+    now.getTime() - PERSON_INTENT_WINDOW_DAYS * DAY_MS
+  ).toISOString();
+  const engagementRows = await db
+    .prepare(
+      `
+      WITH one_account AS (
+        SELECT workspace_id,contact_id,MIN(account_id) AS account_id
+        FROM account_contacts
+        WHERE workspace_id=? AND confidence IN ('explicit','verified')
+        GROUP BY workspace_id,contact_id
+        HAVING COUNT(DISTINCT account_id)=1
+      )
+      SELECT DISTINCT ON (p.id,oa.account_id)
+        raw.id AS engagement_id,
+        raw.interaction_kind,
+        raw.created_at AS engaged_at,
+        source.id AS lead_source_id,
+        post.id AS linkedin_post_id,
+        post.posted_url,
+        p.id AS person_id,p.name AS person_name,p.email AS person_email,
+        oa.account_id,
+        a.name AS account_name,a.domain,
+        sc.score,sc.distinct_kinds,sc.newest_signal_at,sc.computed_at
+      FROM linkedin_posts post
+      JOIN linkedin_lead_sources source
+        ON source.workspace_id=post.workspace_id
+       AND source.seat_key=post.seat_key
+       AND source.kind='post'
+       AND post.posted_url IS NOT NULL
+       AND LOWER(RTRIM(source.url,'/'))=LOWER(RTRIM(post.posted_url,'/'))
+      JOIN linkedin_leads raw
+        ON raw.workspace_id=source.workspace_id
+       AND raw.seat_key=source.seat_key
+       AND raw.source_id=source.id
+      JOIN contacts p
+        ON p.workspace_id=raw.workspace_id
+       AND p.linkedin_url_normalized=LOWER(BTRIM(raw.profile_url))
+      JOIN one_account oa
+        ON oa.workspace_id=p.workspace_id AND oa.contact_id=p.id
+      JOIN accounts a
+        ON a.workspace_id=oa.workspace_id AND a.id=oa.account_id
+      JOIN account_scores sc
+        ON sc.workspace_id=oa.workspace_id AND sc.account_id=oa.account_id
+      WHERE post.workspace_id=?
+        AND post.status='posted'
+        AND raw.created_at>=?::timestamptz
+        AND raw.interaction_kind IS DISTINCT FROM 'post'
+        AND sc.tier='hot'
+        AND sc.score>=80
+        AND COALESCE(sc.newest_signal_at,sc.computed_at)>=?::timestamptz
+        AND NOT EXISTS (
+          SELECT 1 FROM opportunities o
+          WHERE o.workspace_id=oa.workspace_id
+            AND o.account_id=oa.account_id
+            AND o.stage NOT IN ('won','lost')
+        )
+      ORDER BY p.id,oa.account_id,
+        CASE WHEN raw.interaction_kind='comment' THEN 0 ELSE 1 END,
+        raw.created_at DESC,raw.id DESC
+      LIMIT 50
+    `
+    )
+    .all<Record<string, unknown>>(workspaceId, workspaceId, personIntentSince, recentSince);
+
+  for (const row of engagementRows) {
+    const personId = String(row.person_id);
+    const accountId = String(row.account_id);
+    if (firstPartyAccountIds.has(accountId)) continue;
+    const sourceKey = `demand:${personId}:${accountId}`;
+    if (seenSourceKeys.has(sourceKey)) continue;
+
+    const signals = await loadAccountSignals(db, workspaceId, accountId, signalSince);
+    if (signals.length === 0) continue;
+    const engagedAt = iso(row.engaged_at);
+    const ageDays = Math.max(0, (now.getTime() - Date.parse(engagedAt)) / DAY_MS);
+    if (ageDays > PERSON_INTENT_WINDOW_DAYS) continue;
+    const interactionKind = String(row.interaction_kind ?? 'reaction');
+    const basePersonIntent = interactionKind === 'comment' ? 0.8 : 0.55;
+    const personIntent = Number(
+      (basePersonIntent * (1 - 0.5 * (ageDays / PERSON_INTENT_WINDOW_DAYS))).toFixed(3)
+    );
+    const score = Math.max(0, Math.min(100, Number(row.score ?? 0)));
+    const distinctKinds = Math.max(0, Number(row.distinct_kinds ?? 0));
+    const personName = String(row.person_name ?? row.person_email ?? 'Known person');
+    const accountName = String(row.account_name ?? row.domain ?? 'Account');
+    const observedAt = iso(row.newest_signal_at ?? row.computed_at);
+    const relationshipState = await loadRelationshipState(
+      db,
+      workspaceId,
+      personId,
+      accountId,
+      now
+    );
+    const recommendedAction: DemandRecommendedAction = relationshipState.recentInbound
+      ? 'reply'
+      : 'prepare_outreach';
+    const engagementLabel = interactionKind === 'comment' ? 'Commented on' : 'Reacted to';
+    const evidence: DemandEvidence[] = [
+      {
+        sourceType: 'linkedin_post_engagement',
+        sourceId: String(row.engagement_id),
+        label: `${engagementLabel} your LinkedIn post`,
+        category: 'supporting',
+        excerpt: `${personName} ${interactionKind === 'comment' ? 'commented on' : 'reacted to'} a Trevra-published LinkedIn post.`,
+        externalUrl: row.posted_url ? String(row.posted_url) : null,
+        observedAt: engagedAt
+      },
+      {
+        sourceType: 'account_score',
+        sourceId: accountId,
+        label: 'Composite account intent',
+        category: 'supporting',
+        excerpt: `${accountName} is hot at ${score}/100 across ${distinctKinds} independent signal kinds.`,
+        observedAt
+      },
+      ...accountSignalEvidence(signals),
+      ...relationshipState.evidence
+    ];
+
+    candidates.push({
+      sourceKey,
+      personId,
+      accountId,
+      personName,
+      accountName,
+      dimensions: {
+        fit: null,
+        accountIntent: Number((score / 100).toFixed(3)),
+        personIntent,
+        firstPartyIntent: 0,
+        relationship: relationshipState.score,
+        recency: recencyFor(engagedAt, now)
+      },
+      qualification: 'act_now',
+      recommendedAction,
+      title: relationshipState.recentInbound
+        ? `Reply to ${personName} at ${accountName}`
+        : `Talk to ${personName} at ${accountName}`,
+      summary: `${personName} ${interactionKind === 'comment' ? 'commented on' : 'reacted to'} your LinkedIn post while ${accountName} is hot at ${score}/100.`,
+      rationale: [
+        `recent LinkedIn ${interactionKind === 'comment' ? 'comment' : 'reaction'} provides person-level intent`,
+        `account scorer is hot at ${score}/100 across ${distinctKinds} signal kinds`,
+        'the Person maps to exactly one explicit/verified Account',
+        ...(relationshipState.recentInbound
+          ? ['a recent inbound conversation means the next action is a reply']
+          : []),
+        `${signals.length} source-backed account signal${signals.length === 1 ? '' : 's'} are available for context`
+      ],
+      evidence
+    });
+    seenSourceKeys.add(sourceKey);
+  }
+
   // Outbound counterpart: a hot account with deterministic known contacts.
   // One contact is safe to surface directly. With several, Trevra may choose
   // only when the operator's latest saved campaign ICP role clearly separates
@@ -689,7 +851,13 @@ export async function buildDemandCandidates(
   const knownContactRows = await db
     .prepare(
       `
-      WITH hot_accounts AS (
+      WITH one_account_people AS (
+        SELECT workspace_id,contact_id,MIN(account_id) AS account_id
+        FROM account_contacts
+        WHERE workspace_id=? AND confidence IN ('explicit','verified')
+        GROUP BY workspace_id,contact_id
+        HAVING COUNT(DISTINCT account_id)=1
+      ), hot_accounts AS (
         SELECT
           a.id AS account_id,a.name AS account_name,a.domain,
           sc.score,sc.distinct_kinds,sc.newest_signal_at,sc.computed_at
@@ -715,12 +883,16 @@ export async function buildDemandCandidates(
         p.name AS person_name,p.email AS person_email,p.role AS person_role
       FROM hot_accounts h
       JOIN account_contacts ac ON ac.account_id=h.account_id
+      JOIN one_account_people unique_person
+        ON unique_person.workspace_id=ac.workspace_id
+       AND unique_person.contact_id=ac.contact_id
+       AND unique_person.account_id=ac.account_id
       JOIN contacts p ON p.workspace_id=ac.workspace_id AND p.id=ac.contact_id
       WHERE ac.workspace_id=? AND ac.confidence IN ('explicit','verified')
       ORDER BY h.score DESC,COALESCE(h.newest_signal_at,h.computed_at) DESC,h.account_id,ac.id
     `
     )
-    .all<Record<string, unknown>>(workspaceId, recentSince, workspaceId);
+    .all<Record<string, unknown>>(workspaceId, workspaceId, recentSince, workspaceId);
 
   const contactsByAccount = new Map<string, Record<string, unknown>[]>();
   for (const row of knownContactRows) {

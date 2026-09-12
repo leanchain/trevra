@@ -206,6 +206,7 @@ async function detectQualifiedDemand(db: Db, workspaceId: string, now: Date): Pr
       0.75 +
         candidate.dimensions.firstPartyIntent * 0.1 +
         candidate.dimensions.accountIntent * 0.1 +
+        candidate.dimensions.personIntent * 0.05 +
         candidate.dimensions.relationship * 0.05
     );
     const urgency = 1 + candidate.dimensions.recency * 0.4;
