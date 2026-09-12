@@ -549,6 +549,161 @@ describe('buildDemandCandidates', () => {
     );
   });
 
+  it('prepares company-employee discovery for a hot account with no known person', async () => {
+    const workspaceId = await seedWorkspace('No known person');
+    const account = await createAccount(
+      db,
+      workspaceId,
+      {
+        domain: 'no-known-person.example',
+        name: 'No Known Person Co',
+        linkedinUrl: 'https://www.linkedin.com/company/no-known-person/',
+        source: 'manual'
+      },
+      new Date('2026-09-10T08:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        workspaceId,
+        account.id,
+        91,
+        'hot',
+        2,
+        '2026-09-12T07:00:00.000Z',
+        '{}',
+        '2026-09-12T07:01:00.000Z'
+      );
+    for (const [index, kind, detail, url] of [
+      [
+        0,
+        'hiring-up',
+        'Added platform engineering roles.',
+        'https://no-known-person.example/careers'
+      ],
+      [
+        1,
+        'pricing-changed',
+        'Changed enterprise pricing.',
+        'https://no-known-person.example/pricing'
+      ]
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_no_person_${index}`,
+          workspaceId,
+          account.id,
+          kind,
+          detail,
+          url,
+          `2026-09-12T0${6 + index}:00:00.000Z`,
+          `no-person-${index}`,
+          `2026-09-12T0${6 + index}:00:00.000Z`
+        );
+    }
+
+    const candidates = await buildDemandCandidates(db, workspaceId, NOW);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      sourceKey: `demand:find-person:${account.id}`,
+      personId: null,
+      personName: null,
+      accountId: account.id,
+      qualification: 'act_now',
+      recommendedAction: 'find_person'
+    });
+    expect(candidates[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: 'discovery_plan',
+          sourceId: `company_employees:${account.id}`,
+          externalUrl: 'https://www.linkedin.com/company/no-known-person/people/'
+        })
+      ])
+    );
+  });
+
+  it('falls back to a buyer-role people search when the hot account has no LinkedIn company URL', async () => {
+    const workspaceId = await seedWorkspace('Persona discovery');
+    const account = await createAccount(
+      db,
+      workspaceId,
+      { domain: 'persona-discovery.example', name: 'Persona Discovery Co', source: 'manual' },
+      new Date('2026-09-10T08:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaigns
+         (id,workspace_id,name,status,sequence_json,brief_json,seat_key,created_at,updated_at)
+         VALUES (?,?,?,'draft','{}'::jsonb,?::jsonb,'owner',?,?)`
+      )
+      .run(
+        'lic_persona_discovery',
+        workspaceId,
+        'Platform buyers',
+        JSON.stringify({
+          icp: { role: 'VP Engineering', segment: 'B2B SaaS', pain: 'Platform scale' }
+        }),
+        '2026-09-11T08:00:00.000Z',
+        '2026-09-11T08:00:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        workspaceId,
+        account.id,
+        92,
+        'hot',
+        2,
+        '2026-09-12T07:00:00.000Z',
+        '{}',
+        '2026-09-12T07:01:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_signals
+         (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        'sig_persona_discovery',
+        workspaceId,
+        account.id,
+        'hiring-up',
+        'Added platform engineering roles.',
+        'https://persona-discovery.example/careers',
+        '2026-09-12T07:00:00.000Z',
+        'persona-discovery',
+        '2026-09-12T07:00:00.000Z'
+      );
+
+    const candidates = await buildDemandCandidates(db, workspaceId, NOW);
+    const plan = candidates[0]?.evidence.find((item) => item.sourceType === 'discovery_plan');
+
+    expect(candidates).toHaveLength(1);
+    expect(plan).toMatchObject({
+      sourceId: `search:${account.id}`
+    });
+    expect(plan?.externalUrl).toContain('/search/results/people/');
+    expect(new URL(plan?.externalUrl ?? '').searchParams.get('keywords')).toBe(
+      'VP Engineering Persona Discovery Co'
+    );
+  });
+
   it('does not create fresh outreach demand when the account already has an open opportunity', async () => {
     const workspaceId = await seedWorkspace('Open opportunity');
     const personId = id('con');

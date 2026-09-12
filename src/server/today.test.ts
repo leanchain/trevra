@@ -427,4 +427,87 @@ describe('qualified demand in Today', () => {
       }
     });
   });
+
+  it('routes hot accounts with no known person into a prefilled Find people source', async () => {
+    const account = await createAccount(
+      db,
+      WORKSPACE,
+      {
+        domain: 'discover-today.example',
+        name: 'Discover Today',
+        linkedinUrl: 'https://www.linkedin.com/company/discover-today/',
+        source: 'manual'
+      },
+      new Date('2026-08-20T09:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        WORKSPACE,
+        account.id,
+        94,
+        'hot',
+        2,
+        '2026-08-21T07:10:00.000Z',
+        '{}',
+        '2026-08-21T07:11:00.000Z'
+      );
+    for (const [index, kind, detail, url] of [
+      [
+        0,
+        'hiring-up',
+        'Added platform engineering roles.',
+        'https://discover-today.example/careers'
+      ],
+      [
+        1,
+        'pricing-changed',
+        'Changed enterprise pricing.',
+        'https://discover-today.example/pricing'
+      ]
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_today_discover_${index}`,
+          WORKSPACE,
+          account.id,
+          kind,
+          detail,
+          url,
+          `2026-08-21T0${6 + index}:00:00.000Z`,
+          `today-discover-${index}`,
+          `2026-08-21T0${6 + index}:00:00.000Z`
+        );
+    }
+
+    await runRecommendationEngine(db, WORKSPACE, NOW, { includeStaleProposals: false });
+    const today = await getToday(db, WORKSPACE, NOW);
+
+    expect(today.needsAttention).toHaveLength(1);
+    expect(today.needsAttention[0]).toMatchObject({
+      kind: 'qualification_decision',
+      title: 'Find the right person at Discover Today',
+      metadata: {
+        personId: null,
+        accountId: account.id,
+        recommendationType: 'person_discovery',
+        demandOrigin: 'person_discovery',
+        discoveryKind: 'company_employees',
+        discoveryUrl: 'https://www.linkedin.com/company/discover-today/people/'
+      }
+    });
+    expect(today.needsAttention[0]?.href).toContain('/outreach?focus=leads');
+    const query = new URL(`https://trevra.test${today.needsAttention[0]?.href}`).searchParams;
+    expect(query.get('kind')).toBe('company_employees');
+    expect(query.get('url')).toBe('https://www.linkedin.com/company/discover-today/people/');
+  });
 });

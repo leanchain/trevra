@@ -10,7 +10,8 @@ export interface DemandEvidence {
     | 'account_contact'
     | 'account_score'
     | 'account_signal'
-    | 'campaign_brief';
+    | 'campaign_brief'
+    | 'discovery_plan';
   sourceId: string;
   label: string;
   category: 'request' | 'history' | 'supporting';
@@ -36,9 +37,9 @@ export interface DemandDimensions {
 
 export interface DemandCandidate {
   sourceKey: string;
-  personId: string;
+  personId: string | null;
   accountId: string;
-  personName: string;
+  personName: string | null;
   accountName: string;
   dimensions: DemandDimensions;
   qualification: DemandQualification;
@@ -214,6 +215,51 @@ function selectKnownContact(
   if (!best || best.roleScore < 0.6) return null;
   if (runnerUp && best.selectionScore - runnerUp.selectionScore < 0.2) return null;
   return { row: best.row, roleScore: best.roleScore, usedPersona: true };
+}
+
+interface PersonDiscoveryPlan {
+  kind: 'company_employees' | 'search';
+  url: string;
+  detail: string;
+}
+
+function linkedInCompanyPeopleUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (!['linkedin.com', 'www.linkedin.com'].includes(url.hostname.toLowerCase())) return null;
+    const match = url.pathname.match(/^\/company\/([^/]+)/i);
+    if (!match?.[1]) return null;
+    return `https://www.linkedin.com/company/${match[1]}/people/`;
+  } catch {
+    return null;
+  }
+}
+
+function personDiscoveryPlan(
+  accountName: string,
+  linkedInUrl: string | null,
+  persona: BuyerPersona | null
+): PersonDiscoveryPlan | null {
+  const companyPeople = linkedInCompanyPeopleUrl(linkedInUrl);
+  if (companyPeople) {
+    return {
+      kind: 'company_employees',
+      url: companyPeople,
+      detail: persona
+        ? `Review ${accountName}'s visible employees for people matching the saved buyer role ${persona.role}.`
+        : `Review ${accountName}'s visible employees and choose the relevant buyer before outreach.`
+    };
+  }
+  if (!persona) return null;
+  const url = new URL('https://www.linkedin.com/search/results/people/');
+  url.searchParams.set('keywords', `${persona.role} ${accountName}`);
+  url.searchParams.set('origin', 'GLOBAL_SEARCH_HEADER');
+  return {
+    kind: 'search',
+    url: url.toString(),
+    detail: `Search LinkedIn people for ${persona.role} at ${accountName}; review the results before saving anyone.`
+  };
 }
 
 /**
@@ -496,6 +542,124 @@ export async function buildDemandCandidates(
       evidence
     });
     seenSourceKeys.add(sourceKey);
+  }
+
+  // No known person: prepare a targeted discovery decision rather than leaving
+  // a hot account as a generic Research card. This is still internal planning
+  // only. The LinkedIn source is not queued until the founder explicitly submits
+  // it from Find people.
+  const missingPersonRows = await db
+    .prepare(
+      `
+      SELECT a.id AS account_id,a.name AS account_name,a.domain,a.linkedin_url,
+             sc.score,sc.distinct_kinds,sc.newest_signal_at,sc.computed_at
+      FROM account_scores sc
+      JOIN accounts a ON a.workspace_id=sc.workspace_id AND a.id=sc.account_id
+      WHERE sc.workspace_id=?
+        AND sc.tier='hot'
+        AND sc.score>=80
+        AND COALESCE(sc.newest_signal_at,sc.computed_at)>=?::timestamptz
+        AND NOT EXISTS (
+          SELECT 1 FROM account_contacts ac
+          WHERE ac.workspace_id=sc.workspace_id
+            AND ac.account_id=sc.account_id
+            AND ac.confidence IN ('explicit','verified')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM opportunities o
+          WHERE o.workspace_id=sc.workspace_id
+            AND o.account_id=sc.account_id
+            AND o.stage NOT IN ('won','lost')
+        )
+      ORDER BY sc.score DESC,COALESCE(sc.newest_signal_at,sc.computed_at) DESC,a.id
+      LIMIT 50
+    `
+    )
+    .all<Record<string, unknown>>(workspaceId, recentSince);
+
+  for (const row of missingPersonRows) {
+    const accountId = String(row.account_id);
+    if (firstPartyAccountIds.has(accountId)) continue;
+    const accountName = String(row.account_name ?? row.domain ?? 'Account');
+    const plan = personDiscoveryPlan(
+      accountName,
+      row.linkedin_url ? String(row.linkedin_url) : null,
+      buyerPersona
+    );
+    if (!plan) continue;
+
+    const signals = await loadAccountSignals(db, workspaceId, accountId, signalSince);
+    if (signals.length === 0) continue;
+
+    const score = Math.max(0, Math.min(100, Number(row.score ?? 0)));
+    const distinctKinds = Math.max(0, Number(row.distinct_kinds ?? 0));
+    const observedAt = iso(row.newest_signal_at ?? row.computed_at);
+    const signalSummary = signals
+      .slice(0, 2)
+      .map((signal) => String(signal.detail).replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .join(' · ');
+    const evidence: DemandEvidence[] = [
+      ...(buyerPersona
+        ? [
+            {
+              sourceType: 'campaign_brief' as const,
+              sourceId: buyerPersona.campaignId,
+              label: 'Saved buyer role',
+              category: 'history' as const,
+              excerpt: `Latest campaign ICP role: ${buyerPersona.role}.`,
+              observedAt: buyerPersona.observedAt
+            }
+          ]
+        : []),
+      {
+        sourceType: 'account_score',
+        sourceId: accountId,
+        label: 'Composite account intent',
+        category: 'supporting',
+        excerpt: `${accountName} is hot at ${score}/100 across ${distinctKinds} independent signal kinds.`,
+        observedAt
+      },
+      ...accountSignalEvidence(signals),
+      {
+        sourceType: 'discovery_plan',
+        sourceId: `${plan.kind}:${accountId}`,
+        label: 'Prepared person discovery',
+        category: 'supporting',
+        excerpt: plan.detail,
+        externalUrl: plan.url,
+        observedAt: now.toISOString()
+      }
+    ];
+
+    candidates.push({
+      sourceKey: `demand:find-person:${accountId}`,
+      personId: null,
+      accountId,
+      personName: null,
+      accountName,
+      dimensions: {
+        fit: null,
+        accountIntent: Number((score / 100).toFixed(3)),
+        personIntent: 0,
+        firstPartyIntent: 0,
+        relationship: 0,
+        recency: recencyFor(observedAt, now)
+      },
+      qualification: 'act_now',
+      recommendedAction: 'find_person',
+      title: `Find the right person at ${accountName}`,
+      summary: `${accountName}: ${score}/100 account intent${signalSummary ? ` · ${signalSummary}` : ''}. No explicit/verified contact is known yet; person discovery is prepared for review.`,
+      rationale: [
+        `account scorer is hot at ${score}/100 across ${distinctKinds} signal kinds`,
+        'no explicit or verified account contact is known',
+        buyerPersona
+          ? `saved buyer role ${buyerPersona.role} is available to guide discovery`
+          : 'the account LinkedIn company page provides a deterministic employee source',
+        `${signals.length} source-backed account signal${signals.length === 1 ? '' : 's'} are available for context`
+      ],
+      evidence
+    });
   }
 
   return candidates;

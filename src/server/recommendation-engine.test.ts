@@ -319,4 +319,90 @@ describe('qualified demand recommendations', () => {
       .get<{ count: number }>(workspaceId);
     expect(persisted?.count).toBe(1);
   });
+
+  it('persists an account-only person-discovery recommendation without inventing a Person', async () => {
+    const now = new Date('2026-09-12T08:00:00.000Z');
+    const workspaceId = id('ws');
+    created.push(workspaceId);
+    await db
+      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?)')
+      .run(workspaceId, 'Person discovery', now.toISOString());
+    const account = await createAccount(
+      db,
+      workspaceId,
+      {
+        domain: 'discovery-demand.example',
+        name: 'Discovery Demand',
+        linkedinUrl: 'https://www.linkedin.com/company/discovery-demand/',
+        source: 'manual'
+      },
+      new Date('2026-09-10T08:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        workspaceId,
+        account.id,
+        94,
+        'hot',
+        2,
+        '2026-09-12T07:00:00.000Z',
+        '{}',
+        '2026-09-12T07:01:00.000Z'
+      );
+    for (const [index, kind, detail, url] of [
+      [0, 'hiring-up', 'Added platform roles.', 'https://discovery-demand.example/careers'],
+      [
+        1,
+        'pricing-changed',
+        'Changed enterprise pricing.',
+        'https://discovery-demand.example/pricing'
+      ]
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_discovery_${index}`,
+          workspaceId,
+          account.id,
+          kind,
+          detail,
+          url,
+          `2026-09-12T0${6 + index}:00:00.000Z`,
+          `discovery-${index}`,
+          `2026-09-12T0${6 + index}:00:00.000Z`
+        );
+    }
+
+    const count = await runRecommendationEngine(db, workspaceId, now, {
+      includeStaleProposals: false
+    });
+    const recommendations = await listRecommendations(db, workspaceId);
+
+    expect(count).toBe(1);
+    expect(recommendations).toHaveLength(1);
+    expect(recommendations[0]).toMatchObject({
+      type: 'person_discovery',
+      personId: null,
+      personName: null,
+      status: 'ready'
+    });
+    expect(recommendations[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: 'discovery_plan',
+          sourceId: `company_employees:${account.id}`,
+          externalUrl: 'https://www.linkedin.com/company/discovery-demand/people/'
+        })
+      ])
+    );
+  });
 });

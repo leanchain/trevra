@@ -97,16 +97,26 @@ export async function getToday(
         .all<Record<string, unknown>>(workspaceId),
       db
         .prepare(
-          `SELECT r.id,r.person_id,r.account_id,r.title,r.summary,r.recommended_action,r.updated_at,
+          `SELECT r.id,r.type,r.person_id,r.account_id,r.title,r.summary,r.recommended_action,r.updated_at,
                 p.name AS person_name,p.email AS person_email,a.name AS account_name,
                 EXISTS (
                   SELECT 1 FROM recommendation_evidence re
                   WHERE re.recommendation_id=r.id AND re.source_type='inbound_submission'
-                ) AS has_inbound
+                ) AS has_inbound,
+                (
+                  SELECT re.source_id FROM recommendation_evidence re
+                  WHERE re.recommendation_id=r.id AND re.source_type='discovery_plan'
+                  ORDER BY re.created_at,re.id LIMIT 1
+                ) AS discovery_source_id,
+                (
+                  SELECT re.external_url FROM recommendation_evidence re
+                  WHERE re.recommendation_id=r.id AND re.source_type='discovery_plan'
+                  ORDER BY re.created_at,re.id LIMIT 1
+                ) AS discovery_url
          FROM recommendations r
-         JOIN contacts p ON p.workspace_id=r.workspace_id AND p.id=r.person_id
+         LEFT JOIN contacts p ON p.workspace_id=r.workspace_id AND p.id=r.person_id
          LEFT JOIN accounts a ON a.workspace_id=r.workspace_id AND a.id=r.account_id
-         WHERE r.workspace_id=? AND r.type='qualified_demand'
+         WHERE r.workspace_id=? AND r.type IN ('qualified_demand','person_discovery')
            AND r.status NOT IN ('dismissed','completed')
            AND (r.snoozed_until IS NULL OR r.snoozed_until<=CURRENT_TIMESTAMP)
            AND r.updated_at>=?::timestamptz
@@ -123,7 +133,7 @@ export async function getToday(
              FROM recommendation_evidence re
              JOIN recommendations r ON r.id=re.recommendation_id
              WHERE r.workspace_id=i.workspace_id
-               AND r.type='qualified_demand'
+               AND r.type IN ('qualified_demand','person_discovery')
                AND r.status NOT IN ('dismissed','completed')
                AND r.updated_at>=?::timestamptz
                AND re.source_type='inbound_submission'
@@ -143,7 +153,7 @@ export async function getToday(
              SELECT 1 FROM recommendations r
              WHERE r.workspace_id=s.workspace_id
                AND r.account_id=s.account_id
-               AND r.type='qualified_demand'
+               AND r.type IN ('qualified_demand','person_discovery')
                AND r.status NOT IN ('dismissed','completed')
                AND r.updated_at>=?::timestamptz
            )
@@ -225,23 +235,51 @@ export async function getToday(
   }
 
   for (const row of demandRows) {
-    const personName = String(row.person_name ?? row.person_email ?? 'Known person');
+    const personName =
+      row.person_name || row.person_email ? String(row.person_name ?? row.person_email) : null;
     const accountName = String(row.account_name ?? 'Account');
+    const recommendationType = String(row.type ?? 'qualified_demand');
+    const discoverySourceId = row.discovery_source_id ? String(row.discovery_source_id) : '';
+    const discoveryKind = discoverySourceId.includes(':') ? discoverySourceId.split(':', 1)[0] : '';
+    const discoveryUrl = row.discovery_url ? String(row.discovery_url) : '';
+    const discoveryHref =
+      recommendationType === 'person_discovery' &&
+      discoveryUrl &&
+      ['company_employees', 'search'].includes(discoveryKind)
+        ? `/outreach?focus=leads&kind=${encodeURIComponent(discoveryKind)}&url=${encodeURIComponent(discoveryUrl)}`
+        : '/outreach';
     items.push({
       id: `demand:${String(row.id)}`,
       kind: 'qualification_decision',
       priority: 45,
-      title: String(row.title ?? `Talk to ${personName} at ${accountName}`),
+      title: String(
+        row.title ??
+          (personName
+            ? `Talk to ${personName} at ${accountName}`
+            : `Find the right person at ${accountName}`)
+      ),
       detail: String(row.summary ?? 'Several independent commercial signals line up now.'),
-      href: Boolean(row.has_inbound) ? '/outreach/inbound' : '/outreach',
+      href:
+        recommendationType === 'person_discovery'
+          ? discoveryHref
+          : Boolean(row.has_inbound)
+            ? '/outreach/inbound'
+            : '/outreach',
       observedAt: iso(row.updated_at, now),
       reference: { type: 'recommendation', id: String(row.id) },
       metadata: {
-        personId: String(row.person_id ?? ''),
+        personId: row.person_id ? String(row.person_id) : null,
         accountId: row.account_id ? String(row.account_id) : null,
-        recommendationType: 'qualified_demand',
-        demandOrigin: Boolean(row.has_inbound) ? 'first_party' : 'known_contact',
-        recommendedAction: String(row.recommended_action ?? '')
+        recommendationType,
+        demandOrigin:
+          recommendationType === 'person_discovery'
+            ? 'person_discovery'
+            : Boolean(row.has_inbound)
+              ? 'first_party'
+              : 'known_contact',
+        recommendedAction: String(row.recommended_action ?? ''),
+        discoveryKind: discoveryKind || null,
+        discoveryUrl: discoveryUrl || null
       }
     });
   }

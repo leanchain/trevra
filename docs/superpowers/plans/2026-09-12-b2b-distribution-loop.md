@@ -292,8 +292,8 @@ The drafter may use this later as input, but the calculation itself stays determ
 - [x] Worker refreshes qualified-demand recommendations without activating dormant stale-proposal automation.
 - [x] Hot Account ≥80 + exactly one explicit/verified known Person → outbound demand decision.
 - [x] Precision guards: multiple candidate People are not auto-selected; Accounts with open opportunities are not re-prospected.
-- [ ] Multiple-contact persona/buying-role ranking.
-- [ ] Hot Account with no known Person → targeted person-discovery preparation.
+- [x] Multiple-contact persona/buying-role ranking from the latest saved campaign ICP role, with minimum-score + margin guards and proof evidence.
+- [x] Hot Account with no known Person → account-scoped `person_discovery` recommendation and prefilled LinkedIn company-employee / buyer-role people search; nothing queues until the founder acts.
 - [ ] Recommendation → exact prepared action → conversation/opportunity attribution.
 - [ ] Distribution/content loop feeding Person-intent evidence.
 

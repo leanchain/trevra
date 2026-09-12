@@ -191,6 +191,39 @@ const sameSourceUrl = (sourceRef: string | null, sourceUrl: string): boolean => 
   return normalize(sourceRef) === normalize(sourceUrl);
 };
 
+interface LeadSourcePrefill {
+  kind: LeadSourceKind;
+  url: string;
+  keywords: string;
+}
+
+function readLeadSourcePrefill(): LeadSourcePrefill {
+  const fallback: LeadSourcePrefill = { kind: 'search', url: '', keywords: '' };
+  if (typeof window === 'undefined') return fallback;
+  const params = new URLSearchParams(window.location.search);
+  const rawKind = params.get('kind') ?? '';
+  if (!Object.prototype.hasOwnProperty.call(KIND_LABELS, rawKind)) return fallback;
+  const kind = rawKind as LeadSourceKind;
+  const rawUrl = params.get('url')?.trim() ?? '';
+  if (!rawUrl) return { ...fallback, kind };
+  try {
+    const parsed = new URL(rawUrl);
+    if (
+      parsed.protocol !== 'https:' ||
+      !['linkedin.com', 'www.linkedin.com'].includes(parsed.hostname.toLowerCase())
+    )
+      return { ...fallback, kind };
+    return {
+      kind,
+      url: parsed.toString(),
+      keywords:
+        kind === 'search' || kind === 'content' ? (parsed.searchParams.get('keywords') ?? '') : ''
+    };
+  } catch {
+    return { ...fallback, kind };
+  }
+}
+
 export function OutreachLeads({ setToast }: { setToast: (message: string) => void }) {
   const [activeSeatKey] = useActiveSeatKey();
   const [sources, setSources] = useState<LinkedInLeadSource[]>([]);
@@ -199,12 +232,13 @@ export function OutreachLeads({ setToast }: { setToast: (message: string) => voi
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const [kind, setKind] = useState<LeadSourceKind>('search');
-  const [url, setUrl] = useState('');
+  const [prefill] = useState(readLeadSourcePrefill);
+  const [kind, setKind] = useState<LeadSourceKind>(prefill.kind);
+  const [url, setUrl] = useState(prefill.url);
   /** What to search for. Writes the URL below until the operator edits it themselves. */
-  const [keywords, setKeywords] = useState('');
+  const [keywords, setKeywords] = useState(prefill.keywords);
   /** True once the URL was hand-edited, after which keywords stop touching it. */
-  const [urlDirty, setUrlDirty] = useState(false);
+  const [urlDirty, setUrlDirty] = useState(Boolean(prefill.url));
   const [urlEditing, setUrlEditing] = useState(false);
   const [busy, setBusy] = useState(false);
 

@@ -1,4 +1,4 @@
-export type RecommendationType = 'stale_proposal' | 'qualified_demand';
+export type RecommendationType = 'stale_proposal' | 'qualified_demand' | 'person_discovery';
 
 export type RecommendationStatus =
   'detected' | 'ready' | 'approved' | 'completed' | 'dismissed' | 'snoozed';
@@ -26,8 +26,8 @@ export interface Recommendation {
   type: RecommendationType;
   title: string;
   summary: string;
-  personId: string;
-  personName: string;
+  personId: string | null;
+  personName: string | null;
   confidence: number;
   urgency: number;
   priorityScore: number;

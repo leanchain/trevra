@@ -14,8 +14,8 @@ interface CandidateEvidence {
 
 interface Candidate {
   sourceKey: string;
-  type: 'stale_proposal' | 'qualified_demand';
-  personId: string;
+  type: 'stale_proposal' | 'qualified_demand' | 'person_discovery';
+  personId: string | null;
   accountId: string | null;
   title: string;
   summary: string;
@@ -204,7 +204,7 @@ async function detectQualifiedDemand(db: Db, workspaceId: string, now: Date): Pr
     const urgency = 1 + candidate.dimensions.recency * 0.4;
     return {
       sourceKey: candidate.sourceKey,
-      type: 'qualified_demand',
+      type: candidate.recommendedAction === 'find_person' ? 'person_discovery' : 'qualified_demand',
       personId: candidate.personId,
       accountId: candidate.accountId,
       title: candidate.title,
@@ -215,8 +215,10 @@ async function detectQualifiedDemand(db: Db, workspaceId: string, now: Date): Pr
       priorityScore: Math.round(confidence * urgency * 1000),
       recommendedAction:
         candidate.recommendedAction === 'prepare_outreach'
-          ? 'Prepare a contextual reply or outreach using the first-party request and current account evidence.'
-          : candidate.recommendedAction,
+          ? 'Prepare a contextual reply or outreach using the current person and account evidence.'
+          : candidate.recommendedAction === 'find_person'
+            ? 'Review and run the prepared person discovery; do not enroll anyone into outreach automatically.'
+            : candidate.recommendedAction,
       evidence: candidate.evidence.map((item) => ({
         sourceType: item.sourceType,
         sourceId: item.sourceId,

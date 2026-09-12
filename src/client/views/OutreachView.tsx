@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { getLinkedInManagedCampaigns, getLinkedInManagerWorkflows } from '../api';
 import { errorMessage } from '../LinkedInSafety';
@@ -168,6 +168,20 @@ export function OutreachView({
     leads: false,
     accounts: false
   });
+  const leadsDetailsRef = useRef<HTMLDetailsElement>(null);
+
+  useEffect(() => {
+    if (sub !== '') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('focus') !== 'leads') return;
+    setOpenFolds((currentState) => ({ ...currentState, leads: true }));
+    if (leadsDetailsRef.current) leadsDetailsRef.current.open = true;
+    // `focus` is a one-shot presentation hint. Keep kind/url so the child can
+    // consume the prepared discovery, but do not trap the details element open.
+    params.delete('focus');
+    const query = params.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}${query ? `?${query}` : ''}`);
+  }, [sub]);
 
   const current = activeSub(sub);
   const moreTabs = OUTREACH_TABS.filter((tab) => tab.mobile === 'more');
@@ -264,6 +278,7 @@ export function OutreachView({
         <>
           <OutreachManagerRead setToast={setToast} onNavigate={onNavigate} />
           <details
+            ref={leadsDetailsRef}
             className="mgr-inputs"
             id="leads"
             onToggle={(event) => {
