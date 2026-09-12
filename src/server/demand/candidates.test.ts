@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createAccount } from '../accounts/store.js';
 import { id, openDatabase, type Db } from '../db.js';
+import { runRecommendationEngine } from '../recommendation-engine.js';
 import { buildDemandCandidates } from './candidates.js';
 
 const NOW = new Date('2026-09-12T08:00:00.000Z');
@@ -210,9 +211,152 @@ describe('buildDemandCandidates', () => {
     );
   });
 
+  it('uses a recent verified inbound conversation as relationship evidence and replies instead of cold outreach', async () => {
+    const workspaceId = await seedWorkspace('Relationship-aware demand');
+    const seeded = await seedInboundAtHotAccount(workspaceId);
+    const conversationId = id('conv');
+    await db
+      .prepare(
+        `INSERT INTO conversations
+         (id,workspace_id,person_id,last_activity_at,created_at,updated_at)
+         VALUES (?,?,?,?,?,?)`
+      )
+      .run(
+        conversationId,
+        workspaceId,
+        seeded.personId,
+        '2026-09-12T07:45:00.000Z',
+        '2026-09-12T07:45:00.000Z',
+        '2026-09-12T07:45:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO conversation_messages (
+          id,workspace_id,conversation_id,channel,provider,direction,subject,body,external_ref,
+          source_type,source_id,outcome_kind,verification_status,occurred_at,created_at
+        ) VALUES (?,?,?,'email','gmail','inbound','Re: Demo','Yes, send me times for next week.',?,
+          'campaign_email_reply',?,'reply','verified',?,?)`
+      )
+      .run(
+        'cmsg_relationship_reply',
+        workspaceId,
+        conversationId,
+        'gmail:relationship-reply',
+        'relationship-reply',
+        '2026-09-12T07:45:00.000Z',
+        '2026-09-12T07:45:00.000Z'
+      );
+
+    const candidates = await buildDemandCandidates(db, workspaceId, NOW);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      personId: seeded.personId,
+      accountId: seeded.accountId,
+      qualification: 'act_now',
+      recommendedAction: 'reply',
+      title: 'Reply to Maya Patel at Acme'
+    });
+    expect(candidates[0]!.dimensions.relationship).toBeGreaterThan(0.99);
+    expect(candidates[0]!.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: 'conversation_message',
+          sourceId: 'cmsg_relationship_reply'
+        })
+      ])
+    );
+  });
+
+  it('treats an explicit demo request as actionable even before an account score exists', async () => {
+    const workspaceId = await seedWorkspace('Direct buying intent');
+    const seeded = await seedInboundAtHotAccount(workspaceId, { kind: 'demo_request' });
+    await db
+      .prepare('DELETE FROM account_scores WHERE workspace_id=? AND account_id=?')
+      .run(workspaceId, seeded.accountId);
+    await db
+      .prepare('DELETE FROM account_signals WHERE workspace_id=? AND account_id=?')
+      .run(workspaceId, seeded.accountId);
+
+    const candidates = await buildDemandCandidates(db, workspaceId, NOW);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      personId: seeded.personId,
+      accountId: seeded.accountId,
+      qualification: 'act_now',
+      recommendedAction: 'prepare_outreach',
+      dimensions: { accountIntent: 0, firstPartyIntent: 1, relationship: 0 }
+    });
+    expect(candidates[0]!.evidence.map((item) => item.sourceType)).toEqual(['inbound_submission']);
+    expect(candidates[0]!.rationale).toContain(
+      'explicit demo/pilot/pricing intent does not require an inferred account score'
+    );
+
+    await runRecommendationEngine(db, workspaceId, NOW, { includeStaleProposals: false });
+    const attributed = await db
+      .prepare(
+        `SELECT o.stage,o.person_id,o.account_id,o.origin_recommendation_id
+         FROM opportunities o WHERE o.workspace_id=?`
+      )
+      .get<{
+        stage: string;
+        person_id: string | null;
+        account_id: string | null;
+        origin_recommendation_id: string | null;
+      }>(workspaceId);
+    expect(attributed).toMatchObject({
+      stage: 'qualified',
+      person_id: seeded.personId,
+      account_id: seeded.accountId
+    });
+    expect(attributed?.origin_recommendation_id).toMatch(/^rec_/);
+  });
+
+  it('does not let a later weak event erase an earlier explicit buying request', async () => {
+    const workspaceId = await seedWorkspace('Strong inbound survives later weak event');
+    const seeded = await seedInboundAtHotAccount(workspaceId, { kind: 'demo_request' });
+    const source = await db
+      .prepare('SELECT capture_source_id FROM inbound_submissions WHERE id=?')
+      .get<{ capture_source_id: string }>(seeded.submissionId);
+    expect(source?.capture_source_id).toBeTruthy();
+    await db
+      .prepare(
+        `INSERT INTO inbound_submissions
+         (id,workspace_id,capture_source_id,contact_id,account_id,idempotency_key,kind,
+          person_name,person_email,company_domain,company_name,message,payload_hash,received_at,created_at)
+         SELECT ?,workspace_id,capture_source_id,contact_id,account_id,?,'scan_completed',
+                person_name,person_email,company_domain,company_name,'Later scan',?, ?, ?
+         FROM inbound_submissions WHERE id=?`
+      )
+      .run(
+        'sub_later_weak',
+        'later-weak-idempotency',
+        'hash-later-weak',
+        '2026-09-12T07:50:00.000Z',
+        '2026-09-12T07:50:00.000Z',
+        seeded.submissionId
+      );
+    await db
+      .prepare('DELETE FROM account_scores WHERE workspace_id=? AND account_id=?')
+      .run(workspaceId, seeded.accountId);
+    await db
+      .prepare('DELETE FROM account_signals WHERE workspace_id=? AND account_id=?')
+      .run(workspaceId, seeded.accountId);
+
+    const candidates = await buildDemandCandidates(db, workspaceId, NOW);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]?.dimensions.firstPartyIntent).toBe(1);
+    expect(candidates[0]?.evidence[0]).toMatchObject({
+      sourceType: 'inbound_submission',
+      sourceId: seeded.submissionId
+    });
+  });
+
   it('does not promote the same inbound event when account intent is only warm', async () => {
     const workspaceId = await seedWorkspace('Warm demand graph');
-    await seedInboundAtHotAccount(workspaceId, { tier: 'warm', score: 55 });
+    await seedInboundAtHotAccount(workspaceId, { tier: 'warm', score: 55, kind: 'scan_completed' });
 
     expect(await buildDemandCandidates(db, workspaceId, NOW)).toEqual([]);
   });
@@ -329,7 +473,7 @@ describe('buildDemandCandidates', () => {
         accountIntent: 0.93,
         personIntent: 0,
         firstPartyIntent: 0,
-        relationship: 0.6
+        relationship: 0
       }
     });
     expect(candidates[0]?.evidence[0]).toMatchObject({

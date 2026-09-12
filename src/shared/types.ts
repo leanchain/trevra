@@ -274,6 +274,7 @@ export interface OpportunityRecord {
   personEmail: string | null;
   accountId: string | null;
   accountName: string | null;
+  originRecommendationId: string | null;
   title: string;
   stage: OpportunityStage;
   ownerType: OpportunityOwnerType | null;

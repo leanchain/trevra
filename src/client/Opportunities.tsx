@@ -267,6 +267,9 @@ export function Opportunities({ setToast }: { setToast: (message: string) => voi
                           .filter(Boolean)
                           .join(' · ') || 'GTM opportunity'}
                       </span>
+                      {opportunity.originRecommendationId && (
+                        <small>Created from qualified first-party demand</small>
+                      )}
                     </div>
                     <label>
                       Stage

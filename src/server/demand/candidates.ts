@@ -1,4 +1,5 @@
 import type { Db } from '../db.js';
+import { isHighIntentInboundKind } from './opportunities.js';
 
 export type DemandQualification = 'act_now' | 'watch' | 'ignore';
 export type DemandRecommendedAction =
@@ -11,7 +12,9 @@ export interface DemandEvidence {
     | 'account_score'
     | 'account_signal'
     | 'campaign_brief'
-    | 'discovery_plan';
+    | 'discovery_plan'
+    | 'conversation_message'
+    | 'opportunity';
   sourceId: string;
   label: string;
   category: 'request' | 'history' | 'supporting';
@@ -29,7 +32,7 @@ export interface DemandDimensions {
   personIntent: number;
   /** Explicit first-party action strength, normalized to 0..1. */
   firstPartyIntent: number;
-  /** Existing verified commercial relationship strength. V1 leaves this at zero. */
+  /** Observed commercial relationship strength from real conversation/pipeline state. */
   relationship: number;
   /** Freshness of the newest first-party event, normalized to 0..1. */
   recency: number;
@@ -64,6 +67,8 @@ function firstPartyStrength(kind: string): number {
     case 'demo_request':
     case 'pilot_request':
     case 'enterprise_pilot_request':
+    case 'pricing_request':
+    case 'pricing_inquiry':
     case 'pricing_enquiry':
       return 1;
     case 'scan_completed':
@@ -120,6 +125,115 @@ function accountSignalEvidence(signals: Record<string, unknown>[]): DemandEviden
     externalUrl: String(signal.evidence_url),
     observedAt: iso(signal.observed_at)
   }));
+}
+
+interface RelationshipState {
+  score: number;
+  recentInbound: boolean;
+  evidence: DemandEvidence[];
+}
+
+function decayedRelationship(base: number, observedAt: string, now: Date): number {
+  const parsed = Date.parse(observedAt);
+  if (!Number.isFinite(parsed)) return 0;
+  const ageDays = Math.max(0, (now.getTime() - parsed) / DAY_MS);
+  if (ageDays > 90) return 0;
+  return Number((base * (1 - 0.5 * (ageDays / 90))).toFixed(3));
+}
+
+/**
+ * Relationship means somebody has actually interacted or entered pipeline.
+ * Account-contact confidence proves identity/association, not commercial
+ * relationship, so it deliberately does not participate here.
+ */
+async function loadRelationshipState(
+  db: Db,
+  workspaceId: string,
+  personId: string,
+  accountId: string,
+  now: Date
+): Promise<RelationshipState> {
+  const evidence: DemandEvidence[] = [];
+  let score = 0;
+  let recentInbound = false;
+
+  const inbound = await db
+    .prepare(
+      `
+      SELECT cm.id,cm.channel,cm.source_type,cm.outcome_kind,cm.verification_status,cm.body,cm.occurred_at
+      FROM conversations c
+      JOIN conversation_messages cm
+        ON cm.workspace_id=c.workspace_id AND cm.conversation_id=c.id
+      WHERE c.workspace_id=? AND c.person_id=? AND cm.direction='inbound'
+      ORDER BY cm.occurred_at DESC,cm.created_at DESC,cm.id DESC
+      LIMIT 1
+    `
+    )
+    .get<Record<string, unknown>>(workspaceId, personId);
+  if (inbound) {
+    const observedAt = iso(inbound.occurred_at);
+    const sourceType = String(inbound.source_type ?? '');
+    const outcomeKind = String(inbound.outcome_kind ?? '');
+    const verified = String(inbound.verification_status ?? '') === 'verified';
+    const channel = String(inbound.channel ?? 'conversation');
+    const base =
+      verified && outcomeKind === 'reply'
+        ? 1
+        : sourceType === 'linkedin_message'
+          ? 0.9
+          : verified
+            ? 0.85
+            : 0.7;
+    const inboundScore = decayedRelationship(base, observedAt, now);
+    if (inboundScore > 0) {
+      score = Math.max(score, inboundScore);
+      recentInbound = true;
+      evidence.push({
+        sourceType: 'conversation_message',
+        sourceId: String(inbound.id),
+        label: `Recent inbound ${channel} message`,
+        category: 'history',
+        excerpt:
+          String(inbound.body ?? '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 320) || `A recent inbound ${channel} message is stored for this person.`,
+        observedAt
+      });
+    }
+  }
+
+  const opportunity = await db
+    .prepare(
+      `
+      SELECT id,stage,title,updated_at
+      FROM opportunities
+      WHERE workspace_id=?
+        AND stage NOT IN ('won','lost')
+        AND (person_id=? OR account_id=?)
+      ORDER BY CASE stage
+        WHEN 'meeting' THEN 1 WHEN 'proposal' THEN 2 WHEN 'qualified' THEN 3 ELSE 4 END,
+        updated_at DESC,id DESC
+      LIMIT 1
+    `
+    )
+    .get<Record<string, unknown>>(workspaceId, personId, accountId);
+  if (opportunity) {
+    const stage = String(opportunity.stage);
+    const stageScore =
+      stage === 'meeting' ? 1 : stage === 'proposal' ? 0.95 : stage === 'qualified' ? 0.85 : 0.6;
+    score = Math.max(score, stageScore);
+    evidence.push({
+      sourceType: 'opportunity',
+      sourceId: String(opportunity.id),
+      label: `Active ${stage} opportunity`,
+      category: 'history',
+      excerpt: String(opportunity.title ?? `Active ${stage} opportunity`),
+      observedAt: iso(opportunity.updated_at)
+    });
+  }
+
+  return { score: Number(score.toFixed(3)), recentInbound, evidence };
 }
 
 interface BuyerPersona {
@@ -299,6 +413,7 @@ export async function buildDemandCandidates(
         a.name AS account_name,
         a.domain,
         sc.score,
+        sc.tier AS account_tier,
         sc.distinct_kinds,
         sc.newest_signal_at
       FROM inbound_submissions s
@@ -306,13 +421,22 @@ export async function buildDemandCandidates(
         ON p.workspace_id=s.workspace_id AND p.id=s.contact_id
       JOIN accounts a
         ON a.workspace_id=s.workspace_id AND a.id=s.account_id
-      JOIN account_scores sc
+      LEFT JOIN account_scores sc
         ON sc.workspace_id=s.workspace_id AND sc.account_id=s.account_id
       WHERE s.workspace_id=?
         AND s.account_id IS NOT NULL
         AND s.received_at>=?::timestamptz
-        AND sc.tier='hot'
-      ORDER BY s.contact_id,s.account_id,s.received_at DESC,s.id DESC
+      ORDER BY s.contact_id,s.account_id,
+        CASE LOWER(BTRIM(s.kind))
+          WHEN 'demo_request' THEN 0
+          WHEN 'pilot_request' THEN 0
+          WHEN 'enterprise_pilot_request' THEN 0
+          WHEN 'pricing_request' THEN 0
+          WHEN 'pricing_inquiry' THEN 0
+          WHEN 'pricing_enquiry' THEN 0
+          ELSE 1
+        END,
+        s.received_at DESC,s.id DESC
     `
     )
     .all<Record<string, unknown>>(workspaceId, recentSince);
@@ -326,26 +450,38 @@ export async function buildDemandCandidates(
     const submissionId = String(row.submission_id);
     const submissionKind = String(row.submission_kind ?? 'inbound');
     const receivedAt = iso(row.received_at);
-    const score = Math.max(0, Math.min(100, Number(row.score ?? 0)));
+    const scoreKnown = row.score !== null && row.score !== undefined;
+    const score = scoreKnown ? Math.max(0, Math.min(100, Number(row.score))) : 0;
+    const accountHot = String(row.account_tier ?? '') === 'hot';
+    const highIntentInbound = isHighIntentInboundKind(submissionKind);
+    if (!highIntentInbound && !accountHot) continue;
     const distinctKinds = Math.max(0, Number(row.distinct_kinds ?? 0));
     const personName = String(row.person_name ?? row.person_email ?? 'Known person');
     const accountName = String(row.account_name ?? row.domain ?? 'Account');
 
     const signals = await loadAccountSignals(db, workspaceId, accountId, signalSince);
 
-    // A hot score is required above, and a hot score itself already requires
-    // independent signal kinds. Still refuse a proof pack with no source rows:
-    // a score without inspectable evidence is not enough to tell a founder to act.
-    if (signals.length === 0) continue;
+    // Weak first-party activity still needs inspectable, corroborating account
+    // evidence. An explicit demo/pilot/pricing request is the exception: the
+    // buyer has already raised their hand, so no synthetic account score is
+    // required to make the commercial decision actionable.
+    if (!highIntentInbound && signals.length === 0) continue;
 
     const firstPartyIntent = firstPartyStrength(submissionKind);
     const recency = recencyFor(receivedAt, now);
+    const relationshipState = await loadRelationshipState(
+      db,
+      workspaceId,
+      personId,
+      accountId,
+      now
+    );
     const dimensions: DemandDimensions = {
       fit: null,
       accountIntent: Number((score / 100).toFixed(3)),
       personIntent: 0,
       firstPartyIntent,
-      relationship: 0,
+      relationship: relationshipState.score,
       recency
     };
 
@@ -361,15 +497,20 @@ export async function buildDemandCandidates(
         externalUrl: row.page_url ? String(row.page_url) : null,
         observedAt: receivedAt
       },
-      {
-        sourceType: 'account_score',
-        sourceId: accountId,
-        label: 'Composite account intent',
-        category: 'supporting',
-        excerpt: `${accountName} is hot at ${score}/100 across ${distinctKinds} independent signal kinds.`,
-        observedAt: iso(row.newest_signal_at ?? receivedAt)
-      },
-      ...accountSignalEvidence(signals)
+      ...(scoreKnown
+        ? [
+            {
+              sourceType: 'account_score' as const,
+              sourceId: accountId,
+              label: 'Composite account intent',
+              category: 'supporting' as const,
+              excerpt: `${accountName} is ${accountHot ? 'hot' : String(row.account_tier ?? 'scored')} at ${score}/100 across ${distinctKinds} independent signal kinds.`,
+              observedAt: iso(row.newest_signal_at ?? receivedAt)
+            }
+          ]
+        : []),
+      ...accountSignalEvidence(signals),
+      ...relationshipState.evidence
     ];
 
     const firstPartyLabel = submissionKind.replaceAll('_', ' ');
@@ -380,6 +521,9 @@ export async function buildDemandCandidates(
       .join(' · ');
 
     const sourceKey = `demand:${personId}:${accountId}`;
+    const recommendedAction: DemandRecommendedAction = relationshipState.recentInbound
+      ? 'reply'
+      : 'prepare_outreach';
     candidates.push({
       sourceKey,
       personId,
@@ -388,13 +532,28 @@ export async function buildDemandCandidates(
       accountName,
       dimensions,
       qualification: 'act_now',
-      recommendedAction: 'prepare_outreach',
-      title: `Talk to ${personName} at ${accountName}`,
-      summary: `${personName}: ${firstPartyLabel}. ${accountName}: ${score}/100 account intent${signalSummary ? ` · ${signalSummary}` : ''}`,
+      recommendedAction,
+      title: relationshipState.recentInbound
+        ? `Reply to ${personName} at ${accountName}`
+        : `Talk to ${personName} at ${accountName}`,
+      summary: `${personName}: ${firstPartyLabel}.${scoreKnown ? ` ${accountName}: ${score}/100 account intent` : ` ${accountName}: explicit buying request`}${signalSummary ? ` · ${signalSummary}` : ''}${relationshipState.recentInbound ? ' · recent inbound conversation' : ''}`,
       rationale: [
         `${submissionKind.replaceAll('_', ' ')} is explicit first-party intent`,
-        `account scorer is hot at ${score}/100 across ${distinctKinds} signal kinds`,
-        `${signals.length} source-backed account signal${signals.length === 1 ? '' : 's'} are available for context`
+        ...(scoreKnown
+          ? [
+              `account scorer is ${accountHot ? 'hot' : String(row.account_tier ?? 'scored')} at ${score}/100 across ${distinctKinds} signal kinds`
+            ]
+          : highIntentInbound
+            ? ['explicit demo/pilot/pricing intent does not require an inferred account score']
+            : []),
+        ...(relationshipState.recentInbound
+          ? ['a recent inbound conversation means the next action is a reply, not cold outreach']
+          : []),
+        ...(signals.length > 0
+          ? [
+              `${signals.length} source-backed account signal${signals.length === 1 ? '' : 's'} are available for context`
+            ]
+          : [])
       ],
       evidence
     });
@@ -470,7 +629,13 @@ export async function buildDemandCandidates(
     const confidence = String(row.association_confidence ?? 'explicit');
     const associationRole = String(row.association_role ?? row.person_role ?? '').trim();
     const observedAt = iso(row.newest_signal_at ?? row.computed_at);
-    const relationship = confidence === 'verified' ? 0.7 : 0.6;
+    const relationshipState = await loadRelationshipState(
+      db,
+      workspaceId,
+      personId,
+      accountId,
+      now
+    );
     const signalSummary = signals
       .slice(0, 2)
       .map((signal) => String(signal.detail).replace(/\s+/g, ' ').trim())
@@ -506,7 +671,8 @@ export async function buildDemandCandidates(
         excerpt: `${accountName} is hot at ${score}/100 across ${distinctKinds} independent signal kinds.`,
         observedAt
       },
-      ...accountSignalEvidence(signals)
+      ...accountSignalEvidence(signals),
+      ...relationshipState.evidence
     ];
 
     const selectionSentence =
@@ -514,6 +680,9 @@ export async function buildDemandCandidates(
         ? `${personName}${associationRole ? ` (${associationRole})` : ''} is the clear best role match for the saved buyer role “${buyerPersona.role}”.`
         : `${personName}${associationRole ? ` (${associationRole})` : ''} is the one explicit/verified contact already on the account.`;
 
+    const recommendedAction: DemandRecommendedAction = relationshipState.recentInbound
+      ? 'reply'
+      : 'prepare_outreach';
     candidates.push({
       sourceKey,
       personId,
@@ -525,18 +694,23 @@ export async function buildDemandCandidates(
         accountIntent: Number((score / 100).toFixed(3)),
         personIntent: 0,
         firstPartyIntent: 0,
-        relationship,
+        relationship: relationshipState.score,
         recency: recencyFor(observedAt, now)
       },
       qualification: 'act_now',
-      recommendedAction: 'prepare_outreach',
-      title: `Reach out to ${personName} at ${accountName}`,
-      summary: `${accountName}: ${score}/100 account intent${signalSummary ? ` · ${signalSummary}` : ''}. ${selectionSentence}`,
+      recommendedAction,
+      title: relationshipState.recentInbound
+        ? `Reply to ${personName} at ${accountName}`
+        : `Reach out to ${personName} at ${accountName}`,
+      summary: `${accountName}: ${score}/100 account intent${signalSummary ? ` · ${signalSummary}` : ''}. ${selectionSentence}${relationshipState.recentInbound ? ' A recent inbound conversation is already active.' : ''}`,
       rationale: [
         `account scorer is hot at ${score}/100 across ${distinctKinds} signal kinds`,
         selection.usedPersona && buyerPersona
           ? `${personName} is the clear best match for saved buyer role ${buyerPersona.role}`
           : `exactly one ${confidence} account contact is available`,
+        ...(relationshipState.recentInbound
+          ? ['a recent inbound conversation means the next action is a reply, not cold outreach']
+          : []),
         `${signals.length} source-backed account signal${signals.length === 1 ? '' : 's'} are available for context`
       ],
       evidence

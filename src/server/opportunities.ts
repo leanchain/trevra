@@ -19,6 +19,7 @@ export interface OpportunityRecord {
   personEmail: string | null;
   accountId: string | null;
   accountName: string | null;
+  originRecommendationId: string | null;
   title: string;
   stage: OpportunityStage;
   ownerType: OpportunityOwnerType | null;
@@ -44,7 +45,7 @@ export class OpportunityError extends Error {
 
 const SELECT = `
   o.id,o.workspace_id,o.person_id,p.name AS person_name,p.email AS person_email,
-  o.account_id,a.name AS account_name,o.title,o.stage,o.owner_type,o.owner_id,
+  o.account_id,a.name AS account_name,o.origin_recommendation_id,o.title,o.stage,o.owner_type,o.owner_id,
   CASE
     WHEN o.owner_type='user' THEN u.name
     WHEN o.owner_type='agent' THEN ag.name
@@ -70,6 +71,9 @@ function serialize(row: Record<string, unknown>): OpportunityRecord {
     personEmail: row.person_email ? String(row.person_email) : null,
     accountId: row.account_id ? String(row.account_id) : null,
     accountName: row.account_name ? String(row.account_name) : null,
+    originRecommendationId: row.origin_recommendation_id
+      ? String(row.origin_recommendation_id)
+      : null,
     title: String(row.title),
     stage: String(row.stage) as OpportunityStage,
     ownerType: row.owner_type ? (String(row.owner_type) as OpportunityOwnerType) : null,

@@ -1,6 +1,7 @@
 import type { Db } from './db.js';
 import { id } from './db.js';
 import { buildDemandCandidates } from './demand/candidates.js';
+import { ensureQualifiedOpportunityFromRecommendation } from './demand/opportunities.js';
 
 interface CandidateEvidence {
   sourceType: string;
@@ -134,6 +135,9 @@ export async function runRecommendationEngine(
         candidate.evidence,
         timestamp
       );
+      if (candidate.type === 'qualified_demand') {
+        await ensureQualifiedOpportunityFromRecommendation(tx, workspaceId, recommendationId, now);
+      }
     }
   });
   return candidates.length;
@@ -199,7 +203,10 @@ async function detectQualifiedDemand(db: Db, workspaceId: string, now: Date): Pr
   return demand.map((candidate) => {
     const confidence = Math.min(
       0.98,
-      0.75 + candidate.dimensions.firstPartyIntent * 0.1 + candidate.dimensions.accountIntent * 0.1
+      0.75 +
+        candidate.dimensions.firstPartyIntent * 0.1 +
+        candidate.dimensions.accountIntent * 0.1 +
+        candidate.dimensions.relationship * 0.05
     );
     const urgency = 1 + candidate.dimensions.recency * 0.4;
     return {

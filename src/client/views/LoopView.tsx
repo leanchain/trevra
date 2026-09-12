@@ -647,7 +647,9 @@ function todayActionLabel(
   item: Awaited<ReturnType<typeof getToday>>['needsAttention'][number]
 ): string {
   if (item.kind === 'qualification_decision') {
-    return item.metadata.demandOrigin === 'known_contact' ? 'Prepare outreach' : 'Review demand';
+    if (item.metadata.recommendedAction === 'reply') return 'Prepare reply';
+    if (item.metadata.demandOrigin === 'person_discovery') return 'Find person';
+    return item.metadata.demandOrigin === 'known_contact' ? 'Prepare outreach' : 'Prepare response';
   }
   if (item.kind === 'verified_reply') return 'Reply';
   if (item.kind === 'inbound_submission') return 'Review inbound';

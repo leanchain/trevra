@@ -237,12 +237,12 @@ describe('qualified demand recommendations', () => {
         personId,
         account.id,
         'qualified-demand-1',
-        'scan_completed',
+        'demo_request',
         'Maya Patel',
         'maya@acme.example',
         'acme-demand.example',
         'Acme Demand',
-        'Completed the diagnostic and requested the detailed report.',
+        'Requested a product demo for the growth team.',
         'https://beseam.example/scan/acme',
         'hash-qualified-demand',
         '2026-09-12T07:30:00.000Z',
@@ -311,6 +311,26 @@ describe('qualified demand recommendations', () => {
     ]);
     expect(recommendations[0]?.evidence.every((item) => Boolean(item.observedAt))).toBe(true);
 
+    const opportunity = await db
+      .prepare(
+        `SELECT person_id,account_id,stage,owner_type,origin_recommendation_id
+         FROM opportunities WHERE workspace_id=?`
+      )
+      .get<{
+        person_id: string | null;
+        account_id: string | null;
+        stage: string;
+        owner_type: string | null;
+        origin_recommendation_id: string | null;
+      }>(workspaceId);
+    expect(opportunity).toEqual({
+      person_id: personId,
+      account_id: account.id,
+      stage: 'qualified',
+      owner_type: 'system',
+      origin_recommendation_id: recommendations[0]!.id
+    });
+
     await runRecommendationEngine(db, workspaceId, new Date('2026-09-12T08:05:00.000Z'));
     const persisted = await db
       .prepare(
@@ -318,6 +338,12 @@ describe('qualified demand recommendations', () => {
       )
       .get<{ count: number }>(workspaceId);
     expect(persisted?.count).toBe(1);
+    const opportunityCount = await db
+      .prepare(
+        'SELECT COUNT(*)::int AS count FROM opportunities WHERE workspace_id=? AND origin_recommendation_id=?'
+      )
+      .get<{ count: number }>(workspaceId, recommendations[0]!.id);
+    expect(opportunityCount?.count).toBe(1);
   });
 
   it('persists an account-only person-discovery recommendation without inventing a Person', async () => {

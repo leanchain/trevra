@@ -262,9 +262,11 @@ export async function getToday(
       href:
         recommendationType === 'person_discovery'
           ? discoveryHref
-          : Boolean(row.has_inbound)
-            ? '/outreach/inbound'
-            : '/outreach',
+          : String(row.recommended_action ?? '') === 'reply'
+            ? '/outreach/inbox'
+            : Boolean(row.has_inbound)
+              ? '/outreach/inbound'
+              : '/outreach',
       observedAt: iso(row.updated_at, now),
       reference: { type: 'recommendation', id: String(row.id) },
       metadata: {
