@@ -228,4 +228,287 @@ describe('buildDemandCandidates', () => {
     expect(candidates[0]?.personId).toBe(firstSeed.personId);
     expect(candidates[0]?.accountId).toBe(firstSeed.accountId);
   });
+
+  it('surfaces a hot account when exactly one explicit contact is already known', async () => {
+    const workspaceId = await seedWorkspace('Known contact demand');
+    const personId = id('con');
+    await db
+      .prepare(
+        `INSERT INTO contacts
+         (id,workspace_id,name,email,email_normalized,role,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        personId,
+        workspaceId,
+        'Sarah Chen',
+        'sarah@known.example',
+        'sarah@known.example',
+        'VP Engineering',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    const account = await createAccount(
+      db,
+      workspaceId,
+      { domain: 'known-contact.example', name: 'Known Contact Co', source: 'manual' },
+      new Date('2026-09-10T08:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO account_contacts
+         (id,workspace_id,account_id,contact_id,role,source,confidence,source_detail,created_at,updated_at)
+         VALUES (?,?,?,?,?,'manual','explicit','Founder supplied contact',?,?)`
+      )
+      .run(
+        'ac_known_contact',
+        workspaceId,
+        account.id,
+        personId,
+        'VP Engineering',
+        '2026-09-10T08:00:00.000Z',
+        '2026-09-10T08:00:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        workspaceId,
+        account.id,
+        93,
+        'hot',
+        2,
+        '2026-09-12T07:00:00.000Z',
+        '{}',
+        '2026-09-12T07:01:00.000Z'
+      );
+    for (const [index, kind, detail, url] of [
+      [
+        0,
+        'hiring-up',
+        'Added platform engineering roles.',
+        'https://known-contact.example/careers'
+      ],
+      [1, 'tech-added', 'Added a new infrastructure tool.', 'https://known-contact.example/']
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          id('sig'),
+          workspaceId,
+          account.id,
+          kind,
+          detail,
+          url,
+          `2026-09-12T0${6 + index}:00:00.000Z`,
+          `known-contact-${index}`,
+          `2026-09-12T0${6 + index}:00:00.000Z`
+        );
+    }
+
+    const candidates = await buildDemandCandidates(db, workspaceId, NOW);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      sourceKey: `demand:${personId}:${account.id}`,
+      personId,
+      accountId: account.id,
+      personName: 'Sarah Chen',
+      accountName: 'Known Contact Co',
+      qualification: 'act_now',
+      recommendedAction: 'prepare_outreach',
+      dimensions: {
+        fit: null,
+        accountIntent: 0.93,
+        personIntent: 0,
+        firstPartyIntent: 0,
+        relationship: 0.6
+      }
+    });
+    expect(candidates[0]?.evidence[0]).toMatchObject({
+      sourceType: 'account_contact',
+      sourceId: 'ac_known_contact'
+    });
+  });
+
+  it('does not choose among multiple known contacts without a persona model', async () => {
+    const workspaceId = await seedWorkspace('Ambiguous contacts');
+    const account = await createAccount(
+      db,
+      workspaceId,
+      { domain: 'ambiguous-contacts.example', name: 'Ambiguous Co', source: 'manual' },
+      new Date('2026-09-10T08:00:00.000Z')
+    );
+    for (const [index, name, role] of [
+      [0, 'Sarah Chen', 'VP Engineering'],
+      [1, 'Alex Meyer', 'Head of Platform']
+    ] as const) {
+      const personId = `con_ambiguous_${index}`;
+      await db
+        .prepare(
+          `INSERT INTO contacts
+           (id,workspace_id,name,email,email_normalized,role,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          personId,
+          workspaceId,
+          name,
+          `${personId}@example.test`,
+          `${personId}@example.test`,
+          role,
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+      await db
+        .prepare(
+          `INSERT INTO account_contacts
+           (id,workspace_id,account_id,contact_id,role,source,confidence,created_at,updated_at)
+           VALUES (?,?,?,?,?,'manual','explicit',?,?)`
+        )
+        .run(
+          `ac_ambiguous_${index}`,
+          workspaceId,
+          account.id,
+          personId,
+          role,
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+    }
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        workspaceId,
+        account.id,
+        95,
+        'hot',
+        2,
+        '2026-09-12T07:00:00.000Z',
+        '{}',
+        '2026-09-12T07:01:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_signals
+         (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        'sig_ambiguous',
+        workspaceId,
+        account.id,
+        'hiring-up',
+        'Added platform engineering roles.',
+        'https://ambiguous-contacts.example/careers',
+        '2026-09-12T07:00:00.000Z',
+        'ambiguous-signal',
+        '2026-09-12T07:00:00.000Z'
+      );
+
+    expect(await buildDemandCandidates(db, workspaceId, NOW)).toEqual([]);
+  });
+
+  it('does not create fresh outreach demand when the account already has an open opportunity', async () => {
+    const workspaceId = await seedWorkspace('Open opportunity');
+    const personId = id('con');
+    await db
+      .prepare(
+        `INSERT INTO contacts
+         (id,workspace_id,name,email,email_normalized,role,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        personId,
+        workspaceId,
+        'Sarah Chen',
+        'sarah@open.example',
+        'sarah@open.example',
+        'VP Engineering',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    const account = await createAccount(
+      db,
+      workspaceId,
+      { domain: 'open-opportunity.example', name: 'Open Opportunity Co', source: 'manual' },
+      new Date('2026-09-10T08:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO account_contacts
+         (id,workspace_id,account_id,contact_id,role,source,confidence,created_at,updated_at)
+         VALUES (?,?,?,?,?,'manual','explicit',?,?)`
+      )
+      .run(
+        'ac_open_opp',
+        workspaceId,
+        account.id,
+        personId,
+        'VP Engineering',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `INSERT INTO opportunities
+         (id,workspace_id,person_id,account_id,title,stage,created_at,updated_at)
+         VALUES (?,?,?,?,?,'qualified',?,?)`
+      )
+      .run(
+        'opp_open_demand',
+        workspaceId,
+        personId,
+        account.id,
+        'Existing opportunity',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        workspaceId,
+        account.id,
+        94,
+        'hot',
+        2,
+        '2026-09-12T07:00:00.000Z',
+        '{}',
+        '2026-09-12T07:01:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_signals
+         (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        'sig_open_opp',
+        workspaceId,
+        account.id,
+        'pricing-changed',
+        'Enterprise pricing changed.',
+        'https://open-opportunity.example/pricing',
+        '2026-09-12T07:00:00.000Z',
+        'open-opp-signal',
+        '2026-09-12T07:00:00.000Z'
+      );
+
+    expect(await buildDemandCandidates(db, workspaceId, NOW)).toEqual([]);
+  });
 });

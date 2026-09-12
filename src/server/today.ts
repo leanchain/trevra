@@ -98,7 +98,11 @@ export async function getToday(
       db
         .prepare(
           `SELECT r.id,r.person_id,r.account_id,r.title,r.summary,r.recommended_action,r.updated_at,
-                p.name AS person_name,p.email AS person_email,a.name AS account_name
+                p.name AS person_name,p.email AS person_email,a.name AS account_name,
+                EXISTS (
+                  SELECT 1 FROM recommendation_evidence re
+                  WHERE re.recommendation_id=r.id AND re.source_type='inbound_submission'
+                ) AS has_inbound
          FROM recommendations r
          JOIN contacts p ON p.workspace_id=r.workspace_id AND p.id=r.person_id
          LEFT JOIN accounts a ON a.workspace_id=r.workspace_id AND a.id=r.account_id
@@ -229,13 +233,14 @@ export async function getToday(
       priority: 45,
       title: String(row.title ?? `Talk to ${personName} at ${accountName}`),
       detail: String(row.summary ?? 'Several independent commercial signals line up now.'),
-      href: '/outreach/inbound',
+      href: Boolean(row.has_inbound) ? '/outreach/inbound' : '/outreach',
       observedAt: iso(row.updated_at, now),
       reference: { type: 'recommendation', id: String(row.id) },
       metadata: {
         personId: String(row.person_id ?? ''),
         accountId: row.account_id ? String(row.account_id) : null,
         recommendationType: 'qualified_demand',
+        demandOrigin: Boolean(row.has_inbound) ? 'first_party' : 'known_contact',
         recommendedAction: String(row.recommended_action ?? '')
       }
     });

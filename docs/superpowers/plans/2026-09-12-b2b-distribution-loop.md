@@ -283,6 +283,19 @@ The drafter may use this later as input, but the calculation itself stays determ
 
 # Execution sequence
 
+## Implementation status — 2026-09-12
+
+- [x] Recent first-party inbound + hot Account → `DemandCandidate`.
+- [x] `qualified_demand` recommendation with immutable proof and source timestamps.
+- [x] `Today` collapses duplicate inbound + hot-account events into one decision.
+- [x] Worker refreshes qualified-demand recommendations without activating dormant stale-proposal automation.
+- [x] Hot Account ≥80 + exactly one explicit/verified known Person → outbound demand decision.
+- [x] Precision guards: multiple candidate People are not auto-selected; Accounts with open opportunities are not re-prospected.
+- [ ] Multiple-contact persona/buying-role ranking.
+- [ ] Hot Account with no known Person → targeted person-discovery preparation.
+- [ ] Recommendation → exact prepared action → conversation/opportunity attribution.
+- [ ] Distribution/content loop feeding Person-intent evidence.
+
 ## Phase 0 — Demand Graph V1
 
 ### 0.1 Demand Candidate projection

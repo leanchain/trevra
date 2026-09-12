@@ -318,11 +318,112 @@ describe('qualified demand in Today', () => {
     expect(today.needsAttention[0]).toMatchObject({
       kind: 'qualification_decision',
       title: 'Talk to Maya Patel at Demand Today',
+      href: '/outreach/inbound',
       reference: { type: 'recommendation' },
       metadata: {
         personId,
         accountId: account.id,
-        recommendationType: 'qualified_demand'
+        recommendationType: 'qualified_demand',
+        demandOrigin: 'first_party'
+      }
+    });
+  });
+
+  it('routes hot-account demand with one known contact into outbound', async () => {
+    const personId = 'con_today_known_contact';
+    await db
+      .prepare(
+        `INSERT INTO contacts
+         (id,workspace_id,name,email,email_normalized,role,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        personId,
+        WORKSPACE,
+        'Sarah Chen',
+        'sarah@outbound.example',
+        'sarah@outbound.example',
+        'VP Engineering',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    const account = await createAccount(
+      db,
+      WORKSPACE,
+      { domain: 'outbound-today.example', name: 'Outbound Today', source: 'manual' },
+      new Date('2026-08-20T09:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO account_contacts
+         (id,workspace_id,account_id,contact_id,role,source,confidence,created_at,updated_at)
+         VALUES (?,?,?,?,?,'manual','explicit',?,?)`
+      )
+      .run(
+        'ac_today_known_contact',
+        WORKSPACE,
+        account.id,
+        personId,
+        'VP Engineering',
+        '2026-08-20T09:00:00.000Z',
+        '2026-08-20T09:00:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        WORKSPACE,
+        account.id,
+        92,
+        'hot',
+        2,
+        '2026-08-21T07:10:00.000Z',
+        '{}',
+        '2026-08-21T07:11:00.000Z'
+      );
+    for (const [index, kind, detail, url] of [
+      [
+        0,
+        'hiring-up',
+        'Added platform engineering roles.',
+        'https://outbound-today.example/careers'
+      ],
+      [1, 'tech-added', 'Added a new infrastructure tool.', 'https://outbound-today.example/']
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_today_known_${index}`,
+          WORKSPACE,
+          account.id,
+          kind,
+          detail,
+          url,
+          `2026-08-21T0${6 + index}:00:00.000Z`,
+          `today-known-${index}`,
+          `2026-08-21T0${6 + index}:00:00.000Z`
+        );
+    }
+
+    await runRecommendationEngine(db, WORKSPACE, NOW, { includeStaleProposals: false });
+    const today = await getToday(db, WORKSPACE, NOW);
+
+    expect(today.needsAttention).toHaveLength(1);
+    expect(today.needsAttention[0]).toMatchObject({
+      kind: 'qualification_decision',
+      title: 'Reach out to Sarah Chen at Outbound Today',
+      href: '/outreach',
+      metadata: {
+        personId,
+        accountId: account.id,
+        demandOrigin: 'known_contact'
       }
     });
   });
