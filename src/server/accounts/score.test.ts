@@ -101,8 +101,9 @@ describe('the weight table', () => {
       SIGNAL_WEIGHTS['release-notes-changed']
     );
     expect(SIGNAL_WEIGHTS['release-notes-changed']).toBeGreaterThan(
-      SIGNAL_WEIGHTS['headline-changed']
+      SIGNAL_WEIGHTS['integration-added']
     );
+    expect(SIGNAL_WEIGHTS['integration-added']).toBeGreaterThan(SIGNAL_WEIGHTS['headline-changed']);
     expect(SIGNAL_WEIGHTS['headline-changed']).toBeGreaterThan(SIGNAL_WEIGHTS['tech-added']);
     expect(SIGNAL_WEIGHTS['tech-added']).toBeGreaterThan(SIGNAL_WEIGHTS['tech-removed']);
   });
@@ -124,6 +125,8 @@ describe('the weight table', () => {
     expect(SIGNAL_WEIGHTS['hiring-down']).toBeLessThan(0);
     expect(SIGNAL_WEIGHTS['tech-removed']).toBeGreaterThan(0);
     expect(SIGNAL_WEIGHTS['tech-removed']).toBeLessThan(SIGNAL_WEIGHTS['headline-changed'] / 2);
+    expect(SIGNAL_WEIGHTS['integration-removed']).toBeGreaterThan(0);
+    expect(SIGNAL_WEIGHTS['integration-removed']).toBeLessThan(SIGNAL_WEIGHTS['integration-added']);
   });
 
   it('lets no single kind reach the hot threshold on its own weight', () => {

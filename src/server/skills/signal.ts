@@ -54,6 +54,7 @@ export const SIGNAL_WATCHES = [
   'hiring',
   'pricing',
   'releases',
+  'integrations',
   'headline',
   'tech',
   'products',
@@ -63,12 +64,18 @@ export const SIGNAL_WATCHES = [
 ] as const;
 export type SignalWatch = (typeof SIGNAL_WATCHES)[number];
 
-export const DEFAULT_PAGE_BUDGET = 10;
+// Releases and integration inventory each add one bounded first-party page read.
+// Twelve preserves the catalog request headroom the original 10-page budget had
+// before those two observers existed, rather than silently trading ecommerce
+// coverage for the new B2B surfaces.
+export const DEFAULT_PAGE_BUDGET = 12;
 
 export type SignalKind =
   | 'first-capture'
   | 'product-launch'
   | 'release-notes-changed'
+  | 'integration-added'
+  | 'integration-removed'
   | 'hiring-up'
   | 'hiring-down'
   | 'pricing-changed'
@@ -88,6 +95,8 @@ const SIGNAL_ORDER: readonly SignalKind[] = [
   'first-capture',
   'product-launch',
   'release-notes-changed',
+  'integration-added',
+  'integration-removed',
   'hiring-up',
   'hiring-down',
   'pricing-changed',
@@ -114,6 +123,11 @@ export interface ResearchSignal {
 
 export type CatalogItem = StorefrontProduct;
 
+export interface IntegrationItem {
+  key: string;
+  label: string;
+}
+
 export interface ResearchSnapshot {
   domain: string;
   capturedAt: string;
@@ -131,6 +145,10 @@ export interface ResearchSnapshot {
   releaseNotesHash?: string | null;
   /** Bounded stable headings used to distinguish actual release entries from surrounding copy churn. */
   releaseNotesFacts?: string[] | null;
+  /** First-party integrations/connector marketplace page when captured. */
+  integrationsUrl?: string | null;
+  /** Stable integration detail links. `null` = not captured, `[]` = page captured with no usable detail links. */
+  integrationItems?: IntegrationItem[] | null;
   /** Public Shopify/WooCommerce catalog endpoint, when one was readable. */
   productUrl: string | null;
   /** Number of records in the bounded public sample. Null means not captured. */
@@ -156,6 +174,25 @@ const CAREERS_LINK_RE =
 const PRICING_LINK_RE = /\b(pricing|plans?|packages?)\b/i;
 const RELEASE_LINK_RE =
   /\b(changelog|release notes?|what(?:'|’)s new|whats new|product updates?|platform updates?|latest releases?)\b/i;
+const INTEGRATION_LINK_RE =
+  /\b(integrations?|integration marketplace|app marketplace|connectors?)\b/i;
+const INTEGRATION_DETAIL_PATH_RE = /\/(?:integrations?|connectors?)\/[^/?#]+/i;
+const HEADING_LINK_RE = /<h[2-4]\b[^>]*>[\s\S]*?<\/h[2-4]>/gi;
+const GENERIC_INTEGRATION_TEXT = new Set([
+  'integration',
+  'integrations',
+  'all integrations',
+  'connector',
+  'connectors',
+  'learn more',
+  'read more',
+  'view integration',
+  'view details',
+  'connect',
+  'install',
+  'browse all',
+  'browse all →'
+]);
 const RELEASE_HEADING_RE = /<h([2-4])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
 const GENERIC_RELEASE_HEADINGS = new Set([
   'changelog',
@@ -285,6 +322,62 @@ function hasReleaseNotesIdentity(html: string): boolean {
   );
 }
 
+function hasIntegrationPageIdentity(html: string): boolean {
+  return (
+    INTEGRATION_LINK_RE.test(firstHeading(html) ?? '') ||
+    INTEGRATION_LINK_RE.test(pageTitle(html) ?? '')
+  );
+}
+
+/** Stable first-party integration-detail links from an integrations page. */
+export function extractIntegrationItems(html: string, pageUrl: string): IntegrationItem[] {
+  let source: URL;
+  try {
+    source = new URL(pageUrl);
+  } catch {
+    return [];
+  }
+  const rootPath = source.pathname.replace(/\/+$/, '') || '/';
+  const categoryPaths = new Set<string>();
+  for (const heading of html.matchAll(HEADING_LINK_RE)) {
+    for (const link of extractLinks(heading[0])) {
+      try {
+        const target = new URL(link.href, source);
+        if (target.origin !== source.origin) continue;
+        categoryPaths.add(target.pathname.replace(/\/+$/, '').toLowerCase() || '/');
+      } catch {
+        // Malformed heading links are not inventory evidence.
+      }
+    }
+  }
+
+  const found = new Map<string, IntegrationItem>();
+  for (const link of extractLinks(html)) {
+    let target: URL;
+    try {
+      target = new URL(link.href, source);
+    } catch {
+      continue;
+    }
+    if (target.origin !== source.origin) continue;
+    const path = target.pathname.replace(/\/+$/, '') || '/';
+    const key = path.toLowerCase();
+    const underRoot = rootPath !== '/' && path.startsWith(`${rootPath}/`);
+    if (!underRoot && !INTEGRATION_DETAIL_PATH_RE.test(path)) continue;
+    if (path === rootPath || categoryPaths.has(key)) continue;
+
+    // Marketplace cards frequently flatten as "Name By Vendor Description".
+    // Preserve the product name, not the provider attribution or marketing copy.
+    const rawLabel = link.text.replace(/\s+/g, ' ').trim();
+    const label = rawLabel.split(/\s+By\s+/i, 1)[0]?.trim() ?? '';
+    if (label.length < 2 || label.length > 100) continue;
+    if (GENERIC_INTEGRATION_TEXT.has(label.toLowerCase())) continue;
+    if (!found.has(key)) found.set(key, { key, label });
+    if (found.size >= 200) break;
+  }
+  return [...found.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
 const PRICE_AMOUNT_RE =
   /(?:[$€£¥]\s?\d[\d.,]*|(?:CHF|USD|EUR|GBP|CAD|AUD|JPY|SEK|NOK|DKK|PLN)\s?\d[\d.,]*|\d[\d.,]*\s?(?:CHF|USD|EUR|GBP|CAD|AUD|JPY|SEK|NOK|DKK|PLN))/gi;
 const BILLING_SUFFIX_RE =
@@ -331,7 +424,7 @@ export function extractPricingFacts(html: string): string[] {
   return facts.sort();
 }
 
-function catalogStateHash(items: readonly CatalogItem[]): string {
+function itemStateHash(items: readonly { key: string }[]): string {
   return createHash('sha256')
     .update(JSON.stringify(items.map((item) => item.key).sort()))
     .digest('hex')
@@ -406,6 +499,7 @@ export async function captureSnapshot(
     (watches.has('hiring') ? 2 : 0) +
     (watches.has('pricing') ? 2 : 0) +
     (watches.has('releases') ? 1 : 0) +
+    (watches.has('integrations') ? 1 : 0) +
     (watches.has('newsletter') ? 1 : 0);
   const maxCatalogRequests = watches.has('products')
     ? Math.max(0, Math.min(4, budget - 2 - reserve))
@@ -594,6 +688,27 @@ export async function captureSnapshot(
     }
   }
 
+  let integrationsUrl: string | null = null;
+  let integrationItems: IntegrationItem[] | null = null;
+  if (watches.has('integrations')) {
+    const explicitIntegrationPaths = discoverPaths(html, base, INTEGRATION_LINK_RE, []);
+    const integrationPaths = [
+      ...explicitIntegrationPaths,
+      ...['/integrations'].filter((path) => !explicitIntegrationPaths.includes(path))
+    ].slice(0, 2);
+    for (const path of integrationPaths) {
+      const pageUrl = `${base.origin}${path}`;
+      const response = await get(pageUrl);
+      if (response === null || response.status !== 200) continue;
+      if (response.contentType && !response.contentType.includes('html')) continue;
+      if (!explicitIntegrationPaths.includes(path) && !hasIntegrationPageIdentity(response.text))
+        continue;
+      integrationsUrl = pageUrl;
+      integrationItems = extractIntegrationItems(response.text, pageUrl);
+      break;
+    }
+  }
+
   const productUrl = watches.has('products') ? storefront.productUrl : null;
   const productItems: CatalogItem[] = watches.has('products')
     ? (storefront.productItems ?? [])
@@ -622,6 +737,8 @@ export async function captureSnapshot(
     releaseNotesUrl,
     releaseNotesHash,
     releaseNotesFacts,
+    integrationsUrl,
+    integrationItems,
     productUrl,
     productCount,
     productCapped,
@@ -652,6 +769,8 @@ function summarize(snapshot: ResearchSnapshot): string {
   if (snapshot.pricingHash) parts.push(`pricing hash ${snapshot.pricingHash}`);
   if (snapshot.releaseNotesHash)
     parts.push(`release notes at ${snapshot.releaseNotesUrl ?? snapshot.domain}`);
+  if (snapshot.integrationItems?.length)
+    parts.push(`${snapshot.integrationItems.length} published integration(s)`);
   return parts.length > 0 ? parts.join('; ') : 'nothing readable';
 }
 
@@ -693,8 +812,8 @@ export function diffSnapshots(
       signals.push({
         kind: 'product-launch',
         detail: `${current.domain} added ${added.length} product${added.length === 1 ? '' : 's'} to its public catalog since the last check${named}.`,
-        previous: catalogStateHash(previous.productItems),
-        current: catalogStateHash(current.productItems)
+        previous: itemStateHash(previous.productItems),
+        current: itemStateHash(current.productItems)
       });
     }
   }
@@ -732,6 +851,37 @@ export function diffSnapshots(
           : `Release-notes content changed on ${current.releaseNotesUrl ?? current.domain} (${previous.releaseNotesHash} -> ${current.releaseNotesHash}).`,
         previous: previous.releaseNotesHash,
         current: current.releaseNotesHash
+      });
+    }
+  }
+
+  if (previous.integrationItems != null && current.integrationItems != null) {
+    const before = new Set(previous.integrationItems.map((item) => item.key));
+    const after = new Set(current.integrationItems.map((item) => item.key));
+    const added = current.integrationItems.filter((item) => !before.has(item.key));
+    const removed = previous.integrationItems.filter((item) => !after.has(item.key));
+    const previousState = itemStateHash(previous.integrationItems);
+    const currentState = itemStateHash(current.integrationItems);
+    if (added.length > 0) {
+      signals.push({
+        kind: 'integration-added',
+        detail: `${current.domain} published ${added.length} new integration${added.length === 1 ? '' : 's'} on ${current.integrationsUrl ?? current.domain} (${added
+          .slice(0, 4)
+          .map((item) => item.label)
+          .join('; ')}).`,
+        previous: previousState,
+        current: currentState
+      });
+    }
+    if (removed.length > 0) {
+      signals.push({
+        kind: 'integration-removed',
+        detail: `${current.domain} removed ${removed.length} previously published integration${removed.length === 1 ? '' : 's'} from ${current.integrationsUrl ?? current.domain} (${removed
+          .slice(0, 4)
+          .map((item) => item.label)
+          .join('; ')}).`,
+        previous: previousState,
+        current: currentState
       });
     }
   }
@@ -952,6 +1102,12 @@ const snapshotSchema = z.object({
   releaseNotesUrl: z.string().nullable().default(null),
   releaseNotesHash: z.string().nullable().default(null),
   releaseNotesFacts: z.array(z.string()).max(12).nullable().default(null),
+  integrationsUrl: z.string().nullable().default(null),
+  integrationItems: z
+    .array(z.object({ key: z.string(), label: z.string() }))
+    .max(200)
+    .nullable()
+    .default(null),
   productUrl: z.string().nullable().default(null),
   productCount: z.number().nullable().default(null),
   productCapped: z.boolean().default(false),
@@ -1100,15 +1256,17 @@ export async function watchSignals(
           ? snapshot.pricingUrl
           : signal.kind === 'release-notes-changed'
             ? snapshot.releaseNotesUrl
-            : signal.kind === 'product-launch'
-              ? snapshot.productUrl
-              : signal.kind === 'storefront-rebuild'
-                ? `https://${clean}`
-                : signal.kind.startsWith('newsletter-signup')
-                  ? (snapshot.newsletterSignups?.[0]?.sourceUrl ?? `https://${clean}`)
-                  : signal.kind === 'social-profile-added'
-                    ? (snapshot.socialProfiles?.[0]?.url ?? `https://${clean}`)
-                    : `https://${clean}`
+            : signal.kind === 'integration-added' || signal.kind === 'integration-removed'
+              ? snapshot.integrationsUrl
+              : signal.kind === 'product-launch'
+                ? snapshot.productUrl
+                : signal.kind === 'storefront-rebuild'
+                  ? `https://${clean}`
+                  : signal.kind.startsWith('newsletter-signup')
+                    ? (snapshot.newsletterSignups?.[0]?.sourceUrl ?? `https://${clean}`)
+                    : signal.kind === 'social-profile-added'
+                      ? (snapshot.socialProfiles?.[0]?.url ?? `https://${clean}`)
+                      : `https://${clean}`
     }))
   };
 }
@@ -1129,6 +1287,8 @@ const outputSchema = z.object({
         'first-capture',
         'product-launch',
         'release-notes-changed',
+        'integration-added',
+        'integration-removed',
         'hiring-up',
         'hiring-down',
         'pricing-changed',
@@ -1162,7 +1322,7 @@ export const watchSignalSkill: Skill<WatchInput, WatchResult> = {
     name: 'Watch a domain for change signals',
     version: '1.0.0',
     description:
-      'Capture hiring, pricing, release notes, headline, ecommerce app, public product catalog, newsletter signup, and published social-profile snapshots for a domain and diff them into evidence-backed change signals.',
+      'Capture hiring, pricing, release notes, first-party integrations, headline, ecommerce app, public product catalog, newsletter signup, and published social-profile snapshots for a domain and diff them into evidence-backed change signals.',
     sideEffect: 'network-read',
     requiresApproval: false,
     inputSchema,

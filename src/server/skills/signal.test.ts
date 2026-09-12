@@ -4,6 +4,7 @@ import {
   captureSnapshot,
   contentHash,
   diffSnapshots,
+  extractIntegrationItems,
   extractJobPostings,
   extractPricingFacts,
   extractReleaseNotesFacts,
@@ -179,6 +180,39 @@ describe('diffSnapshots', () => {
     expect(diffSnapshots(before, after).map((signal) => signal.kind)).not.toContain(
       'release-notes-changed'
     );
+  });
+
+  it('diffs first-party integration inventory without confusing removals and additions', () => {
+    const before: ResearchSnapshot = {
+      ...AFTER,
+      headline: BEFORE.headline,
+      jobCount: BEFORE.jobCount,
+      jobTitles: BEFORE.jobTitles,
+      pricingHash: BEFORE.pricingHash,
+      tech: BEFORE.tech,
+      integrationsUrl: 'https://acme.test/integrations',
+      integrationItems: [
+        { key: '/integrations/salesforce', label: 'Salesforce' },
+        { key: '/integrations/slack', label: 'Slack' }
+      ]
+    };
+    const after: ResearchSnapshot = {
+      ...before,
+      capturedAt: '2026-07-02T00:00:00.000Z',
+      integrationItems: [
+        { key: '/integrations/salesforce', label: 'Salesforce' },
+        { key: '/integrations/snowflake', label: 'Snowflake' }
+      ]
+    };
+    const signals = diffSnapshots(before, after);
+    expect(signals.map((signal) => signal.kind)).toEqual([
+      'integration-added',
+      'integration-removed'
+    ]);
+    expect(signals[0].detail).toContain('Snowflake');
+    expect(signals[1].detail).toContain('Slack');
+    expect(signals[0].previous).toBe(signals[1].previous);
+    expect(signals[0].current).toBe(signals[1].current);
   });
 
   it('emits storefront-rebuild only for high-confidence commerce-platform migrations', () => {
@@ -368,6 +402,25 @@ describe('release-note facts', () => {
   });
 });
 
+describe('integration inventory', () => {
+  it('keeps named same-origin detail links and drops CTAs, roots and off-origin links', () => {
+    expect(
+      extractIntegrationItems(
+        `<h3><a href="/integrations/analytics">Analytics</a></h3>
+         <a href="/integrations/salesforce">Salesforce By Salesforce Sync CRM records</a>
+         <a href="/integrations/salesforce">Learn more</a>
+         <a href="/integrations/snowflake">Snowflake</a>
+         <a href="/integrations">All integrations</a>
+         <a href="https://evil.example/integrations/hubspot">HubSpot</a>`,
+        'https://acme.test/integrations'
+      )
+    ).toEqual([
+      { key: '/integrations/salesforce', label: 'Salesforce' },
+      { key: '/integrations/snowflake', label: 'Snowflake' }
+    ]);
+  });
+});
+
 describe('contentHash', () => {
   it('hashes visible text, so a changed build id is not a pricing change', () => {
     const a =
@@ -434,6 +487,53 @@ describe('captureSnapshot', () => {
     expect(snapshot.pricingHash).toHaveLength(16);
     expect(snapshot.pricingFacts).toEqual(['29 EUR per seat']);
     expect(snapshot.tech).toEqual(['segment']);
+  });
+
+  it('captures an explicitly published first-party integrations marketplace', async () => {
+    const seen: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(input);
+      seen.push(url.pathname);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+      if (url.pathname === '/')
+        return html('<h1>Acme</h1><a href="/integrations">Integrations</a>');
+      if (url.pathname === '/integrations')
+        return html(
+          '<h1>Integrations</h1><a href="/integrations/salesforce">Salesforce</a><a href="/integrations/snowflake">Snowflake</a>'
+        );
+      return new Response('not found', { status: 404 });
+    };
+
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['integrations'],
+      fetchImpl,
+      pageBudget: 4
+    });
+
+    expect(snapshot.integrationsUrl).toBe('https://acme.test/integrations');
+    expect(snapshot.integrationItems).toEqual([
+      { key: '/integrations/salesforce', label: 'Salesforce' },
+      { key: '/integrations/snowflake', label: 'Snowflake' }
+    ]);
+    expect(seen.filter((path) => path === '/integrations')).toHaveLength(1);
+  });
+
+  it('rejects an unrelated integrations fallback that does not identify itself as a marketplace', async () => {
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(input);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+      if (url.pathname === '/') return html('<h1>Acme</h1>');
+      if (url.pathname === '/integrations')
+        return html('<h1>Partners</h1><a href="/integrations/salesforce">Salesforce</a>');
+      return new Response('not found', { status: 404 });
+    };
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['integrations'],
+      fetchImpl,
+      pageBudget: 4
+    });
+    expect(snapshot.integrationsUrl).toBeNull();
+    expect(snapshot.integrationItems).toBeNull();
   });
 
   it('captures an explicitly published first-party changelog with stable release facts', async () => {

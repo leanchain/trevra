@@ -96,6 +96,8 @@ const KIND_LABELS: Record<string, string> = {
   'meta-ads-rising': 'Meta ad volume is rising',
   'product-launch': 'New products appeared',
   'release-notes-changed': 'Release notes changed',
+  'integration-added': 'A product integration appeared',
+  'integration-removed': 'A product integration disappeared',
   'hiring-up': 'More roles on the careers page',
   'hiring-down': 'Fewer roles on the careers page',
   'pricing-changed': 'The pricing page changed',
