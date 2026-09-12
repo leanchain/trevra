@@ -3,6 +3,7 @@ import { runAccountSweep } from './accounts/sweep.js';
 import { rescoreAccounts } from './accounts/score.js';
 import { rejectedSignalShapes } from './accounts/store.js';
 import { runRecommendationEngine } from './recommendation-engine.js';
+import { buildCompanyChangeOpportunities } from './content/opportunity-builder.js';
 
 /**
  * Accounts swept per cycle. Small on purpose: a pass paces itself 20-90s
@@ -68,6 +69,15 @@ export async function runAutomationCycle(db: Db, workspaceId: string): Promise<A
   // network calls; each candidate remains workspace-scoped and evidence-backed.
   try {
     await runRecommendationEngine(db, workspaceId, new Date(), { includeStaleProposals: false });
+  } catch {
+    result.failed += 1;
+  }
+
+  // Story opportunities are another pure projection over the same durable
+  // evidence graph. Running them in this leased workspace cycle avoids a
+  // second tenant scanner and keeps graph rebuilds network-free.
+  try {
+    await buildCompanyChangeOpportunities(db, workspaceId, new Date());
   } catch {
     result.failed += 1;
   }

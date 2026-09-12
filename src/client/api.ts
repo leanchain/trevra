@@ -50,6 +50,7 @@ import type {
 } from '../server/loop-cost';
 import type { PublicSkillManifest } from '../server/skill-api';
 import type { TodayPayload } from '../server/today';
+import type { ContentOpportunity } from '../server/content/types';
 import type { PreparedOutreachResult } from '../server/outreach/prepare';
 import type { GtmIntent, GtmPlan, PreparedGtmPlanResult } from '../server/gtm/intent';
 import type { ConversationMessage, ConversationSummary } from '../server/conversations';
@@ -180,6 +181,51 @@ export async function getDashboard(): Promise<DashboardPayload> {
 
 export async function getToday(): Promise<TodayPayload> {
   return request('/api/today');
+}
+
+export async function getContentOpportunities(
+  filters: { status?: ContentOpportunity['status']; limit?: number } = {}
+): Promise<ContentOpportunity[]> {
+  const query = new URLSearchParams();
+  if (filters.status) query.set('status', filters.status);
+  if (filters.limit) query.set('limit', String(filters.limit));
+  const result = await request<{ opportunities: ContentOpportunity[] }>(
+    `/api/content/opportunities${query.size ? `?${query}` : ''}`
+  );
+  return result.opportunities;
+}
+
+export async function refreshContentOpportunities(): Promise<ContentOpportunity[]> {
+  const result = await request<{ opportunities: ContentOpportunity[] }>(
+    '/api/content/opportunities/refresh',
+    { method: 'POST', body: '{}' }
+  );
+  return result.opportunities;
+}
+
+export async function updateContentOpportunityStatus(
+  opportunityId: string,
+  status: ContentOpportunity['status']
+): Promise<ContentOpportunity> {
+  const result = await request<{ opportunity: ContentOpportunity }>(
+    `/api/content/opportunities/${encodeURIComponent(opportunityId)}`,
+    { method: 'PATCH', body: JSON.stringify({ status }) }
+  );
+  return result.opportunity;
+}
+
+export async function draftContentOpportunityLinkedIn(
+  opportunityId: string,
+  seatKey?: string
+): Promise<{
+  asset: import('../server/content/types').ContentAsset;
+  post: LinkedInPost;
+  reused: boolean;
+}> {
+  return request(`/api/content/opportunities/${encodeURIComponent(opportunityId)}/draft-linkedin`, {
+    method: 'POST',
+    body: JSON.stringify(seatKey ? { seatKey } : {})
+  });
 }
 
 export async function prepareDemandRecommendation(

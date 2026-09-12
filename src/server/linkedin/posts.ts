@@ -46,6 +46,8 @@ export interface LinkedInPost {
   scheduledAt: string | null;
   publishedAt: string | null;
   postedUrl: string | null;
+  contentAssetId: string | null;
+  publicationMeta: Record<string, unknown>;
   error: { kind: string; detail: string } | null;
   createdBy: string | null;
   createdAt: string;
@@ -62,6 +64,8 @@ interface PostRow {
   scheduled_at: string | null;
   published_at: string | null;
   posted_url: string | null;
+  content_asset_id: string | null;
+  publication_meta_json: unknown;
   error_json: unknown;
   created_by: string | null;
   created_at: string;
@@ -79,7 +83,7 @@ const POST_COLUMNS = `
   id, workspace_id, seat_key, status, blocks_json, media_json,
   TO_CHAR(scheduled_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS scheduled_at,
   TO_CHAR(published_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS published_at,
-  posted_url, error_json, created_by,
+  posted_url, content_asset_id, publication_meta_json, error_json, created_by,
   TO_CHAR(created_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS created_at,
   TO_CHAR(updated_at AT TIME ZONE 'UTC', ${UTC_ISO}) AS updated_at
 `;
@@ -104,6 +108,8 @@ function toPost(row: PostRow): LinkedInPost {
     scheduledAt: row.scheduled_at,
     publishedAt: row.published_at,
     postedUrl: row.posted_url,
+    contentAssetId: row.content_asset_id,
+    publicationMeta: (parseJson(row.publication_meta_json) as Record<string, unknown> | null) ?? {},
     error: (parseJson(row.error_json) as { kind: string; detail: string } | null) ?? null,
     createdBy: row.created_by,
     createdAt: row.created_at,
@@ -127,6 +133,8 @@ export interface PostInsert {
   status?: 'draft' | 'scheduled';
   scheduledAt?: string | null;
   createdBy?: string | null;
+  contentAssetId?: string | null;
+  publicationMeta?: Record<string, unknown>;
 }
 
 export async function createPost(db: Db, input: PostInsert, now: Date): Promise<LinkedInPost> {
@@ -139,8 +147,9 @@ export async function createPost(db: Db, input: PostInsert, now: Date): Promise<
     .prepare(
       `
     INSERT INTO linkedin_posts (
-      id, workspace_id, seat_key, status, blocks_json, scheduled_at, created_by, created_at, updated_at
-    ) VALUES (?,?,?,?,?::jsonb,?,?,?,?)
+      id, workspace_id, seat_key, status, blocks_json, scheduled_at, created_by,
+      content_asset_id, publication_meta_json, created_at, updated_at
+    ) VALUES (?,?,?,?,?::jsonb,?,?,?,?::jsonb,?,?)
     RETURNING ${POST_COLUMNS}
   `
     )
@@ -152,6 +161,8 @@ export async function createPost(db: Db, input: PostInsert, now: Date): Promise<
       JSON.stringify(input.blocks),
       input.scheduledAt ?? null,
       input.createdBy ?? null,
+      input.contentAssetId ?? null,
+      JSON.stringify(input.publicationMeta ?? {}),
       timestamp,
       timestamp
     );

@@ -13398,3 +13398,87 @@ button:disabled {
     width: 100%;
   }
 }
+
+/* Evidence-backed market stories: full-width decision surface before the
+   platform-specific research feeds. Facts stay individually inspectable so a
+   founder never has to trust a score without seeing what produced it. */
+.research-story-panel {
+  min-width: 0;
+}
+.research-story-list {
+  display: grid;
+  gap: 10px;
+}
+.research-story-card {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+}
+.research-story-main {
+  min-width: 0;
+}
+.research-story-main > p {
+  margin: 4px 0 10px;
+  color: var(--muted);
+}
+.research-story-evidence {
+  display: grid;
+  gap: 6px;
+}
+.research-story-evidence > a {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--t-surface-2);
+  color: inherit;
+  text-decoration: none;
+}
+.research-story-evidence > a:hover {
+  border-color: var(--t-line-strong);
+}
+.research-story-evidence strong,
+.research-story-evidence span,
+.research-story-evidence small {
+  min-width: 0;
+}
+.research-story-evidence strong {
+  font-size: var(--t-text-xs);
+  text-transform: capitalize;
+}
+.research-story-evidence span {
+  overflow-wrap: anywhere;
+  font-size: var(--t-text-xs);
+}
+.research-story-evidence small {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  white-space: nowrap;
+}
+.research-story-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  align-items: stretch;
+}
+
+@media (max-width: 760px) {
+  .research-story-card {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .research-story-actions {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+  .research-story-evidence > a {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+  .research-story-evidence small {
+    white-space: normal;
+  }
+}

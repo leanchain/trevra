@@ -383,7 +383,7 @@ export function App() {
         )}
 
         {route.section === 'research' && (
-          <ResearchView connections={data.connections} setToast={setToast} />
+          <ResearchView connections={data.connections} setToast={setToast} onNavigate={go} />
         )}
 
         {route.section === 'setup' && (

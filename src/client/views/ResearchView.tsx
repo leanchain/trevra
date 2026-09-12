@@ -2,17 +2,22 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { CircleAlert, Database, LoaderCircle, MessageSquare, Newspaper, X } from 'lucide-react';
 import type { ConnectionSummary, SkillRun } from '../../shared/types';
+import type { ContentOpportunity } from '../../server/content/types';
 import {
   createWatch,
+  draftContentOpportunityLinkedIn,
   draftMentionReply,
+  getContentOpportunities,
   getOutreachOfferDefaults,
   getOutreachThreads,
   getSkillRuns,
   getWatchMentions,
   getWatchTrend,
   getWatches,
+  refreshContentOpportunities,
   runWatch,
   startPlaybook,
+  updateContentOpportunityStatus,
   type BrandWatch,
   type BrandWatchMention,
   type FeedThread,
@@ -32,6 +37,7 @@ import {
   whyChips
 } from './researchFormat';
 import { useDialog } from '../ui/dialog';
+import { useActiveSeatKey } from '../LinkedInActiveAccount';
 
 /*
  * `/research` -- one feed over three sources that never shared a screen:
@@ -481,12 +487,20 @@ function WatchDialog({
 
 export function ResearchView({
   connections,
-  setToast
+  setToast,
+  onNavigate
 }: {
   connections: ConnectionSummary[];
   setToast: (message: string) => void;
+  onNavigate: (path: string) => void;
 }) {
   const [platform, setPlatform] = useState('all');
+  const [seatKey] = useActiveSeatKey();
+  const [stories, setStories] = useState<ContentOpportunity[]>([]);
+  const [storiesLoaded, setStoriesLoaded] = useState(false);
+  const [storiesError, setStoriesError] = useState('');
+  const [storyBusy, setStoryBusy] = useState<string | null>(null);
+  const [refreshingStories, setRefreshingStories] = useState(false);
   const [redditOpen, setRedditOpen] = useState(false);
   const [threads, setThreads] = useState<FeedThread[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
@@ -526,6 +540,26 @@ export function ResearchView({
   useEffect(() => {
     selectedWatchRef.current = selectedWatch;
   }, [selectedWatch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getContentOpportunities({ status: 'ready', limit: 20 })
+      .then((rows) => {
+        if (cancelled) return;
+        setStories(rows);
+        setStoriesError('');
+        setStoriesLoaded(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setStories([]);
+        setStoriesError(error instanceof Error ? error.message : 'Could not load market stories.');
+        setStoriesLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -770,6 +804,49 @@ export function ResearchView({
     }
   }
 
+  async function refreshStories(): Promise<void> {
+    setRefreshingStories(true);
+    setStoriesError('');
+    try {
+      setStories(await refreshContentOpportunities());
+    } catch (error) {
+      setStoriesError(error instanceof Error ? error.message : 'Could not refresh market stories.');
+    } finally {
+      setRefreshingStories(false);
+    }
+  }
+
+  async function dismissStory(story: ContentOpportunity): Promise<void> {
+    setStoryBusy(story.id);
+    setStoriesError('');
+    try {
+      await updateContentOpportunityStatus(story.id, 'dismissed');
+      setStories((current) => current.filter((item) => item.id !== story.id));
+    } catch (error) {
+      setStoriesError(error instanceof Error ? error.message : 'Could not dismiss this story.');
+    } finally {
+      setStoryBusy(null);
+    }
+  }
+
+  async function draftStory(story: ContentOpportunity): Promise<void> {
+    setStoryBusy(story.id);
+    setStoriesError('');
+    try {
+      const result = await draftContentOpportunityLinkedIn(story.id, seatKey || undefined);
+      setToast(
+        result.reused ? 'Opened the existing story draft.' : 'Evidence-backed draft created.'
+      );
+      onNavigate(`/outreach/posts?draft=${encodeURIComponent(result.post.id)}`);
+    } catch (error) {
+      setStoriesError(
+        error instanceof Error ? error.message : 'Could not prepare this story draft.'
+      );
+    } finally {
+      setStoryBusy(null);
+    }
+  }
+
   const renderableBriefs = briefs
     .map((run) => ({ run, brief: asResearchBrief(run.output) }))
     .filter(
@@ -808,6 +885,88 @@ export function ResearchView({
             </button>
           ))}
         </div>
+      </section>
+
+      <section className="page-panel research-story-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Market stories</h3>
+            <p>
+              Source-backed market changes worth explaining publicly. Nothing here is generated from
+              an unsupported claim.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={refreshingStories}
+            onClick={() => void refreshStories()}
+          >
+            {refreshingStories ? <LoaderCircle className="spin" size={15} /> : null}
+            {refreshingStories ? 'Refreshing…' : 'Refresh stories'}
+          </button>
+        </div>
+        {storiesError && <div className="error-banner">{storiesError}</div>}
+        {!storiesLoaded ? (
+          <div className="empty-state">
+            <LoaderCircle className="spin" size={24} />
+            <p>Reading current market evidence…</p>
+          </div>
+        ) : stories.length === 0 ? (
+          <div className="empty-state">
+            <Newspaper size={24} />
+            <h4 aria-level={3}>No story clears the evidence bar yet</h4>
+            <p>
+              Trevra needs at least two independent, recent, source-backed changes before it
+              suggests a company-change story.
+            </p>
+          </div>
+        ) : (
+          <div className="research-story-list">
+            {stories.map((story) => (
+              <article className="client-card-large research-story-card" key={story.id}>
+                <span className="client-avatar large">{story.score}</span>
+                <div className="research-story-main">
+                  <h3>{story.title}</h3>
+                  <p>{story.thesis}</p>
+                  <div className="research-story-evidence" aria-label="Story evidence">
+                    {story.evidence.slice(0, 4).map((evidence) => (
+                      <a
+                        key={`${evidence.sourceType}:${evidence.sourceId}`}
+                        href={evidence.sourceUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <strong>{evidence.label}</strong>
+                        <span>{evidence.detail}</span>
+                        <small>{new Date(evidence.observedAt).toLocaleString()}</small>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+                <div className="research-story-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    disabled={storyBusy === story.id}
+                    onClick={() => void dismissStory(story)}
+                  >
+                    Dismiss
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={storyBusy === story.id}
+                    onClick={() => void draftStory(story)}
+                  >
+                    {storyBusy === story.id ? <LoaderCircle className="spin" size={15} /> : null}
+                    Draft post
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
       {watchesLoaded && (

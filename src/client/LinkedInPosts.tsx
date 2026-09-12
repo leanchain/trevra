@@ -20,6 +20,7 @@ import {
   type LinkedInPost
 } from './api';
 import { useActiveSeatKey } from './LinkedInActiveAccount';
+import { replaceNavigate } from './ui/route';
 
 const MAX_CHARS = 3000;
 const MAX_IMAGES = 9;
@@ -183,10 +184,14 @@ function renderBlocksIntoDom(container: HTMLElement, blocks: PostBlock[]): void 
 
 function PostComposer({
   onCreated,
-  setToast
+  setToast,
+  initialPost = null,
+  onFinished
 }: {
   onCreated: () => void;
   setToast: (message: string) => void;
+  initialPost?: LinkedInPost | null;
+  onFinished?: () => void;
 }) {
   const [seatKey] = useActiveSeatKey();
   const [blocks, setBlocks] = useState<PostBlock[]>(EMPTY_BLOCKS);
@@ -220,6 +225,14 @@ function PostComposer({
     },
     []
   );
+
+  useEffect(() => {
+    if (!initialPost || initialPost.status !== 'draft') return;
+    setBlocks(initialPost.blocks.length > 0 ? initialPost.blocks : EMPTY_BLOCKS);
+    setScheduledAt('');
+    setError('');
+    setDomSyncToken((token) => token + 1);
+  }, [initialPost?.id]);
 
   // Runs on mount (token 0 vs -1: always syncs once) and whenever a toolbar
   // action bumps domSyncToken. Deliberately does NOT run on every `blocks`
@@ -342,11 +355,13 @@ function PostComposer({
       // born as a draft first. Only after every image is safely stored do we
       // schedule/publish it; a failed upload can therefore never leave a due
       // post whose media is only half present.
-      const post = await createLinkedInPost({
-        ...(seatKey ? { seatKey } : {}),
-        blocks,
-        status: 'draft'
-      });
+      const post = initialPost
+        ? await updateLinkedInPost(initialPost.id, { blocks, status: 'draft' })
+        : await createLinkedInPost({
+            ...(seatKey ? { seatKey } : {}),
+            blocks,
+            status: 'draft'
+          });
       createdId = post.id;
       for (const image of media) await addLinkedInPostImage(post.id, image.file);
       if (mode === 'schedule') {
@@ -366,6 +381,7 @@ function PostComposer({
       );
       reset();
       onCreated();
+      onFinished?.();
     } catch (cause) {
       setError((cause as ApiError)?.message ?? errorMessage(cause));
       // If the row was created before an image failed, show that recoverable
@@ -618,6 +634,8 @@ function PostRow({ post, onChanged }: { post: LinkedInPost; onChanged: () => voi
 export function LinkedInPosts({ setToast }: { setToast: (message: string) => void }) {
   const [posts, setPosts] = useState<LinkedInPost[] | null>(null);
   const [error, setError] = useState('');
+  const draftId = new URLSearchParams(window.location.search).get('draft');
+  const selectedDraft = draftId ? (posts?.find((post) => post.id === draftId) ?? null) : null;
 
   const load = useCallback(async () => {
     try {
@@ -636,10 +654,19 @@ export function LinkedInPosts({ setToast }: { setToast: (message: string) => voi
       <section className="page-panel li-posts-compose-panel">
         <div className="section-heading">
           <div>
-            <h3 aria-level={2}>New post</h3>
+            <h3 aria-level={2}>{draftId ? 'Review story draft' : 'New post'}</h3>
+            {draftId && posts === null && <p>Loading the evidence-backed draft…</p>}
+            {draftId && posts !== null && !selectedDraft && (
+              <p className="li-post-error">That draft no longer exists.</p>
+            )}
           </div>
         </div>
-        <PostComposer setToast={setToast} onCreated={load} />
+        <PostComposer
+          setToast={setToast}
+          onCreated={load}
+          initialPost={selectedDraft}
+          onFinished={draftId ? () => replaceNavigate('/outreach/posts') : undefined}
+        />
       </section>
 
       <section className="page-panel li-posts-history-panel">

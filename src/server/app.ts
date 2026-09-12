@@ -115,6 +115,9 @@ import {
 } from './ledger-export.js';
 import { LOOP_COST_DEFAULT_WINDOW_DAYS, LOOP_COST_MAX_WINDOW_DAYS, loopCost } from './loop-cost.js';
 import { getToday } from './today.js';
+import { buildCompanyChangeOpportunities } from './content/opportunity-builder.js';
+import { listContentOpportunities, setContentOpportunityStatus } from './content/opportunities.js';
+import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
 import { DemandActionError, prepareDemandAction } from './demand/actions.js';
 import { listConversationMessages, listConversations } from './conversations.js';
 import { listEmailDeliveries } from './email-deliveries.js';
@@ -2686,6 +2689,84 @@ export function createApp(db: Db) {
       next(error);
     }
   });
+
+  app.get('/api/content/opportunities', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          status: z.enum(['candidate', 'ready', 'dismissed', 'expired']).optional(),
+          limit: z.coerce.number().int().min(1).max(200).optional()
+        })
+        .parse(req.query);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        opportunities: await listContentOpportunities(db, req.auth!.workspaceId, {
+          status: input.status ?? 'ready',
+          limit: input.limit
+        })
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/content/opportunities/refresh', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      await buildCompanyChangeOpportunities(db, req.auth!.workspaceId, new Date());
+      res.json({
+        opportunities: await listContentOpportunities(db, req.auth!.workspaceId, {
+          status: 'ready',
+          limit: 50
+        })
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/content/opportunities/:id', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({ status: z.enum(['candidate', 'ready', 'dismissed', 'expired']) })
+        .strict()
+        .parse(req.body ?? {});
+      const opportunity = await setContentOpportunityStatus(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        input.status,
+        new Date()
+      );
+      if (!opportunity) return res.status(404).json({ error: 'Content opportunity not found' });
+      res.json({ opportunity });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post(
+    '/api/content/opportunities/:id/draft-linkedin',
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const input = z
+          .object({ seatKey: z.string().trim().min(1).max(120).optional() })
+          .strict()
+          .parse(req.body ?? {});
+        const result = await prepareStoryLinkedInDraft(db, {
+          workspaceId: req.auth!.workspaceId,
+          opportunityId: String(req.params.id),
+          seatKey: input.seatKey,
+          actorUserId: req.auth!.userId
+        });
+        res.status(result.reused ? 200 : 201).json(result);
+      } catch (error) {
+        if (error instanceof StoryDraftError)
+          return res.status(error.status).json({ error: error.message });
+        next(error);
+      }
+    }
+  );
 
   app.post('/api/recommendations/:id/prepare', async (req: AuthedRequest, res, next) => {
     try {
