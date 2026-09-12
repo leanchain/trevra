@@ -6,6 +6,7 @@ import type { ObservationProvider } from '../observations/types.js';
 import type { FetchLike } from '../skills/guard.js';
 import { watchSignals, type ResearchSnapshot } from '../skills/signal.js';
 import type { SkillContext } from '../skills/types.js';
+import { META_PAGE_ID_RE, metaPageIdsFromTags } from './identities.js';
 import type { Account, AccountSignal, AccountSource, AccountStatus } from './types.js';
 
 /**
@@ -560,12 +561,13 @@ export async function sweepAccount(
       );
     }
 
-    const metaPageIds = [
-      ...new Set(
-        account.tags
-          .map((tag) => /^meta-page-id:(\d{5,30})$/.exec(tag.trim())?.[1] ?? null)
-          .filter((value): value is string => Boolean(value))
+    const publishedMetaPageIds = (watched.snapshot.socialProfiles ?? [])
+      .filter(
+        (profile) => profile.platform === 'facebook' && META_PAGE_ID_RE.test(profile.handle.trim())
       )
+      .map((profile) => profile.handle.trim());
+    const metaPageIds = [
+      ...new Set([...metaPageIdsFromTags(account.tags), ...publishedMetaPageIds])
     ].slice(0, 10);
     const external = await collectExternalObservations(account.domain, {
       providers: deps.observationProviders,

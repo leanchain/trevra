@@ -1,4 +1,5 @@
 import { id, type Db } from '../db.js';
+import { META_PAGE_ID_RE, withMetaPageId } from './identities.js';
 import type {
   Account,
   AccountFeedback,
@@ -1045,6 +1046,43 @@ export async function setAccountStatus(
   `
     )
     .get<AccountRow>(status, status === 'active' ? iso : null, iso, workspaceId, accountId);
+  return row ? toAccount(row) : null;
+}
+
+/**
+ * Set the verified numeric Facebook Page identity used by Meta Ad Library.
+ *
+ * The value is kept in Trevra's internal tag namespace for now so this does not
+ * add a provider-specific database column. Ordinary operator tags are preserved.
+ * Updating identity makes an active account due immediately so the next sweep
+ * establishes the new Meta baseline without waiting for the normal cadence.
+ */
+export async function setAccountMetaPageId(
+  db: Db,
+  workspaceId: string,
+  accountId: string,
+  pageId: string | null,
+  now: Date = new Date()
+): Promise<Account | null> {
+  if (pageId !== null && !META_PAGE_ID_RE.test(pageId)) {
+    throw new Error('Meta Page ID must contain 5 to 30 digits.');
+  }
+  const account = await getAccount(db, workspaceId, accountId);
+  if (!account) return null;
+  const iso = now.toISOString();
+  const tags = withMetaPageId(account.tags, pageId);
+  const row = await db
+    .prepare(
+      `
+    UPDATE accounts
+       SET tags=?::text[],
+           next_sweep_at=CASE WHEN status='active' THEN ?::timestamptz ELSE NULL END,
+           updated_at=?::timestamptz
+     WHERE workspace_id=? AND id=?
+     RETURNING ${ACCOUNT_COLUMNS}
+  `
+    )
+    .get<AccountRow>(tags, iso, iso, workspaceId, accountId);
   return row ? toAccount(row) : null;
 }
 

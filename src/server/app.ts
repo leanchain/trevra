@@ -425,6 +425,7 @@ import {
   listRankedAccounts,
   recordAccountFeedback,
   rejectedSignalShapes,
+  setAccountMetaPageId,
   setAccountStatus
 } from './accounts/store.js';
 import { rescoreAccounts, rescoreWorkspace } from './accounts/score.js';
@@ -6797,6 +6798,21 @@ export function createApp(db: Db) {
     }
   });
 
+  app.patch('/api/accounts/:id/observation-identity', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = accountObservationIdentitySchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const accountId = String(req.params.id);
+      const account = await setAccountMetaPageId(db, workspaceId, accountId, input.metaPageId);
+      if (!account) return res.status(404).json({ error: 'Account not found' });
+      const detail = await accountDetail(db, workspaceId, accountId);
+      if (!detail) return res.status(404).json({ error: 'Account not found' });
+      res.json(detail);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post('/api/accounts/:id/feedback', async (req: AuthedRequest, res, next) => {
     try {
       const input = accountFeedbackSchema.parse(req.body ?? {});
@@ -8999,6 +9015,16 @@ const accountFeedbackSchema = z
   .object({
     verdict: z.enum(['not_a_fit', 'good_fit']),
     reason: z.string().trim().max(500).optional()
+  })
+  .strict();
+
+const accountObservationIdentitySchema = z
+  .object({
+    metaPageId: z
+      .string()
+      .trim()
+      .regex(/^\d{5,30}$/)
+      .nullable()
   })
   .strict();
 

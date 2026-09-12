@@ -16,6 +16,7 @@ import {
   importAccounts,
   rescoreAccounts,
   sendAccountFeedback,
+  setAccountMetaPageId,
   sourceAccounts,
   type AccountImportResult,
   type AccountScore,
@@ -136,6 +137,9 @@ const ageCopy = (ageDays: number) => (ageDays === 0 ? 'today' : `${plural(ageDay
 
 /** `https://kestrel.dev` for a stored `kestrel.dev`. The domain IS the identity of the row. */
 const siteUrl = (domain: string) => `https://${domain}`;
+const META_PAGE_ID_TAG_RE = /^meta-page-id:(\d{5,30})$/i;
+const metaPageIdFromTags = (tags: readonly string[]): string =>
+  tags.map((tag) => META_PAGE_ID_TAG_RE.exec(tag.trim())?.[1] ?? '').find(Boolean) ?? '';
 
 export function AccountsScreen({ setToast }: { setToast: (message: string) => void }) {
   const [accounts, setAccounts] = useState<RankedAccount[]>([]);
@@ -326,6 +330,24 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     }
   };
 
+  const saveMetaPageId = async (row: RankedAccount, metaPageId: string | null) => {
+    setBusyId(row.account.id);
+    try {
+      const updated = await setAccountMetaPageId(row.account.id, metaPageId);
+      setAccounts((current) =>
+        current.map((entry) => (entry.account.id === row.account.id ? updated : entry))
+      );
+      setToast(
+        metaPageId ? 'Meta Page ID saved. A fresh sweep is due now.' : 'Meta Page ID cleared.'
+      );
+      setError('');
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to save that Meta Page ID'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const markNotAFit = async (row: RankedAccount) => {
     setBusyId(row.account.id);
     try {
@@ -397,6 +419,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
                 open={openId === row.account.id}
                 busy={busyId === row.account.id}
                 onToggle={() => setOpenId(openId === row.account.id ? null : row.account.id)}
+                onMetaPageId={(value) => void saveMetaPageId(row, value)}
                 onNotAFit={() => void markNotAFit(row)}
               />
             ))}
@@ -1199,20 +1222,18 @@ function AccountRow({
   open,
   busy,
   onToggle,
+  onMetaPageId,
   onNotAFit
 }: {
   row: RankedAccount;
   open: boolean;
   busy: boolean;
   onToggle: () => void;
+  onMetaPageId: (value: string | null) => void;
   onNotAFit: () => void;
 }) {
   const { account, score, signals } = row;
   const rejected = account.status === 'not_a_fit';
-  // The expansion is the evidence, and there are two kinds of it: a score's
-  // reasoning, or -- before the scorer has run -- the raw signals the sweep
-  // has stored so far. With neither, there is nothing to expand into.
-  const expandable = Boolean(score) || signals.length > 0;
 
   return (
     <article className={`acc-row${rejected ? ' is-rejected' : ''}`}>
@@ -1234,12 +1255,10 @@ function AccountRow({
       </p>
 
       <div className="acc-row-actions">
-        {expandable && (
-          <button className="ghost-button" type="button" onClick={onToggle} aria-expanded={open}>
-            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            {score ? 'Why this score' : 'What has been read'}
-          </button>
-        )}
+        <button className="ghost-button" type="button" onClick={onToggle} aria-expanded={open}>
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {score ? 'Why this score' : signals.length > 0 ? 'What has been read' : 'Account details'}
+        </button>
         <a
           className="li-link acc-site"
           href={siteUrl(account.domain)}
@@ -1263,8 +1282,82 @@ function AccountRow({
         </button>
       </div>
 
-      {open && (score ? <ScorePanel score={score} /> : <SignalPanel row={row} />)}
+      {open && (
+        <div className="acc-expanded-stack">
+          {score ? (
+            <ScorePanel score={score} />
+          ) : signals.length > 0 ? (
+            <SignalPanel row={row} />
+          ) : null}
+          <ObservationIdentityPanel account={account} busy={busy} onMetaPageId={onMetaPageId} />
+        </div>
+      )}
     </article>
+  );
+}
+
+function ObservationIdentityPanel({
+  account,
+  busy,
+  onMetaPageId
+}: {
+  account: RankedAccount['account'];
+  busy: boolean;
+  onMetaPageId: (value: string | null) => void;
+}) {
+  const current = metaPageIdFromTags(account.tags);
+  return (
+    <section className="acc-observation-identity" aria-label="Observation identity">
+      <div>
+        <strong>Meta Ad Library identity</strong>
+        <p>
+          Exact Facebook Page ID only. Trevra never matches advertisers by brand name or vanity URL.
+        </p>
+      </div>
+      <form
+        className="acc-observation-identity-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const value = String(new FormData(event.currentTarget).get('metaPageId') ?? '').trim();
+          onMetaPageId(value || null);
+        }}
+      >
+        <label>
+          Facebook Page ID
+          <input
+            key={current || 'empty'}
+            name="metaPageId"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]{5,30}"
+            defaultValue={current}
+            placeholder="123456789012345"
+            disabled={busy}
+            aria-describedby={`meta-page-help-${account.id}`}
+          />
+        </label>
+        <div className="acc-observation-identity-actions">
+          <button className="secondary-button" type="submit" disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={14} /> : null}
+            {current ? 'Update ID' : 'Save ID'}
+          </button>
+          {current && (
+            <button
+              className="ghost-button"
+              type="button"
+              disabled={busy}
+              onClick={() => onMetaPageId(null)}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </form>
+      <small id={`meta-page-help-${account.id}`} className="li-hint">
+        Saving makes this active account due for a fresh sweep so Meta measurement can baseline
+        immediately.
+      </small>
+    </section>
   );
 }
 

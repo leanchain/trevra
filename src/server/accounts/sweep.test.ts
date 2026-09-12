@@ -804,7 +804,7 @@ describe('runAccountSweep', () => {
     expect((await signalRows(accountId)).some((row) => row.kind === 'meta-ads-started')).toBe(true);
   });
 
-  it('passes only explicitly verified numeric Meta Page ids from account tags', async () => {
+  it('passes only exact numeric Meta Page ids from verified tags or first-party Facebook links', async () => {
     await makeAccount({
       domain: 'meta-page.test',
       tags: [
@@ -837,14 +837,17 @@ describe('runAccountSweep', () => {
     await runAccountSweep(db, WORKSPACE_ID, {
       now: () => T0,
       fetchImpl: site({
-        '/': home('Meta Page'),
+        '/': home('Meta Page').replace(
+          '</body>',
+          '<a href="https://facebook.com/987654321012345">Facebook</a><a href="https://facebook.com/acme">Facebook vanity</a></body>'
+        ),
         '/careers': careers([]),
         '/pricing': pricing('29')
       }),
       observationProviders: [provider],
       sleep: async () => undefined
     });
-    expect(received).toEqual(['123456789012345']);
+    expect(received).toEqual(['123456789012345', '987654321012345']);
   });
 
   it('bounds one pass, and a nonsense ceiling still runs at least one account', async () => {

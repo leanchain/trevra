@@ -3242,6 +3242,16 @@ export async function getAccount(id: string): Promise<RankedAccount> {
   return request(`/api/accounts/${encodeURIComponent(id)}`);
 }
 
+export async function setAccountMetaPageId(
+  id: string,
+  metaPageId: string | null
+): Promise<RankedAccount> {
+  return request(`/api/accounts/${encodeURIComponent(id)}/observation-identity`, {
+    method: 'PATCH',
+    body: JSON.stringify({ metaPageId })
+  });
+}
+
 /** The verdict is training data about the SHAPE of the signals, not just this one company. */
 export async function sendAccountFeedback(
   id: string,
