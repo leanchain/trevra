@@ -326,7 +326,13 @@ describe('single-operator production on loopback', () => {
     ).not.toThrow();
   });
 
-  it('accepts an optional YouTube Data API key for measured channel activity', () => {
+  it('accepts independent Facebook Page public-data and YouTube API credentials', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN: 'facebook-system-user-token'
+      })
+    ).not.toThrow();
     expect(() =>
       validateEnvironment({ ...production, TREVRA_YOUTUBE_API_KEY: 'youtube-api-key' })
     ).not.toThrow();

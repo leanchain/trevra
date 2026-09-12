@@ -42,14 +42,17 @@ describe('observation provider health', () => {
     const priorYouTube = process.env.TREVRA_YOUTUBE_API_KEY;
     const priorMeta = process.env.TREVRA_META_GRAPH_ACCESS_TOKEN;
     const priorInstagram = process.env.TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID;
+    const priorFacebook = process.env.TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN;
     delete process.env.TREVRA_YOUTUBE_API_KEY;
     delete process.env.TREVRA_META_GRAPH_ACCESS_TOKEN;
     delete process.env.TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID;
+    delete process.env.TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN;
     try {
       const rows = await listObservationProviderHealth(db, WORKSPACE, T0);
       expect(byKey(rows, 'substack-public-feed').availability.mode).toBe('ready');
       expect(byKey(rows, 'beehiiv-public-feed').availability.mode).toBe('ready');
       expect(byKey(rows, 'youtube-data-api').availability.mode).toBe('needs-credential');
+      expect(byKey(rows, 'facebook-page-public').availability.mode).toBe('needs-credential');
       expect(byKey(rows, 'instagram-business-discovery').availability.mode).toBe(
         'needs-credential'
       );
@@ -60,6 +63,8 @@ describe('observation provider health', () => {
       else process.env.TREVRA_META_GRAPH_ACCESS_TOKEN = priorMeta;
       if (priorInstagram === undefined) delete process.env.TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID;
       else process.env.TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID = priorInstagram;
+      if (priorFacebook === undefined) delete process.env.TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN;
+      else process.env.TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN = priorFacebook;
     }
   });
 

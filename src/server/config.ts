@@ -190,6 +190,7 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON: z.string().optional(),
       TREVRA_META_GRAPH_ACCESS_TOKEN: z.string().optional(),
       TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID: z.string().optional(),
+      TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN: z.string().min(1).optional(),
       TREVRA_META_GRAPH_VERSION: z.string().optional(),
       TREVRA_META_AD_LIBRARY_ACCESS_TOKEN: z.string().optional(),
       TREVRA_META_AD_LIBRARY_COUNTRIES_JSON: z.string().optional(),

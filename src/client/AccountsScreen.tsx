@@ -1309,9 +1309,10 @@ function ObservationIdentityPanel({
   return (
     <section className="acc-observation-identity" aria-label="Observation identity">
       <div>
-        <strong>Meta Ad Library identity</strong>
+        <strong>Verified Facebook Page ID</strong>
         <p>
-          Exact Facebook Page ID only. Trevra never matches advertisers by brand name or vanity URL.
+          Exact numeric Page ID only. It can power Facebook public metrics and Meta Ad Library
+          counts; Trevra never matches by brand name or vanity URL.
         </p>
       </div>
       <form
@@ -1354,8 +1355,8 @@ function ObservationIdentityPanel({
         </div>
       </form>
       <small id={`meta-page-help-${account.id}`} className="li-hint">
-        Saving makes this active account due for a fresh sweep so Meta measurement can baseline
-        immediately.
+        Saving makes this active account due for a fresh sweep so Facebook/Meta measurements can
+        baseline immediately.
       </small>
     </section>
   );

@@ -88,9 +88,15 @@ Configure both:
 
 Optional: `TREVRA_META_GRAPH_VERSION` (defaults to `v26.0`; malformed values are rejected). A personal/non-Professional target or an incomplete 30-day media page produces a warning and no fabricated measurement.
 
+### Facebook Page public data
+
+A verified numeric **Facebook Page ID** can also drive public social measurement when `TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN` is configured with Meta Page Public Content Access or Page Public Metadata Access. Meta's Page reference exposes public `followers_count`; the Page's own `/posts` edge supplies trailing-30-day cadence. Trevra queries only exact Page IDs, sends the token in the Authorization header rather than the URL, reconstructs pagination from cursors, and leaves cadence unmeasured if more than 300 posts fall inside the bounded 30-day window. The first measurement is only a baseline; later meaningful follower/cadence rises flow through the same `social-growth` / `social-cadence-up` interpreter as Instagram and YouTube.
+
+The credential is intentionally separate from Instagram Business Discovery: `TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN` can be a deployment-owned system-user token with the required Page public-data feature approval. A missing permission, inaccessible/restricted Page, Page-ID mismatch, or omitted field degrades to a warning rather than a zero measurement.
+
 ### Meta Ad Library
 
-Meta commercial-ad observation is built in, but identity is never guessed. In the account's details panel, save the verified numeric **Facebook Page ID** under **Meta Ad Library identity**. Trevra also accepts a numeric Page ID when the company itself publishes a numeric `facebook.com/<page-id>` link; vanity handles are never treated as exact identity. The legacy/import tag `meta-page-id:<numeric-page-id>` remains compatible but is an internal representation, not the primary UX.
+Meta commercial-ad observation is built in, but identity is never guessed. In the account's details panel, save the verified numeric **Facebook Page ID** under **Verified Facebook Page ID**. Trevra also accepts a numeric Page ID when the company itself publishes a numeric `facebook.com/<page-id>` link; vanity handles are never treated as exact identity. The legacy/import tag `meta-page-id:<numeric-page-id>` remains compatible but is an internal representation, not the primary UX.
 
 Configure both `TREVRA_META_AD_LIBRARY_ACCESS_TOKEN` and `TREVRA_META_AD_LIBRARY_COUNTRIES_JSON` (for example `["DE","FR","GB"]`). The reached-country list is restricted to EU member states and GB because Meta's `ad_type=ALL` commercial-ad API coverage is that surface; Trevra does not present the resulting number as a global active-ad count. Saving or changing the Page ID makes an active account immediately due for a fresh sweep so the new identity can establish a baseline without waiting for the normal cadence.
 

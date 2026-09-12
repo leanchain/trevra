@@ -4,6 +4,7 @@ import type { FetchLike } from '../skills/guard.js';
 import { interpretMeasurements } from './measurements.js';
 import { recordObservationProviderFailure, recordObservationProviderSuccess } from './health.js';
 import { configuredBeehiivPublicFeedProviders } from './providers/beehiiv.js';
+import { configuredFacebookPageProviders } from './providers/facebook.js';
 import { configuredHttpObservationProviders } from './providers/http.js';
 import { configuredInstagramBusinessDiscoveryProviders } from './providers/instagram.js';
 import { configuredMetaAdLibraryProviders } from './providers/meta-ads.js';
@@ -43,6 +44,7 @@ export async function collectExternalObservations(
   const providers = options.providers ?? [
     ...configuredSubstackPublicFeedProviders(),
     ...configuredBeehiivPublicFeedProviders(),
+    ...configuredFacebookPageProviders(),
     ...configuredYouTubeDataApiProviders(),
     ...configuredInstagramBusinessDiscoveryProviders(),
     ...configuredMetaAdLibraryProviders(),
