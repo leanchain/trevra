@@ -55,18 +55,19 @@ export async function getToday(
 ): Promise<TodayPayload> {
   const recentSince = new Date(now.getTime() - 7 * 86_400_000).toISOString();
 
-  const [seatRows, replyRows, unknownRows, approvalRows, inboundRows, hotRows] = await Promise.all([
-    db
-      .prepare(
-        `SELECT seat_key,label,posture,paused_reason,updated_at
+  const [seatRows, replyRows, unknownRows, approvalRows, demandRows, inboundRows, hotRows] =
+    await Promise.all([
+      db
+        .prepare(
+          `SELECT seat_key,label,posture,paused_reason,updated_at
          FROM linkedin_seats
          WHERE workspace_id=? AND posture IN ('paused','cooldown')
          ORDER BY updated_at ASC LIMIT 20`
-      )
-      .all<Record<string, unknown>>(workspaceId),
-    db
-      .prepare(
-        `SELECT t.id,t.name,t.snippet,t.last_message_at,t.synced_at,t.campaign_id
+        )
+        .all<Record<string, unknown>>(workspaceId),
+      db
+        .prepare(
+          `SELECT t.id,t.name,t.snippet,t.last_message_at,t.synced_at,t.campaign_id
          FROM linkedin_threads t
          WHERE t.workspace_id=? AND t.unread=TRUE
            AND EXISTS (
@@ -75,44 +76,77 @@ export async function getToday(
            )
          ORDER BY COALESCE(t.last_message_at,t.synced_at) ASC NULLS LAST,t.id ASC
          LIMIT 50`
-      )
-      .all<Record<string, unknown>>(workspaceId),
-    db
-      .prepare(
-        `SELECT id,campaign_id,member_id,kind,status,outcome_known,last_error,updated_at
+        )
+        .all<Record<string, unknown>>(workspaceId),
+      db
+        .prepare(
+          `SELECT id,campaign_id,member_id,kind,status,outcome_known,last_error,updated_at
          FROM linkedin_campaign_channel_actions
          WHERE workspace_id=? AND (status='unknown' OR outcome_known=FALSE)
          ORDER BY updated_at ASC,id ASC LIMIT 50`
-      )
-      .all<Record<string, unknown>>(workspaceId),
-    db
-      .prepare(
-        `SELECT s.id,s.step_id,s.updated_at,r.id AS run_id,r.playbook_key
+        )
+        .all<Record<string, unknown>>(workspaceId),
+      db
+        .prepare(
+          `SELECT s.id,s.step_id,s.updated_at,r.id AS run_id,r.playbook_key
          FROM playbook_step_runs s
          JOIN playbook_runs r ON r.id=s.playbook_run_id
          WHERE r.workspace_id=? AND s.status='waiting_approval'
          ORDER BY s.updated_at ASC,s.id ASC LIMIT 50`
-      )
-      .all<Record<string, unknown>>(workspaceId),
-    db
-      .prepare(
-        `SELECT id,contact_id,account_id,kind,person_name,person_email,person_phone,message,received_at
-         FROM inbound_submissions
-         WHERE workspace_id=? AND received_at>=?::timestamptz
-         ORDER BY received_at ASC,id ASC LIMIT 50`
-      )
-      .all<Record<string, unknown>>(workspaceId, recentSince),
-    db
-      .prepare(
-        `SELECT a.id,a.name,a.domain,s.score,s.newest_signal_at,s.computed_at
+        )
+        .all<Record<string, unknown>>(workspaceId),
+      db
+        .prepare(
+          `SELECT r.id,r.person_id,r.account_id,r.title,r.summary,r.recommended_action,r.updated_at,
+                p.name AS person_name,p.email AS person_email,a.name AS account_name
+         FROM recommendations r
+         JOIN contacts p ON p.workspace_id=r.workspace_id AND p.id=r.person_id
+         LEFT JOIN accounts a ON a.workspace_id=r.workspace_id AND a.id=r.account_id
+         WHERE r.workspace_id=? AND r.type='qualified_demand'
+           AND r.status NOT IN ('dismissed','completed')
+           AND (r.snoozed_until IS NULL OR r.snoozed_until<=CURRENT_TIMESTAMP)
+           AND r.updated_at>=?::timestamptz
+         ORDER BY r.updated_at ASC,r.id ASC LIMIT 50`
+        )
+        .all<Record<string, unknown>>(workspaceId, recentSince),
+      db
+        .prepare(
+          `SELECT i.id,i.contact_id,i.account_id,i.kind,i.person_name,i.person_email,i.person_phone,i.message,i.received_at
+         FROM inbound_submissions i
+         WHERE i.workspace_id=? AND i.received_at>=?::timestamptz
+           AND NOT EXISTS (
+             SELECT 1
+             FROM recommendation_evidence re
+             JOIN recommendations r ON r.id=re.recommendation_id
+             WHERE r.workspace_id=i.workspace_id
+               AND r.type='qualified_demand'
+               AND r.status NOT IN ('dismissed','completed')
+               AND r.updated_at>=?::timestamptz
+               AND re.source_type='inbound_submission'
+               AND re.source_id=i.id
+           )
+         ORDER BY i.received_at ASC,i.id ASC LIMIT 50`
+        )
+        .all<Record<string, unknown>>(workspaceId, recentSince, recentSince),
+      db
+        .prepare(
+          `SELECT a.id,a.name,a.domain,s.score,s.newest_signal_at,s.computed_at
          FROM account_scores s
          JOIN accounts a ON a.id=s.account_id AND a.workspace_id=s.workspace_id
          WHERE s.workspace_id=? AND s.tier='hot'
            AND COALESCE(s.newest_signal_at,s.computed_at)>=?::timestamptz
+           AND NOT EXISTS (
+             SELECT 1 FROM recommendations r
+             WHERE r.workspace_id=s.workspace_id
+               AND r.account_id=s.account_id
+               AND r.type='qualified_demand'
+               AND r.status NOT IN ('dismissed','completed')
+               AND r.updated_at>=?::timestamptz
+           )
          ORDER BY COALESCE(s.newest_signal_at,s.computed_at) ASC,a.id ASC LIMIT 50`
-      )
-      .all<Record<string, unknown>>(workspaceId, recentSince)
-  ]);
+        )
+        .all<Record<string, unknown>>(workspaceId, recentSince, recentSince)
+    ]);
 
   const items: TodayItem[] = [];
 
@@ -183,6 +217,27 @@ export async function getToday(
       observedAt: iso(row.updated_at, now),
       reference: { type: 'playbook_step_run', id: String(row.id) },
       metadata: { playbookRunId: String(row.run_id ?? '') }
+    });
+  }
+
+  for (const row of demandRows) {
+    const personName = String(row.person_name ?? row.person_email ?? 'Known person');
+    const accountName = String(row.account_name ?? 'Account');
+    items.push({
+      id: `demand:${String(row.id)}`,
+      kind: 'qualification_decision',
+      priority: 45,
+      title: String(row.title ?? `Talk to ${personName} at ${accountName}`),
+      detail: String(row.summary ?? 'Several independent commercial signals line up now.'),
+      href: '/outreach/inbound',
+      observedAt: iso(row.updated_at, now),
+      reference: { type: 'recommendation', id: String(row.id) },
+      metadata: {
+        personId: String(row.person_id ?? ''),
+        accountId: row.account_id ? String(row.account_id) : null,
+        recommendationType: 'qualified_demand',
+        recommendedAction: String(row.recommended_action ?? '')
+      }
     });
   }
 

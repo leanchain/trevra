@@ -2,6 +2,7 @@ import type { Db } from './db.js';
 import { runAccountSweep } from './accounts/sweep.js';
 import { rescoreAccounts } from './accounts/score.js';
 import { rejectedSignalShapes } from './accounts/store.js';
+import { runRecommendationEngine } from './recommendation-engine.js';
 
 /**
  * Accounts swept per cycle. Small on purpose: a pass paces itself 20-90s
@@ -60,6 +61,17 @@ export async function runAutomationCycle(db: Db, workspaceId: string): Promise<A
       result.failed += 1;
     }
   }
+
+  // Recommendations are a projection over durable GTM evidence. Refresh them
+  // after the account sweep so a first-party event and a newly-hot account can
+  // become one founder decision on the same worker turn. This performs no
+  // network calls; each candidate remains workspace-scoped and evidence-backed.
+  try {
+    await runRecommendationEngine(db, workspaceId, new Date(), { includeStaleProposals: false });
+  } catch {
+    result.failed += 1;
+  }
+
   return result;
 }
 

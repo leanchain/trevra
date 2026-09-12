@@ -1,5 +1,6 @@
 import type { Db } from './db.js';
 import { id } from './db.js';
+import { buildDemandCandidates } from './demand/candidates.js';
 
 interface CandidateEvidence {
   sourceType: string;
@@ -8,11 +9,12 @@ interface CandidateEvidence {
   category: 'request' | 'history' | 'supporting';
   excerpt: string;
   externalUrl?: string | null;
+  observedAt?: string | null;
 }
 
 interface Candidate {
   sourceKey: string;
-  type: 'stale_proposal';
+  type: 'stale_proposal' | 'qualified_demand';
   personId: string;
   accountId: string | null;
   title: string;
@@ -39,9 +41,15 @@ const DAY = 86_400_000;
 export async function runRecommendationEngine(
   db: Db,
   workspaceId: string,
-  now = new Date()
+  now = new Date(),
+  options: { includeStaleProposals?: boolean } = {}
 ): Promise<number> {
-  const candidates = await detectStaleProposals(db, workspaceId, now);
+  const candidates = [
+    ...(await detectQualifiedDemand(db, workspaceId, now)),
+    ...(options.includeStaleProposals === false
+      ? []
+      : await detectStaleProposals(db, workspaceId, now))
+  ];
 
   await db.transaction(async (tx) => {
     for (const candidate of candidates) {
@@ -100,8 +108,8 @@ export async function runRecommendationEngine(
           .prepare(
             `
             INSERT INTO recommendation_evidence
-              (id,workspace_id,recommendation_id,source_type,source_id,label,category,external_url,excerpt,created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+              (id,workspace_id,recommendation_id,source_type,source_id,label,category,external_url,excerpt,observed_at,created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
           `
           )
           .run(
@@ -114,6 +122,7 @@ export async function runRecommendationEngine(
             evidence.category,
             evidence.externalUrl ?? null,
             evidence.excerpt,
+            evidence.observedAt ?? null,
             timestamp
           );
       }
@@ -164,8 +173,8 @@ async function upsertProofPack(
       .prepare(
         `
         INSERT INTO proof_pack_items
-          (id,workspace_id,proof_pack_id,category,label,excerpt,source_type,source_id,external_url,sequence,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+          (id,workspace_id,proof_pack_id,category,label,excerpt,source_type,source_id,external_url,observed_at,sequence,created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
       `
       )
       .run(
@@ -178,10 +187,47 @@ async function upsertProofPack(
         item.sourceType,
         item.sourceId,
         item.externalUrl ?? null,
+        item.observedAt ?? null,
         index,
         timestamp
       );
   }
+}
+
+async function detectQualifiedDemand(db: Db, workspaceId: string, now: Date): Promise<Candidate[]> {
+  const demand = await buildDemandCandidates(db, workspaceId, now);
+  return demand.map((candidate) => {
+    const confidence = Math.min(
+      0.98,
+      0.75 + candidate.dimensions.firstPartyIntent * 0.1 + candidate.dimensions.accountIntent * 0.1
+    );
+    const urgency = 1 + candidate.dimensions.recency * 0.4;
+    return {
+      sourceKey: candidate.sourceKey,
+      type: 'qualified_demand',
+      personId: candidate.personId,
+      accountId: candidate.accountId,
+      title: candidate.title,
+      summary: candidate.summary,
+      proofSummary: candidate.rationale.join('; '),
+      confidence,
+      urgency,
+      priorityScore: Math.round(confidence * urgency * 1000),
+      recommendedAction:
+        candidate.recommendedAction === 'prepare_outreach'
+          ? 'Prepare a contextual reply or outreach using the first-party request and current account evidence.'
+          : candidate.recommendedAction,
+      evidence: candidate.evidence.map((item) => ({
+        sourceType: item.sourceType,
+        sourceId: item.sourceId,
+        label: item.label,
+        category: item.category,
+        excerpt: item.excerpt,
+        externalUrl: item.externalUrl ?? null,
+        observedAt: item.observedAt
+      }))
+    } satisfies Candidate;
+  });
 }
 
 async function detectStaleProposals(db: Db, workspaceId: string, now: Date): Promise<Candidate[]> {
@@ -194,7 +240,10 @@ async function detectStaleProposals(db: Db, workspaceId: string, now: Date): Pro
           ORDER BY m.occurred_at DESC LIMIT 1) AS message_id,
         (SELECT m.body FROM messages m
           WHERE m.workspace_id=o.workspace_id AND m.person_id=o.person_id AND m.direction='outbound'
-          ORDER BY m.occurred_at DESC LIMIT 1) AS message_body
+          ORDER BY m.occurred_at DESC LIMIT 1) AS message_body,
+        (SELECT m.occurred_at FROM messages m
+          WHERE m.workspace_id=o.workspace_id AND m.person_id=o.person_id AND m.direction='outbound'
+          ORDER BY m.occurred_at DESC LIMIT 1) AS message_at
       FROM opportunities o
       JOIN contacts p ON p.id=o.person_id AND p.workspace_id=o.workspace_id
       LEFT JOIN accounts a ON a.id=o.account_id AND a.workspace_id=o.workspace_id
@@ -224,7 +273,8 @@ async function detectStaleProposals(db: Db, workspaceId: string, now: Date): Pro
         sourceId: String(row.id),
         label: 'Opportunity status',
         category: 'history',
-        excerpt: `Proposal was sent ${ageDays} days ago and remains marked proposal_sent.`
+        excerpt: `Proposal was sent ${ageDays} days ago and remains marked proposal_sent.`,
+        observedAt: new Date(String(row.proposal_sent_at)).toISOString()
       }
     ];
     if (row.message_id && row.message_body) {
@@ -233,7 +283,8 @@ async function detectStaleProposals(db: Db, workspaceId: string, now: Date): Pro
         sourceId: String(row.message_id),
         label: 'Last outbound message',
         category: 'request',
-        excerpt: String(row.message_body).slice(0, 320)
+        excerpt: String(row.message_body).slice(0, 320),
+        observedAt: row.message_at ? new Date(String(row.message_at)).toISOString() : null
       });
     }
 

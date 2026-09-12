@@ -26,7 +26,7 @@ export async function listRecommendations(db: Db, workspaceId: string): Promise<
       const evidenceRows = await db
         .prepare(
           `
-      SELECT id,source_type,source_id,label,category,external_url,excerpt
+      SELECT id,source_type,source_id,label,category,external_url,excerpt,observed_at
       FROM recommendation_evidence WHERE recommendation_id=? ORDER BY created_at,id
     `
         )
@@ -46,7 +46,7 @@ export async function listRecommendations(db: Db, workspaceId: string): Promise<
         ? await db
             .prepare(
               `
-          SELECT id,source_type,source_id,label,category,external_url,excerpt
+          SELECT id,source_type,source_id,label,category,external_url,excerpt,observed_at
           FROM proof_pack_items WHERE proof_pack_id=? ORDER BY sequence
         `
             )
@@ -141,6 +141,7 @@ function serializeEvidence(rows: Array<Record<string, unknown>>) {
     label: String(ev.label ?? 'Evidence'),
     category: String(ev.category ?? 'supporting'),
     externalUrl: ev.external_url ? String(ev.external_url) : null,
-    excerpt: String(ev.excerpt)
+    excerpt: String(ev.excerpt),
+    observedAt: ev.observed_at ? new Date(String(ev.observed_at)).toISOString() : null
   }));
 }

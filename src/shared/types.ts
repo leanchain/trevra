@@ -1,4 +1,4 @@
-export type RecommendationType = 'stale_proposal';
+export type RecommendationType = 'stale_proposal' | 'qualified_demand';
 
 export type RecommendationStatus =
   'detected' | 'ready' | 'approved' | 'completed' | 'dismissed' | 'snoozed';
@@ -11,6 +11,7 @@ export interface Evidence {
   category: string;
   externalUrl?: string | null;
   excerpt: string;
+  observedAt?: string | null;
 }
 
 export interface ProofPack {

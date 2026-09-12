@@ -3,6 +3,7 @@ import { openDatabase, type Db } from './db.js';
 import { createAccount } from './accounts/store.js';
 import { pauseSeat, upsertSeat } from './linkedin/seats.js';
 import { getToday } from './today.js';
+import { runRecommendationEngine } from './recommendation-engine.js';
 
 const WORKSPACE = 'ws_today_projection_test';
 const NOW = new Date('2026-08-21T08:00:00.000Z');
@@ -196,5 +197,133 @@ describe('getToday', () => {
     expect(today.needsAttention).toEqual([]);
 
     await clearWorkspace(other);
+  });
+});
+
+describe('qualified demand in Today', () => {
+  it('collapses a first-party inbound plus hot account into one commercial decision', async () => {
+    const personId = 'con_today_demand';
+    const sourceId = 'cap_today_demand';
+    await db
+      .prepare(
+        `INSERT INTO contacts
+         (id,workspace_id,name,email,email_normalized,role,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        personId,
+        WORKSPACE,
+        'Maya Patel',
+        'maya@demand.example',
+        'maya@demand.example',
+        'VP Growth',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    await db
+      .prepare(
+        `INSERT INTO capture_sources
+         (id,workspace_id,name,key,kind,status,accepted_count,rejected_count,created_at,updated_at)
+         VALUES (?,?,?,?,?,'active',0,0,?,?)`
+      )
+      .run(
+        sourceId,
+        WORKSPACE,
+        'Beseam scan',
+        'beseam-scan',
+        'diagnostic',
+        NOW.toISOString(),
+        NOW.toISOString()
+      );
+    const account = await createAccount(
+      db,
+      WORKSPACE,
+      { domain: 'demand-today.example', name: 'Demand Today', source: 'manual' },
+      new Date('2026-08-20T09:00:00.000Z')
+    );
+    await db
+      .prepare(
+        `INSERT INTO inbound_submissions
+         (id,workspace_id,capture_source_id,contact_id,account_id,idempotency_key,kind,
+          person_name,person_email,company_domain,company_name,message,page_url,payload_hash,
+          received_at,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        'sub_today_demand',
+        WORKSPACE,
+        sourceId,
+        personId,
+        account.id,
+        'today-demand-1',
+        'scan_completed',
+        'Maya Patel',
+        'maya@demand.example',
+        'demand-today.example',
+        'Demand Today',
+        'Ran the diagnostic and requested the report.',
+        'https://beseam.example/scan/demand-today',
+        'hash-today-demand',
+        '2026-08-21T07:20:00.000Z',
+        '2026-08-21T07:20:00.000Z'
+      );
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        WORKSPACE,
+        account.id,
+        94,
+        'hot',
+        2,
+        '2026-08-21T07:10:00.000Z',
+        '{}',
+        '2026-08-21T07:11:00.000Z'
+      );
+    for (const [index, kind, detail, url] of [
+      [
+        0,
+        'hiring-up',
+        'Hiring increased across growth roles.',
+        'https://demand-today.example/careers'
+      ],
+      [1, 'pricing-changed', 'Enterprise pricing changed.', 'https://demand-today.example/pricing']
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_today_demand_${index}`,
+          WORKSPACE,
+          account.id,
+          kind,
+          detail,
+          url,
+          `2026-08-21T0${6 + index}:00:00.000Z`,
+          `today-demand-${index}`,
+          `2026-08-21T0${6 + index}:00:00.000Z`
+        );
+    }
+
+    await runRecommendationEngine(db, WORKSPACE, NOW);
+    const today = await getToday(db, WORKSPACE, NOW);
+
+    expect(today.needsAttention).toHaveLength(1);
+    expect(today.needsAttention[0]).toMatchObject({
+      kind: 'qualification_decision',
+      title: 'Talk to Maya Patel at Demand Today',
+      reference: { type: 'recommendation' },
+      metadata: {
+        personId,
+        accountId: account.id,
+        recommendationType: 'qualified_demand'
+      }
+    });
   });
 });

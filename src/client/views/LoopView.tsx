@@ -659,8 +659,8 @@ function TodayAttention({
           <CheckCircle2 size={24} />
           <h4>Nothing needs you right now</h4>
           <p>
-            Trevra has no unresolved safety block, reply, approval, inbound request, or hot-account
-            review to hand you.
+            Trevra has no unresolved safety block, reply, approval, qualified demand, inbound
+            request, or hot-account review to hand you.
           </p>
         </div>
       ) : (
