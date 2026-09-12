@@ -6,7 +6,7 @@ Trevra's ecommerce observation plane turns dated changes around a store into the
 
 Native account sweeps now cover:
 
-- hiring/careers changes;
+- hiring/careers changes, including explicitly published external ATS boards;
 - pricing and homepage changes;
 - generic site technology changes;
 - Shopify and WooCommerce public product catalogs;
@@ -41,7 +41,8 @@ Today it:
 - returns homepage HTML to Trevra's ecommerce-app detector so app install/removal signals come from the same independent crawl;
 - emits `storefront-rebuild` only when two consecutive live captures show a migration between recognized commerce platforms at >=0.8 confidence on both sides; low-confidence/generic-site changes do not qualify;
 - records first-party newsletter signup surfaces and social-profile links as weak presence signals, without pretending presence means activity or growth;
-- follows at most one same-origin newsletter page and records a company-published Substack publication target when present.
+- follows at most one same-origin newsletter page and records company-published newsletter feed targets when present;
+- follows at most two explicitly published external ATS boards on a strict allowlist (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, BambooHR, Teamtailor, Recruitee, Jobvite, Workday and Personio), each under its own robots/SSRF/request budget. A same-origin careers wrapper that delegates to an unreadable ATS remains **unmeasured** rather than becoming a false zero-openings signal.
 
 An imported platform tag is only a weak prior. Live endpoint evidence wins. The crawler therefore operates on any Trevra account independently of how that account was sourced.
 

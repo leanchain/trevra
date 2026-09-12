@@ -249,6 +249,15 @@ describe('extractJobPostings', () => {
       'Sales Engineer'
     ]);
   });
+
+  it('does not turn ATS board filters/categories into job titles', () => {
+    const html = `<a href="?">All</a>
+      <a href="?department=Engineering">Engineering</a>
+      <a href="?department=&team=Business%20Technology">Business Technology</a>
+      <a href="https://jobs.lever.co/acme/ff939e62-6ea6-4502-b8e3-8ce35b6964bf">Apply</a>
+      <a href="https://jobs.lever.co/acme/ff939e62-6ea6-4502-b8e3-8ce35b6964bf">AI Engineer</a>`;
+    expect(extractJobPostings(html, 'https://jobs.lever.co/acme')).toEqual(['AI Engineer']);
+  });
 });
 
 describe('contentHash', () => {
@@ -307,6 +316,99 @@ describe('captureSnapshot', () => {
     expect(snapshot.pricingUrl).toBe('https://acme.test/pricing');
     expect(snapshot.pricingHash).toHaveLength(16);
     expect(snapshot.tech).toEqual(['segment']);
+  });
+
+  it('follows one explicitly published external ATS board under its own robots/request budget', async () => {
+    const seen: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(input);
+      seen.push(url.toString());
+      if (url.hostname === 'acme.test') {
+        if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+        if (url.pathname === '/')
+          return html('<h1>Acme</h1><a href="https://jobs.lever.co/acme">Careers</a>');
+        return new Response('not found', { status: 404 });
+      }
+      if (url.hostname === 'jobs.lever.co') {
+        if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+        if (url.pathname === '/acme')
+          return html(
+            '<a href="https://jobs.lever.co/acme/one">Backend Engineer</a>' +
+              '<a href="https://jobs.lever.co/acme/two">Head of Sales</a>'
+          );
+      }
+      return new Response('not found', { status: 404 });
+    };
+
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['hiring'],
+      fetchImpl,
+      pageBudget: 5
+    });
+
+    expect(snapshot.jobsUrl).toBe('https://jobs.lever.co/acme');
+    expect(snapshot.jobCount).toBe(2);
+    expect(snapshot.jobTitles).toEqual(['Backend Engineer', 'Head of Sales']);
+    expect(seen).toContain('https://jobs.lever.co/robots.txt');
+    expect(seen).not.toContain('https://acme.test/careers');
+    expect(seen).not.toContain('https://acme.test/jobs');
+  });
+
+  it('does not report zero hiring when a careers landing page delegates to an unreadable ATS', async () => {
+    let atsPageReads = 0;
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(input);
+      if (url.hostname === 'acme.test') {
+        if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+        if (url.pathname === '/') return html('<a href="/careers">Careers</a>');
+        if (url.pathname === '/careers')
+          return html('<a href="https://jobs.ashbyhq.com/acme">View jobs</a>');
+        return new Response('not found', { status: 404 });
+      }
+      if (url.hostname === 'jobs.ashbyhq.com') {
+        if (url.pathname === '/robots.txt') {
+          return new Response('User-agent: *\nDisallow: /', {
+            status: 200,
+            headers: { 'content-type': 'text/plain' }
+          });
+        }
+        atsPageReads += 1;
+        return html('<a href="/acme/role">Backend Engineer</a>');
+      }
+      return new Response('not found', { status: 404 });
+    };
+
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['hiring'],
+      fetchImpl,
+      pageBudget: 5
+    });
+
+    expect(snapshot.jobsUrl).toBeNull();
+    expect(snapshot.jobCount).toBeNull();
+    expect(snapshot.jobTitles).toEqual([]);
+    expect(atsPageReads).toBe(0);
+  });
+
+  it('never follows an arbitrary off-origin careers link outside the ATS allowlist', async () => {
+    let evilReads = 0;
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(input);
+      if (url.hostname === 'evil.example') evilReads += 1;
+      if (url.hostname === 'acme.test' && url.pathname === '/robots.txt')
+        return new Response('', { status: 404 });
+      if (url.hostname === 'acme.test' && url.pathname === '/')
+        return html('<a href="https://evil.example/jobs">Careers</a>');
+      return new Response('not found', { status: 404 });
+    };
+
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['hiring'],
+      fetchImpl,
+      pageBudget: 5
+    });
+    expect(snapshot.jobCount).toBeNull();
+    expect(evilReads).toBe(0);
   });
 
   it('captures first-party newsletter signup and published social profiles from the shared crawl', async () => {

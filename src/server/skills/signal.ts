@@ -141,7 +141,8 @@ export interface ResearchSnapshot {
   tech: string[] | null;
 }
 
-const CAREERS_LINK_RE = /\b(careers?|jobs?|hiring|open roles?|join us|work with us)\b/i;
+const CAREERS_LINK_RE =
+  /\b(careers?|jobs?|hiring|open (?:roles?|positions?|jobs?|openings?)|join us|work with us|view (?:all )?jobs?)\b/i;
 const PRICING_LINK_RE = /\b(pricing|plans?|packages?)\b/i;
 
 const JOB_BOARD_HOSTS =
@@ -156,6 +157,7 @@ const GENERIC_JOB_TEXT: ReadonlySet<string> = new Set([
   'all jobs',
   'view all',
   'view job',
+  'view jobs',
   'view all jobs',
   'see all jobs',
   'open positions',
@@ -176,6 +178,12 @@ export function extractJobPostings(html: string, pageUrl: string): string[] {
     const title = typeof object.title === 'string' ? object.title.replace(/\s+/g, ' ').trim() : '';
     if (title) titles.add(title);
   }
+  let sourceUrl: URL | null = null;
+  try {
+    sourceUrl = new URL(pageUrl);
+  } catch {
+    // The caller already supplies a URL in production; keep the parser total for tests/imports.
+  }
   for (const link of extractLinks(html)) {
     let url: URL;
     try {
@@ -183,7 +191,15 @@ export function extractJobPostings(html: string, pageUrl: string): string[] {
     } catch {
       continue;
     }
-    if (!JOB_BOARD_HOSTS.test(url.hostname) && !JOB_PATH_RE.test(url.pathname)) continue;
+    const atsHost = JOB_BOARD_HOSTS.test(url.hostname);
+    if (!atsHost && !JOB_PATH_RE.test(url.pathname)) continue;
+    if (
+      atsHost &&
+      sourceUrl &&
+      url.hostname.toLowerCase() === sourceUrl.hostname.toLowerCase() &&
+      url.pathname.replace(/\/+$/, '') === sourceUrl.pathname.replace(/\/+$/, '')
+    )
+      continue;
     const title = link.text.trim();
     if (title.length < 3 || title.length > 120) continue;
     if (GENERIC_JOB_TEXT.has(title.toLowerCase())) continue;
@@ -204,6 +220,24 @@ function catalogStateHash(items: readonly CatalogItem[]): string {
 }
 
 /** Links the site itself offers first, declared fallbacks after; at most three. */
+function discoverExternalJobBoards(html: string, pageUrl: string): string[] {
+  const found: string[] = [];
+  for (const link of extractLinks(html)) {
+    if (!CAREERS_LINK_RE.test(link.text)) continue;
+    try {
+      const url = new URL(link.href, pageUrl);
+      if (url.protocol !== 'https:' || url.port || !JOB_BOARD_HOSTS.test(url.hostname)) continue;
+      url.hash = '';
+      const target = url.toString();
+      if (!found.includes(target)) found.push(target);
+      if (found.length >= 2) break;
+    } catch {
+      // Malformed or non-HTTP links are not hiring evidence.
+    }
+  }
+  return found;
+}
+
 function discoverPaths(
   html: string,
   base: URL,
@@ -322,14 +356,79 @@ export async function captureSnapshot(
   let jobCount: number | null = null;
   let jobTitles: string[] = [];
   if (watches.has('hiring')) {
-    for (const path of discoverPaths(html, base, CAREERS_LINK_RE, ['/careers', '/jobs'])) {
-      const response = await get(`${base.origin}${path}`);
-      if (response === null || response.status !== 200) continue;
-      if (response.contentType && !response.contentType.includes('html')) continue;
-      jobsUrl = `${base.origin}${path}`;
-      jobTitles = extractJobPostings(response.text, jobsUrl);
-      jobCount = jobTitles.length;
-      break;
+    const externalBoards: string[] = discoverExternalJobBoards(html, storefront.homeUrl);
+    const attemptedExternal = new Set<string>();
+    let emptyLocal: string | null = null;
+
+    const inspectLocal = async (paths: readonly string[]) => {
+      for (const path of paths) {
+        const pageUrl = `${base.origin}${path}`;
+        const response = await get(pageUrl);
+        if (response === null || response.status !== 200) continue;
+        if (response.contentType && !response.contentType.includes('html')) continue;
+        const titles = extractJobPostings(response.text, pageUrl);
+        if (titles.length > 0) {
+          jobsUrl = pageUrl;
+          jobTitles = titles;
+          jobCount = titles.length;
+          return true;
+        }
+        const linkedBoards = discoverExternalJobBoards(response.text, pageUrl);
+        for (const target of linkedBoards)
+          if (!externalBoards.includes(target) && externalBoards.length < 2)
+            externalBoards.push(target);
+        // A careers page that points to an ATS is a directory, not proof of
+        // zero openings. Only retain an empty same-origin page as zero evidence
+        // when it does not delegate the actual listings elsewhere.
+        if (linkedBoards.length === 0 && emptyLocal === null) emptyLocal = pageUrl;
+      }
+      return false;
+    };
+
+    const explicitPaths = discoverPaths(html, base, CAREERS_LINK_RE, []);
+    await inspectLocal(explicitPaths);
+
+    const inspectExternal = async () => {
+      for (const target of externalBoards.slice(0, 2)) {
+        if (attemptedExternal.has(target)) continue;
+        attemptedExternal.add(target);
+        try {
+          const url = new URL(target);
+          const externalCrawler = await createPublicWebCrawler(url.hostname, {
+            fetchImpl: options.fetchImpl,
+            maxRequests: 4,
+            maxDurationMs: 12_000,
+            minDelayMs: options.fetchImpl ? 0 : 250
+          });
+          const result = await externalCrawler.get(url.toString());
+          if (result.skipped || result.error || !result.response) continue;
+          if (result.response.status !== 200) continue;
+          if (result.response.contentType && !result.response.contentType.includes('html'))
+            continue;
+          jobsUrl = result.finalUrl;
+          jobTitles = extractJobPostings(result.response.text, result.finalUrl);
+          jobCount = jobTitles.length;
+          return true;
+        } catch {
+          // An external board is optional evidence. Failure leaves hiring
+          // unmeasured unless a same-origin page independently proved zero.
+        }
+      }
+      return false;
+    };
+
+    if (jobCount === null && externalBoards.length > 0) await inspectExternal();
+
+    if (jobCount === null) {
+      const fallbacks = ['/careers', '/jobs'].filter((path) => !explicitPaths.includes(path));
+      await inspectLocal(fallbacks);
+      if (jobCount === null && externalBoards.length > 0) await inspectExternal();
+    }
+
+    if (jobCount === null && emptyLocal !== null) {
+      jobsUrl = emptyLocal;
+      jobTitles = [];
+      jobCount = 0;
     }
   }
 
