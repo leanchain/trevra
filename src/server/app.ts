@@ -122,11 +122,13 @@ import { contentPerformanceReport } from './content/performance.js';
 import {
   PublicReportError,
   listPublicContentReports,
+  publishMarketIndexReport,
   publishMarketPulseReport,
   unpublishContentReport
 } from './content/public-reports.js';
 import { contentDraftStrategy } from './content/strategy.js';
 import { compileAccountMarketPulse, materializeAccountMarketPulse } from './content/pulse.js';
+import { compileAccountMomentumIndex } from './content/index.js';
 import { listMarketPulseSchedules, upsertMarketPulseSchedule } from './content/pulse-schedule.js';
 import { DemandActionError, prepareDemandAction } from './demand/actions.js';
 import { listConversationMessages, listConversations } from './conversations.js';
@@ -2746,6 +2748,32 @@ export function createApp(db: Db) {
     }
   });
 
+  app.get('/api/content/index', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          days: z.coerce
+            .number()
+            .int()
+            .refine((value) => value === 7 || value === 30)
+            .optional(),
+          tag: z.string().trim().min(1).max(120).optional()
+        })
+        .parse(req.query);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(
+        await compileAccountMomentumIndex(
+          db,
+          req.auth!.workspaceId,
+          { days: (input.days ?? 30) as 7 | 30, tag: input.tag ?? null },
+          new Date()
+        )
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post('/api/content/pulse/draft', async (req: AuthedRequest, res, next) => {
     try {
       const input = z
@@ -2842,6 +2870,38 @@ export function createApp(db: Db) {
         {
           workspaceId: req.auth!.workspaceId,
           days: (input.days ?? 7) as 7 | 30,
+          tag: input.tag ?? null,
+          actorUserId: req.auth!.userId
+        },
+        new Date()
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(201).json({ report });
+    } catch (error) {
+      if (error instanceof PublicReportError)
+        return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  app.post('/api/content/public-reports/index', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          days: z
+            .number()
+            .int()
+            .refine((value) => value === 7 || value === 30)
+            .optional(),
+          tag: z.string().trim().min(1).max(120).nullable().optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const report = await publishMarketIndexReport(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          days: (input.days ?? 30) as 7 | 30,
           tag: input.tag ?? null,
           actorUserId: req.auth!.userId
         },

@@ -182,9 +182,11 @@ export function renderPublicSignalReport(
 ): string {
   const canonical = publicReportUrl(config, report);
   const published = new Date(report.publishedAt).toISOString().slice(0, 10);
-  const patterns = report.snapshot.patterns
-    .map(
-      (pattern) => `<section class="signal-pattern">
+  const body =
+    report.snapshot.kind === 'market_pulse'
+      ? report.snapshot.patterns
+          .map(
+            (pattern) => `<section class="signal-pattern">
         <div class="signal-pattern-head"><h2>${html(pattern.label)}</h2><p>${pattern.accountCount} companies · ${pattern.signalCount} observed changes</p></div>
         <div class="signal-evidence">${pattern.examples
           .map(
@@ -193,8 +195,26 @@ export function renderPublicSignalReport(
           )
           .join('')}</div>
       </section>`
-    )
-    .join('');
+          )
+          .join('')
+      : `<section class="signal-index"><div class="signal-index-head"><span>Rank</span><span>Company</span><span>Score</span><span>Components</span></div>${report.snapshot.rows
+          .map(
+            (row) =>
+              `<article><strong>#${row.rank}</strong><div><h2>${html(row.accountName)}</h2><div class="signal-index-evidence">${row.evidence
+                .slice(0, 4)
+                .map(
+                  (evidence) =>
+                    `<a href="${html(evidence.sourceUrl)}" rel="noopener noreferrer">${html(evidence.detail)}</a>`
+                )
+                .join(
+                  ''
+                )}</div></div><b>${row.score}</b><p>Diversity ${row.components.diversity} · Activity ${row.components.activity} · Recency ${row.components.recency}</p></article>`
+          )
+          .join('')}</section>`;
+  const headlineMeta =
+    report.snapshot.kind === 'market_pulse'
+      ? `${report.snapshot.changedAccountCount} changed of ${report.snapshot.accountCount} watched companies · ${report.snapshot.signalCount} source-backed changes`
+      : `${report.snapshot.scoredAccountCount} changing of ${report.snapshot.accountCount} watched companies · every score decomposes into visible components`;
   const methodology = report.methodology.map((line) => `<li>${html(line)}</li>`).join('');
   const jsonLd = JSON.stringify({
     '@context': 'https://schema.org',
@@ -218,8 +238,8 @@ export function renderPublicSignalReport(
     <script type="application/ld+json">${jsonLd}</script>
   </head><body><main class="signal-report">
     <nav><a href="/">${html(config.name)}</a><span>Market intelligence</span></nav>
-    <header><p class="signal-kicker">${html(report.snapshot.scopeLabel)} · ${report.snapshot.days} days</p><h1>${html(report.title)}</h1><p class="signal-deck">${html(report.description)}</p><p class="signal-meta">Published ${published} · ${report.snapshot.changedAccountCount} changed of ${report.snapshot.accountCount} watched companies · ${report.snapshot.signalCount} source-backed changes</p></header>
-    ${patterns}
+    <header><p class="signal-kicker">${html(report.snapshot.scopeLabel)} · ${report.snapshot.days} days</p><h1>${html(report.title)}</h1><p class="signal-deck">${html(report.description)}</p><p class="signal-meta">Published ${published} · ${headlineMeta}</p></header>
+    ${body}
     <section class="signal-method"><h2>Methodology</h2><ul>${methodology}</ul></section>
     <aside class="signal-cta"><p><strong>See market movement before it becomes obvious.</strong> ${html(config.name)} turns source-backed changes into research, distribution and qualified next actions.</p><a href="${html(config.hostedAppUrl || '/')}" data-hosted-cta>Explore ${html(config.name)}</a></aside>
   </main></body></html>`;

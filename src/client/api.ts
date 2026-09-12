@@ -53,6 +53,7 @@ import type { TodayPayload } from '../server/today';
 import type { ContentOpportunity } from '../server/content/types';
 import type { ContentDraftStrategy } from '../server/content/strategy';
 import type { MarketPulse, MarketPulseDays } from '../server/content/pulse';
+import type { AccountMomentumIndex } from '../server/content/index';
 import type { MarketPulseCadence, MarketPulseSchedule } from '../server/content/pulse-schedule';
 import type { ContentPerformanceReport } from '../server/content/performance';
 import type { PublicContentReport } from '../server/content/public-reports';
@@ -208,6 +209,10 @@ export async function getMarketPulse(days: MarketPulseDays = 7): Promise<MarketP
   return request(`/api/content/pulse?days=${days}`);
 }
 
+export async function getMarketIndex(days: MarketPulseDays = 30): Promise<AccountMomentumIndex> {
+  return request(`/api/content/index?days=${days}`);
+}
+
 export async function draftMarketPulse(
   days: MarketPulseDays = 7
 ): Promise<{ pulse: MarketPulse; opportunity: ContentOpportunity }> {
@@ -245,6 +250,19 @@ export async function publishMarketPulseReport(
 ): Promise<PublicContentReport> {
   const result = await request<{ report: PublicContentReport }>(
     '/api/content/public-reports/market-pulse',
+    {
+      method: 'POST',
+      body: JSON.stringify({ days, tag: null })
+    }
+  );
+  return result.report;
+}
+
+export async function publishMarketIndexReport(
+  days: MarketPulseDays = 30
+): Promise<PublicContentReport> {
+  const result = await request<{ report: PublicContentReport }>(
+    '/api/content/public-reports/index',
     {
       method: 'POST',
       body: JSON.stringify({ days, tag: null })

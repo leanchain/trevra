@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
 import { compileAccountMarketPulse, type MarketPulseDays } from './pulse.js';
+import { compileAccountMomentumIndex, type MarketIndexRow } from './index.js';
 
 export type PublicReportTemplate = 'market_pulse' | 'index';
 export type PublicReportStatus = 'published' | 'unpublished';
@@ -23,6 +24,7 @@ export interface PublicReportPattern {
 
 export interface PublicMarketPulseSnapshot {
   version: 1;
+  kind: 'market_pulse';
   scopeLabel: string;
   days: MarketPulseDays;
   from: string;
@@ -33,6 +35,21 @@ export interface PublicMarketPulseSnapshot {
   patterns: PublicReportPattern[];
 }
 
+export interface PublicMarketIndexSnapshot {
+  version: 1;
+  kind: 'index';
+  scopeLabel: string;
+  days: MarketPulseDays;
+  from: string;
+  to: string;
+  accountCount: number;
+  scoredAccountCount: number;
+  rows: MarketIndexRow[];
+  formula: string[];
+}
+
+export type PublicReportSnapshot = PublicMarketPulseSnapshot | PublicMarketIndexSnapshot;
+
 export interface PublicContentReport {
   id: string;
   workspaceId: string;
@@ -41,7 +58,7 @@ export interface PublicContentReport {
   status: PublicReportStatus;
   title: string;
   description: string;
-  snapshot: PublicMarketPulseSnapshot;
+  snapshot: PublicReportSnapshot;
   methodology: string[];
   publishedAt: string;
   unpublishedAt: string | null;
@@ -82,7 +99,7 @@ function serialize(row: Record<string, unknown>): PublicContentReport {
     status: String(row.status) as PublicReportStatus,
     title: String(row.title),
     description: String(row.description),
-    snapshot: object(row.snapshot_json) as PublicMarketPulseSnapshot,
+    snapshot: object(row.snapshot_json) as PublicReportSnapshot,
     methodology: (object(row.methodology_json) as string[]) ?? [],
     publishedAt: iso(row.published_at) ?? new Date(0).toISOString(),
     unpublishedAt: iso(row.unpublished_at),
@@ -106,7 +123,7 @@ function snapshotHash(
   workspaceId: string,
   title: string,
   description: string,
-  snapshot: PublicMarketPulseSnapshot
+  snapshot: PublicReportSnapshot
 ): string {
   return createHash('sha256')
     .update(JSON.stringify([workspaceId, title, description, snapshot]))
@@ -118,6 +135,7 @@ function publicSnapshot(
 ): PublicMarketPulseSnapshot {
   return {
     version: 1,
+    kind: 'market_pulse',
     scopeLabel: pulse.scopeLabel,
     days: pulse.days,
     from: pulse.from,
@@ -221,6 +239,93 @@ export async function publishMarketPulseReport(
         timestamp
       );
     if (!row) throw new PublicReportError('Public report could not be published.', 409);
+    return serialize(row);
+  });
+}
+
+export async function publishMarketIndexReport(
+  db: Db,
+  input: {
+    workspaceId: string;
+    days?: MarketPulseDays;
+    tag?: string | null;
+    actorUserId?: string | null;
+  },
+  now: Date = new Date()
+): Promise<PublicContentReport> {
+  const index = await compileAccountMomentumIndex(
+    db,
+    input.workspaceId,
+    { days: input.days ?? 30, tag: input.tag },
+    now
+  );
+  if (!index.canPublish)
+    throw new PublicReportError(index.publishBlocker ?? 'No publishable index exists yet.', 409);
+  const snapshot: PublicMarketIndexSnapshot = {
+    version: 1,
+    kind: 'index',
+    scopeLabel: index.scopeLabel,
+    days: index.days,
+    from: index.from,
+    to: index.to,
+    accountCount: index.accountCount,
+    scoredAccountCount: index.scoredAccountCount,
+    rows: index.rows,
+    formula: index.formula
+  };
+  const title = `${index.days}-day Market Momentum Index`;
+  const description = `A source-backed ranking of ${index.scoredAccountCount} changing companies across ${index.scopeLabel.toLowerCase()}, scored only on visible signal diversity, activity and recency.`;
+  const methodology = [
+    `Window: ${index.days} days (${index.from.slice(0, 10)} through ${new Date(Date.parse(index.to) - 1).toISOString().slice(0, 10)} UTC).`,
+    `Scope: ${index.scopeLabel}.`,
+    ...index.formula,
+    'Every ranked row includes source links captured at publication time; the public page never queries private workspace state live.'
+  ];
+  const hash = snapshotHash(input.workspaceId, title, description, snapshot);
+  const timestamp = now.toISOString();
+  return db.transaction(async (tx) => {
+    await tx
+      .prepare('SELECT pg_advisory_xact_lock(hashtextextended(?,0)) AS locked')
+      .get(`public-index\u001f${input.workspaceId}\u001f${hash}`);
+    const existing = await tx
+      .prepare(
+        'SELECT * FROM content_public_reports WHERE workspace_id=? AND template=? AND snapshot_hash=?'
+      )
+      .get<Record<string, unknown>>(input.workspaceId, 'index', hash);
+    if (existing) {
+      if (String(existing.status) === 'published') return serialize(existing);
+      const republished = await tx
+        .prepare(
+          `UPDATE content_public_reports SET status='published',published_at=?,unpublished_at=NULL,updated_at=? WHERE workspace_id=? AND id=? RETURNING *`
+        )
+        .get<Record<string, unknown>>(timestamp, timestamp, input.workspaceId, String(existing.id));
+      if (!republished) throw new PublicReportError('Public index could not be republished.', 409);
+      return serialize(republished);
+    }
+    const slug = `${slugPart(title)}-${hash.slice(0, 10)}`;
+    const row = await tx
+      .prepare(
+        `INSERT INTO content_public_reports
+         (id,workspace_id,slug,template,status,title,description,snapshot_json,methodology_json,snapshot_hash,created_by,published_at,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?,?,?,?) RETURNING *`
+      )
+      .get<Record<string, unknown>>(
+        id('cpr'),
+        input.workspaceId,
+        slug,
+        'index',
+        'published',
+        title,
+        description,
+        JSON.stringify(snapshot),
+        JSON.stringify(methodology),
+        hash,
+        input.actorUserId ?? null,
+        timestamp,
+        timestamp,
+        timestamp
+      );
+    if (!row) throw new PublicReportError('Public index could not be published.', 409);
     return serialize(row);
   });
 }

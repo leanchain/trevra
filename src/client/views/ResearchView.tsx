@@ -15,6 +15,7 @@ import type { ContentOpportunity } from '../../server/content/types';
 import type { ContentPerformanceReport } from '../../server/content/performance';
 import type { ContentDraftStrategy } from '../../server/content/strategy';
 import type { MarketPulse, MarketPulseDays } from '../../server/content/pulse';
+import type { AccountMomentumIndex } from '../../server/content/index';
 import type { MarketPulseSchedule } from '../../server/content/pulse-schedule';
 import type { PublicContentReport } from '../../server/content/public-reports';
 import {
@@ -25,6 +26,7 @@ import {
   getContentDraftStrategies,
   getContentOpportunities,
   getContentPerformance,
+  getMarketIndex,
   getMarketPulse,
   getMarketPulseSchedules,
   getPublicContentReports,
@@ -34,6 +36,7 @@ import {
   getWatchMentions,
   getWatchTrend,
   getWatches,
+  publishMarketIndexReport,
   publishMarketPulseReport,
   refreshContentOpportunities,
   runWatch,
@@ -530,6 +533,7 @@ export function ResearchView({
   const [refreshingStories, setRefreshingStories] = useState(false);
   const [pulseDays, setPulseDays] = useState<MarketPulseDays>(7);
   const [pulse, setPulse] = useState<MarketPulse | null>(null);
+  const [marketIndex, setMarketIndex] = useState<AccountMomentumIndex | null>(null);
   const [pulseLoaded, setPulseLoaded] = useState(false);
   const [pulseBusy, setPulseBusy] = useState(false);
   const [pulseError, setPulseError] = useState('');
@@ -620,17 +624,21 @@ export function ResearchView({
   useEffect(() => {
     let cancelled = false;
     setPulseLoaded(false);
-    getMarketPulse(pulseDays)
-      .then((next) => {
+    Promise.all([getMarketPulse(pulseDays), getMarketIndex(pulseDays)])
+      .then(([nextPulse, nextIndex]) => {
         if (cancelled) return;
-        setPulse(next);
+        setPulse(nextPulse);
+        setMarketIndex(nextIndex);
         setPulseError('');
         setPulseLoaded(true);
       })
       .catch((error) => {
         if (cancelled) return;
         setPulse(null);
-        setPulseError(error instanceof Error ? error.message : 'Could not compile market pulse.');
+        setMarketIndex(null);
+        setPulseError(
+          error instanceof Error ? error.message : 'Could not compile market intelligence.'
+        );
         setPulseLoaded(true);
       });
     return () => {
@@ -947,6 +955,22 @@ export function ResearchView({
     }
   }
 
+  async function publishIndex(): Promise<void> {
+    setPublicReportBusy('index');
+    setPulseError('');
+    try {
+      const report = await publishMarketIndexReport(pulseDays);
+      setPublicReports((current) => [report, ...current.filter((item) => item.id !== report.id)]);
+      setToast('Public market index published.');
+    } catch (error) {
+      setPulseError(
+        error instanceof Error ? error.message : 'Could not publish this market index.'
+      );
+    } finally {
+      setPublicReportBusy(null);
+    }
+  }
+
   async function publishPulse(): Promise<void> {
     setPublicReportBusy('publish');
     setPulseError('');
@@ -1156,6 +1180,36 @@ export function ResearchView({
             ) : (
               <p className="research-watch-empty">{pulse.draftBlocker}</p>
             )}
+            {marketIndex ? (
+              <div className="research-index-preview">
+                <div className="research-index-preview-head">
+                  <div>
+                    <strong>Market Momentum Index</strong>
+                    <span>
+                      Explainable ranking: diversity + source-backed activity + recency. No model
+                      score.
+                    </span>
+                  </div>
+                  <span>
+                    {marketIndex.scoredAccountCount}/{marketIndex.accountCount} changing
+                  </span>
+                </div>
+                {marketIndex.rows.slice(0, 3).map((row) => (
+                  <div className="research-index-row" key={`${row.rank}:${row.accountName}`}>
+                    <strong>#{row.rank}</strong>
+                    <span>{row.accountName}</span>
+                    <b>{row.score}</b>
+                    <small>
+                      {row.components.diversity} diversity · {row.components.activity} activity ·{' '}
+                      {row.components.recency} recency
+                    </small>
+                  </div>
+                ))}
+                {!marketIndex.canPublish && marketIndex.publishBlocker ? (
+                  <small className="research-pulse-blocker">{marketIndex.publishBlocker}</small>
+                ) : null}
+              </div>
+            ) : null}
             <div className="research-pulse-schedule">
               <span>Prepare drafts</span>
               <div
@@ -1192,6 +1246,17 @@ export function ResearchView({
             <div className="research-pulse-actions">
               <span>{pulse.scopeLabel}</span>
               <div className="research-pulse-action-buttons">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!marketIndex?.canPublish || publicReportBusy !== null}
+                  onClick={() => void publishIndex()}
+                >
+                  {publicReportBusy === 'index' ? (
+                    <LoaderCircle className="spin" size={15} />
+                  ) : null}
+                  Publish index
+                </button>
                 <button
                   type="button"
                   className="secondary-button"

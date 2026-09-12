@@ -799,6 +799,8 @@ Let users opt into a weekly/monthly draft cadence. The system prepares a draft; 
 
 # Phase 11 — Public reports / indexes
 
+**Status: shipped for account-watchlist Market Pulse + explainable Market Momentum Index.** Public pages are immutable publication-time snapshots, source-backed, crawlable, explicitly published/unpublished by a human, and never expose live workspace state.
+
 This is the stronger external acquisition loop, but it should not precede trust in the private workflow.
 
 ## 8.1 Public report model
@@ -845,7 +847,7 @@ Examples:
 
 Index components must be explicit and sourceable. If the score cannot be explained row-by-row, do not publish the index.
 
-**Gate:** external readers can discover Trevra because customers publish useful market intelligence, not because Trevra injected an ad badge.
+**Gate:** external readers can discover Trevra because customers publish useful market intelligence, not because Trevra injected an ad badge. **Met for account-watchlist Pulse and the explainable momentum Index.**
 
 ---
 

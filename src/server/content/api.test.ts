@@ -278,7 +278,7 @@ describe('content opportunity API', () => {
   });
 
   it('publishes an immutable public pulse snapshot and removes it from the public route on unpublish', async () => {
-    for (const suffix of ['report-a', 'report-b'] as const) {
+    for (const suffix of ['report-a', 'report-b', 'report-c'] as const) {
       const account = await createAccount(
         db,
         WORKSPACE,
@@ -343,10 +343,41 @@ describe('content opportunity API', () => {
     expect(frozen.text).toContain('report-a changed pricing.');
     expect(frozen.text).not.toContain('MUTATED PRIVATE STATE');
 
+    const index = await authed('post', '/api/content/public-reports/index')
+      .send({ days: 30, tag: 'public-report-test' })
+      .expect(201);
+    expect(index.body.report).toMatchObject({ template: 'index', status: 'published' });
+    const indexPage = await request(app)
+      .get(`/signals/${encodeURIComponent(index.body.report.slug)}`)
+      .expect(200);
+    expect(indexPage.text).toContain('Market Momentum Index');
+    expect(indexPage.text).toContain('Diversity');
+    expect(indexPage.text).toContain('Activity');
+    expect(indexPage.text).toContain('Recency');
+    expect(indexPage.text).toContain('MUTATED PRIVATE STATE');
+    expect(indexPage.text).not.toContain(WORKSPACE);
+    expect(indexPage.text).not.toContain('sig_report-a');
+
+    await db
+      .prepare("UPDATE account_signals SET detail='MUTATED AFTER INDEX' WHERE id='sig_report-a'")
+      .run();
+    const frozenIndex = await request(app)
+      .get(`/signals/${encodeURIComponent(index.body.report.slug)}`)
+      .expect(200);
+    expect(frozenIndex.text).toContain('MUTATED PRIVATE STATE');
+    expect(frozenIndex.text).not.toContain('MUTATED AFTER INDEX');
+
     const reports = await authed('get', '/api/content/public-reports').expect(200);
-    expect(reports.body.reports).toEqual([
-      expect.objectContaining({ id: created.body.report.id, status: 'published', slug })
-    ]);
+    expect(reports.body.reports).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: created.body.report.id, status: 'published', slug }),
+        expect.objectContaining({
+          id: index.body.report.id,
+          status: 'published',
+          template: 'index'
+        })
+      ])
+    );
 
     await authed(
       'post',
