@@ -522,6 +522,37 @@ describe('captureSnapshot', () => {
     expect(seen.filter((path) => path === '/newsletter')).toHaveLength(1);
   });
 
+  it('captures a same-origin RSS feed only after following the explicit newsletter page', async () => {
+    const seen: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      const path = new URL(url).pathname;
+      seen.push(path);
+      if (path === '/robots.txt') return new Response('', { status: 404 });
+      if (path === '/')
+        return html(
+          '<link rel="alternate" type="application/rss+xml" href="/blog/feed.xml"><a href="/newsletter">Newsletter</a>'
+        );
+      if (path === '/newsletter')
+        return html(
+          '<link rel="alternate" type="application/rss+xml" href="/newsletter/feed.xml">'
+        );
+      return new Response('not found', { status: 404 });
+    };
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['newsletter'],
+      fetchImpl,
+      pageBudget: 4
+    });
+    expect(snapshot.newsletterPublications).toEqual([
+      {
+        platform: 'public-feed',
+        url: 'https://acme.test/newsletter',
+        feedUrl: 'https://acme.test/newsletter/feed.xml'
+      }
+    ]);
+    expect(seen.filter((path) => path === '/newsletter')).toHaveLength(1);
+  });
+
   it('follows at most one same-origin newsletter page when the homepage only links to it', async () => {
     const seen: string[] = [];
     const fetchImpl: FetchLike = async (url) => {

@@ -8,6 +8,7 @@ import { configuredFacebookPageProviders } from './providers/facebook.js';
 import { configuredHttpObservationProviders } from './providers/http.js';
 import { configuredInstagramBusinessDiscoveryProviders } from './providers/instagram.js';
 import { configuredMetaAdLibraryProviders } from './providers/meta-ads.js';
+import { configuredPublicNewsletterFeedProviders } from './providers/public-newsletter.js';
 import { configuredSubstackPublicFeedProviders } from './providers/substack.js';
 import { configuredYouTubeDataApiProviders } from './providers/youtube.js';
 import type {
@@ -44,6 +45,7 @@ export async function collectExternalObservations(
   const providers = options.providers ?? [
     ...configuredSubstackPublicFeedProviders(),
     ...configuredBeehiivPublicFeedProviders(),
+    ...configuredPublicNewsletterFeedProviders(),
     ...configuredFacebookPageProviders(),
     ...configuredYouTubeDataApiProviders(),
     ...configuredInstagramBusinessDiscoveryProviders(),

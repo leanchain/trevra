@@ -104,11 +104,13 @@ For each verified Page id Trevra queries `ads_archive` with `ad_type=ALL`, `ad_a
 
 A brand name, Facebook vanity URL, or site-domain similarity is not enough identity to run this collector. Until a Page id is verified, Meta ads remain unmeasured for that account.
 
-### Public newsletter feeds: Substack and beehiiv
+### Public newsletter feeds: Substack, beehiiv and first-party RSS/Atom
 
 A company-published `*.substack.com` publication is measured through its public `/feed`. Trevra also recognizes an explicitly published beehiiv newsletter RSS URL matching `https://rss.beehiiv.com/feeds/*.xml`, whether it appears as a visible link or a standards-based `<link rel="alternate" type="application/rss+xml">`. Trevra does not guess beehiiv feed identifiers from the company name/domain, and `/podcasts/*.xml` feeds are not counted as newsletter activity.
 
-Neither provider needs a credential. Both emit `newsletter.posts_30d` only when an item older than 30 days proves the returned feed covers the whole measurement window. An all-recent feed may be truncated and is therefore left unmeasured. If the homepage has a signup form but no publication feed, Trevra may follow at most one same-origin newsletter page to find explicit feed evidence without discarding the homepage signup evidence.
+Trevra can also measure a generic RSS/Atom feed that the company explicitly publishes from a first-party newsletter/subscription page such as `/newsletter`, `/subscribe`, `/email-updates`, or `/mailing-list`. Generic feeds must remain HTTPS on the same canonical `www`/non-`www` host as that newsletter page. A homepage or ordinary blog `<link rel="alternate">` is deliberately ignored so a corporate blog feed is never relabeled as newsletter activity. Visible generic feed links additionally need an RSS/Atom/feed label or a feed-like path.
+
+These providers need no credential. They emit `newsletter.posts_30d` only when an item older than 30 days proves the returned feed covers the whole measurement window. An all-recent feed may be truncated and is therefore left unmeasured. If the homepage has a signup form but no publication feed, Trevra may follow at most one same-origin newsletter page to find explicit feed evidence without discarding the homepage signup evidence.
 
 ### YouTube Data API
 

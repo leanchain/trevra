@@ -16,7 +16,7 @@ export interface PublishedSocialProfile {
 }
 
 export interface NewsletterPublicationTarget {
-  platform: 'substack' | 'beehiiv';
+  platform: 'substack' | 'beehiiv' | 'public-feed';
   /** Public publication/feed URL explicitly published by the company. */
   url: string;
   feedUrl: string;
@@ -106,6 +106,45 @@ function beehiivNewsletterFeed(raw: string, base: string): URL | null {
   }
 }
 
+const NEWSLETTER_PAGE_SEGMENT_RE =
+  /^(?:newsletter|newsletters|subscribe|email-updates?|mailing-list)$/i;
+const GENERIC_FEED_LINK_TEXT_RE = /\b(?:rss|atom|feed)\b/i;
+const GENERIC_FEED_PATH_RE = /(?:\.xml$|\/(?:feed|rss|atom)(?:\.xml)?\/?$)/i;
+
+function canonicalHost(hostname: string): string {
+  const lower = hostname.toLowerCase();
+  return lower.startsWith('www.') ? lower.slice(4) : lower;
+}
+
+function isExplicitNewsletterPage(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return url.pathname
+      .split('/')
+      .filter(Boolean)
+      .some((segment) => NEWSLETTER_PAGE_SEGMENT_RE.test(decodeURIComponent(segment)));
+  } catch {
+    return false;
+  }
+}
+
+function firstPartyNewsletterFeed(raw: string, pageUrl: string): URL | null {
+  if (!isExplicitNewsletterPage(pageUrl)) return null;
+  try {
+    const page = new URL(pageUrl);
+    const feed = new URL(raw, page);
+    if (feed.protocol !== 'https:' || feed.port) return null;
+    if (canonicalHost(feed.hostname) !== canonicalHost(page.hostname)) return null;
+    // Specialized providers keep ownership of their stricter identities.
+    if (feed.hostname.toLowerCase() === 'rss.beehiiv.com') return null;
+    if (feed.hostname.toLowerCase().endsWith('.substack.com')) return null;
+    feed.hash = '';
+    return feed;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Read first-party newsletter signup surfaces and published social profiles
  * from one already-fetched page. This function never follows links and never
@@ -138,12 +177,21 @@ export function discoverSiteSurfaces(html: string, pageUrl: string): SiteSurface
   const profiles = new Map<string, PublishedSocialProfile>();
   const publications = new Map<string, NewsletterPublicationTarget>();
   for (const href of alternateFeedHrefs(html)) {
-    const feed = beehiivNewsletterFeed(href, sourceUrl);
-    if (!feed) continue;
-    publications.set(feed.toString(), {
-      platform: 'beehiiv',
-      url: feed.toString(),
-      feedUrl: feed.toString()
+    const beehiivFeed = beehiivNewsletterFeed(href, sourceUrl);
+    if (beehiivFeed) {
+      publications.set(beehiivFeed.toString(), {
+        platform: 'beehiiv',
+        url: beehiivFeed.toString(),
+        feedUrl: beehiivFeed.toString()
+      });
+      continue;
+    }
+    const publicFeed = firstPartyNewsletterFeed(href, sourceUrl);
+    if (!publicFeed) continue;
+    publications.set(`public-feed:${publicFeed.toString()}`, {
+      platform: 'public-feed',
+      url: sourceUrl,
+      feedUrl: publicFeed.toString()
     });
   }
   for (const link of extractLinks(html)) {
@@ -165,6 +213,18 @@ export function discoverSiteSurfaces(html: string, pageUrl: string): SiteSurface
           url: beehiivFeed.toString(),
           feedUrl: beehiivFeed.toString()
         });
+      } else if (
+        GENERIC_FEED_LINK_TEXT_RE.test(link.text) ||
+        GENERIC_FEED_PATH_RE.test(linked.pathname)
+      ) {
+        const publicFeed = firstPartyNewsletterFeed(link.href, sourceUrl);
+        if (publicFeed) {
+          publications.set(`public-feed:${publicFeed.toString()}`, {
+            platform: 'public-feed',
+            url: sourceUrl,
+            feedUrl: publicFeed.toString()
+          });
+        }
       }
     } catch {
       // The shared link parser already tolerates malformed hrefs. A malformed

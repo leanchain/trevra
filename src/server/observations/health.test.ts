@@ -51,6 +51,7 @@ describe('observation provider health', () => {
       const rows = await listObservationProviderHealth(db, WORKSPACE, T0);
       expect(byKey(rows, 'substack-public-feed').availability.mode).toBe('ready');
       expect(byKey(rows, 'beehiiv-public-feed').availability.mode).toBe('ready');
+      expect(byKey(rows, 'public-newsletter-feed').availability.mode).toBe('ready');
       expect(byKey(rows, 'youtube-data-api').availability.mode).toBe('needs-credential');
       expect(byKey(rows, 'facebook-page-public').availability.mode).toBe('needs-credential');
       expect(byKey(rows, 'instagram-business-discovery').availability.mode).toBe(

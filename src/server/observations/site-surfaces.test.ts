@@ -81,6 +81,36 @@ describe('discoverSiteSurfaces', () => {
     ]);
   });
 
+  it('accepts a same-host generic feed only from an explicit newsletter page', () => {
+    const markup = `<link rel="alternate" type="application/rss+xml" href="/newsletter/feed.xml" />
+      <a href="/newsletter/feed.xml">RSS feed</a>`;
+
+    expect(discoverSiteSurfaces(markup, 'https://shop.example/').newsletterPublications).toEqual(
+      []
+    );
+    expect(
+      discoverSiteSurfaces(markup, 'https://shop.example/blog').newsletterPublications
+    ).toEqual([]);
+    expect(
+      discoverSiteSurfaces(markup, 'https://shop.example/newsletter').newsletterPublications
+    ).toEqual([
+      {
+        platform: 'public-feed',
+        url: 'https://shop.example/newsletter',
+        feedUrl: 'https://shop.example/newsletter/feed.xml'
+      }
+    ]);
+  });
+
+  it('never treats a cross-host generic RSS link as the company newsletter feed', () => {
+    const result = discoverSiteSurfaces(
+      `<link rel="alternate" type="application/rss+xml" href="https://feeds.vendor.example/acme.xml" />
+       <a href="https://feeds.vendor.example/acme.xml">RSS feed</a>`,
+      'https://shop.example/newsletter'
+    );
+    expect(result.newsletterPublications).toEqual([]);
+  });
+
   it('dedupes and normalizes social profile links published by the company', () => {
     const result = discoverSiteSurfaces(
       `<a href="https://instagram.com/Acme/">Instagram</a>

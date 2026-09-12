@@ -5,6 +5,7 @@ import { beehiivPublicFeedProvider } from './providers/beehiiv.js';
 import { facebookPageProvider } from './providers/facebook.js';
 import { instagramBusinessDiscoveryProvider } from './providers/instagram.js';
 import { metaAdLibraryProvider } from './providers/meta-ads.js';
+import { publicNewsletterFeedProvider } from './providers/public-newsletter.js';
 import { substackPublicFeedProvider } from './providers/substack.js';
 import { youtubeDataApiProvider } from './providers/youtube.js';
 import type { ObservationProvider, ObservationSurface } from './types.js';
@@ -177,6 +178,7 @@ export function observationProviderCatalog(): ObservationProvider[] {
   const providers = [
     substackPublicFeedProvider(),
     beehiivPublicFeedProvider(),
+    publicNewsletterFeedProvider(),
     facebookPageProvider(),
     instagramBusinessDiscoveryProvider(),
     metaAdLibraryProvider(),

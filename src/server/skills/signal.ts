@@ -841,7 +841,7 @@ const snapshotSchema = z.object({
   newsletterPublications: z
     .array(
       z.object({
-        platform: z.enum(['substack', 'beehiiv']),
+        platform: z.enum(['substack', 'beehiiv', 'public-feed']),
         url: z.string(),
         feedUrl: z.string()
       })
