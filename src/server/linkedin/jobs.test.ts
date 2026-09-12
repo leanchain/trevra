@@ -11,6 +11,7 @@ import type {
 import type { LinkedInInboxDriver } from './driver-inbox.js';
 import type { LinkedInConnectionsDriver, RecentConnection } from './driver-withdraw.js';
 import {
+  runLinkedInLeadSources,
   runLinkedInPostTick,
   runLinkedInSideTasks,
   runLinkedInWithdrawals,
@@ -18,6 +19,7 @@ import {
   syncLinkedInThread
 } from './jobs.js';
 import { syncThreads } from './inbox.js';
+import { createLeadSource, TREVRA_PUBLISHED_POST_ORIGIN } from './leads.js';
 import { addPostImage, createPost, getPost } from './posts.js';
 import { FLAT_DAY_SHAPE } from './pacing.js';
 import { parseBackgroundRunDetail, setSeatRestingUntil } from './seat-events.js';
@@ -1020,6 +1022,104 @@ describe('runLinkedInPostTick', () => {
       status: 'posted',
       postedUrl: 'https://www.linkedin.com/feed/update/urn:li:activity:123/'
     });
+    const observation = await db
+      .prepare(
+        `SELECT kind,url,status,origin_type,origin_id FROM linkedin_lead_sources
+         WHERE workspace_id=? AND origin_type='trevra_published_post' AND origin_id=?`
+      )
+      .get<Record<string, unknown>>(WORKSPACE_ID, post.id);
+    expect(observation).toMatchObject({
+      kind: 'post',
+      url: 'https://www.linkedin.com/feed/update/urn:li:activity:123/',
+      status: 'pending',
+      origin_type: 'trevra_published_post',
+      origin_id: post.id
+    });
+  });
+
+  it('runs only explicitly opted-in Trevra-published-post observations through the worker wrapper', async () => {
+    await upsertSeat(
+      db,
+      WORKSPACE_ID,
+      { label: 'Owner', timezone: 'UTC', profileUrl: 'https://www.linkedin.com/in/connected/' },
+      NOW
+    );
+    const generic = await createLeadSource(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'search',
+        url: 'https://www.linkedin.com/search/results/people/?keywords=cto'
+      },
+      NOW
+    );
+    const owned = await createLeadSource(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'post',
+        url: 'https://www.linkedin.com/feed/update/urn:li:activity:777/',
+        originType: TREVRA_PUBLISHED_POST_ORIGIN,
+        originId: 'lipost_worker_owned'
+      },
+      new Date(NOW.getTime() + 1_000)
+    );
+    const calls: string[] = [];
+    const result = await runLinkedInLeadSources(db, CONFIG, {
+      workspaceId: WORKSPACE_ID,
+      now: new Date(NOW.getTime() + 2_000),
+      page,
+      driver: driverThatReturns({ ok: true, failureKind: null }),
+      accountConfirmed: true,
+      env: {
+        TREVRA_LINKEDIN_LEAD_SOURCING: 'true',
+        TREVRA_DEPLOYMENT_MODE: 'local'
+      },
+      scraper: {
+        scrapePostEngagers: async (_page, url) => {
+          calls.push(url);
+          return {
+            ok: true,
+            failureKind: null,
+            leads: [
+              {
+                profileUrl: 'https://www.linkedin.com/in/worker-engager/',
+                name: 'Worker Engager',
+                firstName: 'Worker',
+                lastName: 'Engager',
+                headline: 'VP Engineering',
+                company: 'Acme',
+                postUrl: url,
+                interactionKind: 'comment'
+              }
+            ],
+            degraded: [],
+            pagesWalked: 1,
+            dropped: 0
+          };
+        },
+        scrapeSearchResults: async () => {
+          throw new Error('generic search must not execute');
+        },
+        scrapeSalesNavigatorResults: async () => {
+          throw new Error('unused');
+        },
+        scrapeContentSearch: async () => {
+          throw new Error('unused');
+        }
+      }
+    });
+
+    expect(result.blocked).toBeNull();
+    expect(result.results).toEqual([
+      expect.objectContaining({ sourceId: owned.source.id, status: 'completed', stored: 1 })
+    ]);
+    expect(calls).toEqual(['https://www.linkedin.com/feed/update/urn:li:activity:777/']);
+    expect(
+      await db
+        .prepare('SELECT status FROM linkedin_lead_sources WHERE id=?')
+        .get<{ status: string }>(generic.source.id)
+    ).toEqual({ status: 'pending' });
   });
 
   it('loads stored post images and hands their bytes to the publisher', async () => {

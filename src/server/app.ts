@@ -7937,12 +7937,13 @@ function linkedinWorkerConfigOrRefuse(): LinkedInLocalWorkerConfig {
  * readable, but creating a new browser walk is always refused.
  */
 const DISABLED_LINKEDIN_LEAD_SOURCING_REASON =
-  'Browser-based LinkedIn lead sourcing is disabled. Import a CSV, add profiles manually, or use an existing lead list instead.';
+  'Manual browser-based LinkedIn lead sourcing is disabled. Trevra may observe engagement on a post it published only when TREVRA_LINKEDIN_LEAD_SOURCING=true and the existing local/companion gate allows it. Import a CSV, add profiles manually, or use an existing lead list for arbitrary sourcing.';
 
 function assertLeadSourcingOn(): void {
-  // Browser-based LinkedIn harvesting is not exposed as a production action.
-  // Existing harvested rows remain readable/importable, but creating a new
-  // browser walk is refused at the HTTP boundary.
+  // Arbitrary browser harvesting is not exposed as a production action. The
+  // only background exception is engagement on a post Trevra itself published,
+  // with durable provenance and the explicit sourcing/companion gate enforced
+  // by jobs.ts. Existing harvested rows remain readable/importable.
   throw new LinkedInApiError(DISABLED_LINKEDIN_LEAD_SOURCING_REASON, 409);
 }
 

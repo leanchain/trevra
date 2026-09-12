@@ -36,9 +36,12 @@ import {
 } from './driver-withdraw.js';
 import { clearInboxForSeat, syncThreadMessages, syncThreads, threadByUrn } from './inbox.js';
 import {
+  createLeadSource,
   leadSourcingConfig,
   leadSourcingEnabled,
+  leadSourcingOffReason,
   runPendingLeadSources,
+  TREVRA_PUBLISHED_POST_ORIGIN,
   type LeadSourceRunResult
 } from './leads.js';
 import {
@@ -946,17 +949,56 @@ export async function runLinkedInLeadSources(
     env?: NodeJS.ProcessEnv;
   }
 ): Promise<{ blocked: string | null; results: LeadSourceRunResult[] }> {
-  // Production browser harvesting is disabled. Keep the lower-level lead-source
-  // modules testable and existing results readable, but never open LinkedIn to
-  // collect new people from search/member surfaces.
-  void db;
-  void config;
-  void options;
-  return {
-    blocked:
-      'Browser-based LinkedIn lead sourcing is disabled. Import a CSV, add profiles manually, or use an existing lead list instead.',
-    results: []
-  };
+  const env = options.env ?? process.env;
+  const sourcing = leadSourcingConfig(env);
+
+  // Generic browser lead sourcing remains disabled. This executor is only for
+  // a post Trevra itself published, and only after the deployment explicitly
+  // opted into the existing sourcing boundary. Merely having a pending source
+  // never turns this on.
+  if (env.TREVRA_LINKEDIN_LEAD_SOURCING !== 'true') {
+    return {
+      blocked:
+        'Published-post engagement observation is off until TREVRA_LINKEDIN_LEAD_SOURCING=true is explicitly configured.',
+      results: []
+    };
+  }
+  if (!leadSourcingEnabled(sourcing)) {
+    return { blocked: leadSourcingOffReason(sourcing), results: [] };
+  }
+  if (!config.enabled) return { blocked: 'The LinkedIn worker is disabled.', results: [] };
+
+  const seatKey = options.seatKey ?? OWNER_SEAT_KEY;
+  const pending = await db
+    .prepare(
+      `SELECT 1 AS pending FROM linkedin_lead_sources
+       WHERE workspace_id=? AND seat_key=? AND status='pending'
+         AND origin_type=? LIMIT 1`
+    )
+    .get<{ pending: number }>(options.workspaceId, seatKey, TREVRA_PUBLISHED_POST_ORIGIN);
+  if (!pending) return { blocked: null, results: [] };
+
+  const session = await openLinkedInSession(db, config, options);
+  if (!session.ok) return { blocked: session.blocked, results: [] };
+  if (!options.accountConfirmed) {
+    const wrongAccount = await confirmSeatAccount(db, session, options.workspaceId, seatKey);
+    if (wrongAccount) return { blocked: wrongAccount, results: [] };
+  }
+
+  const results = await runPendingLeadSources(
+    db,
+    options.workspaceId,
+    {
+      page: session.page as unknown as LinkedInScrapePage,
+      config: sourcing,
+      seatKey,
+      ...(options.scraper ? { scraper: options.scraper } : {}),
+      now: () => options.now ?? new Date(),
+      log: options.log
+    },
+    { maxSources: options.maxSources, originType: TREVRA_PUBLISHED_POST_ORIGIN }
+  );
+  return { blocked: null, results };
 }
 
 /* ---------------------------------------------------------------------------
@@ -1030,6 +1072,7 @@ export async function runLinkedInSideTasks(
     maxAcceptanceChecks?: number;
     maxWithdrawals?: number;
     maxSources?: number;
+    env?: NodeJS.ProcessEnv;
     /** The day-shape seam, so a test can assert the cadence without waiting for a Tuesday. */
     dayShape?: DayShapeFn;
   }
@@ -1140,6 +1183,22 @@ export async function runLinkedInSideTasks(
     )
     .get<{ queued: number }>(options.workspaceId, seatKey);
   if (queuedWithdrawal) scheduledTasks.push('withdrawals');
+
+  const sourcingEnv = options.env ?? process.env;
+  const sourcingConfig = leadSourcingConfig(sourcingEnv);
+  const publishedPostObservationEnabled =
+    sourcingEnv.TREVRA_LINKEDIN_LEAD_SOURCING === 'true' && leadSourcingEnabled(sourcingConfig);
+  if (publishedPostObservationEnabled) {
+    const pendingPublishedPost = await db
+      .prepare(
+        `SELECT 1 AS pending FROM linkedin_lead_sources
+         WHERE workspace_id=? AND seat_key=? AND status='pending'
+           AND origin_type=? LIMIT 1`
+      )
+      .get<{ pending: number }>(options.workspaceId, seatKey, TREVRA_PUBLISHED_POST_ORIGIN);
+    if (pendingPublishedPost) scheduledTasks.push('lead_sources');
+  }
+
   const due = new Set(
     dueSideTasks(seat, runs, now, {
       tasks: scheduledTasks,
@@ -1266,6 +1325,20 @@ export async function runLinkedInSideTasks(
           maxActions: options.maxWithdrawals ?? 1,
           sweep: false
         });
+      }
+    ],
+    [
+      'lead_sources',
+      'published-post engagement observation',
+      async () => {
+        const outcome = await runLinkedInLeadSources(db, config, {
+          ...shared,
+          maxSources: options.maxSources ?? 1,
+          env: sourcingEnv,
+          accountConfirmed: false
+        });
+        result.leads = outcome.results;
+        if (outcome.blocked) throw new Error(outcome.blocked);
       }
     ]
   ];
@@ -1482,6 +1555,28 @@ export async function runLinkedInPostTick(
 
     if (result.ok) {
       await markPostPublished(db, claimed.id, { postedUrl: result.externalRef ?? null }, now);
+      if (result.externalRef) {
+        try {
+          await createLeadSource(
+            db,
+            {
+              workspaceId,
+              seatKey: claimed.seatKey,
+              kind: 'post',
+              url: result.externalRef,
+              originType: TREVRA_PUBLISHED_POST_ORIGIN,
+              originId: claimed.id
+            },
+            now
+          );
+        } catch (cause) {
+          // Publishing succeeded and is authoritative. Failure to register a
+          // derived observation must never retry the external post write.
+          log(
+            `LinkedIn post ${claimed.id} published, but its engagement observation was not registered: ${cause instanceof Error ? cause.message : String(cause)}`
+          );
+        }
+      }
       published += 1;
     } else {
       await markPostFailed(

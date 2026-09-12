@@ -19,6 +19,7 @@ import {
   listLeads,
   runLeadSource,
   runPendingLeadSources,
+  TREVRA_PUBLISHED_POST_ORIGIN,
   setDailyLeadCap,
   getDailyLeadCap,
   DEFAULT_DAILY_LEAD_CAP,
@@ -143,6 +144,131 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await db?.close();
+});
+
+describe('published-post observation provenance', () => {
+  it('keeps one source for one Trevra-published post even after that source is terminal', async () => {
+    const first = await createLeadSource(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'post',
+        url: POST_URL,
+        originType: TREVRA_PUBLISHED_POST_ORIGIN,
+        originId: 'lipost_owned_1'
+      },
+      NOW
+    );
+    await db
+      .prepare("UPDATE linkedin_lead_sources SET status='completed',finished_at=? WHERE id=?")
+      .run(NOW.toISOString(), first.source.id);
+
+    const replay = await createLeadSource(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'post',
+        url: POST_URL,
+        originType: TREVRA_PUBLISHED_POST_ORIGIN,
+        originId: 'lipost_owned_1'
+      },
+      new Date(NOW.getTime() + 60_000)
+    );
+
+    expect(replay.duplicate).toBe(true);
+    expect(replay.source).toMatchObject({
+      id: first.source.id,
+      originType: TREVRA_PUBLISHED_POST_ORIGIN,
+      originId: 'lipost_owned_1',
+      status: 'completed'
+    });
+    const count = await db
+      .prepare(
+        `SELECT COUNT(*)::int AS count FROM linkedin_lead_sources
+         WHERE workspace_id=? AND origin_type=? AND origin_id=?`
+      )
+      .get<{ count: number }>(WORKSPACE_ID, TREVRA_PUBLISHED_POST_ORIGIN, 'lipost_owned_1');
+    expect(count?.count).toBe(1);
+  });
+
+  it('claims only Trevra-published-post observations when an origin filter is supplied', async () => {
+    const generic = await createLeadSource(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'search', url: SEARCH_URL },
+      NOW
+    );
+    const owned = await createLeadSource(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'post',
+        url: POST_URL,
+        originType: TREVRA_PUBLISHED_POST_ORIGIN,
+        originId: 'lipost_owned_2'
+      },
+      new Date(NOW.getTime() + 1_000)
+    );
+
+    const claimed = await claimLeadSource(
+      db,
+      WORKSPACE_ID,
+      new Date(NOW.getTime() + 2_000),
+      'owner',
+      TREVRA_PUBLISHED_POST_ORIGIN
+    );
+
+    expect(claimed?.id).toBe(owned.source.id);
+    expect(claimed?.originType).toBe(TREVRA_PUBLISHED_POST_ORIGIN);
+    expect((await getLeadSource(db, WORKSPACE_ID, generic.source.id))?.status).toBe('pending');
+  });
+
+  it('runs only the opted-in Trevra-published-post source and leaves arbitrary queued searches untouched', async () => {
+    await seat();
+    const generic = await createLeadSource(
+      db,
+      { workspaceId: WORKSPACE_ID, kind: 'search', url: SEARCH_URL },
+      NOW
+    );
+    const owned = await createLeadSource(
+      db,
+      {
+        workspaceId: WORKSPACE_ID,
+        kind: 'post',
+        url: POST_URL,
+        originType: TREVRA_PUBLISHED_POST_ORIGIN,
+        originId: 'lipost_owned_3'
+      },
+      new Date(NOW.getTime() + 1_000)
+    );
+    const harness = fakeScraper({
+      leads: [
+        lead('engaged-founder', 'Engaged Founder', {
+          postUrl: POST_URL,
+          interactionKind: 'comment'
+        })
+      ]
+    });
+
+    const results = await runPendingLeadSources(
+      db,
+      WORKSPACE_ID,
+      { page, config: on(), scraper: harness.scraper, now: () => new Date(NOW.getTime() + 2_000) },
+      { maxSources: 1, originType: TREVRA_PUBLISHED_POST_ORIGIN }
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ sourceId: owned.source.id, status: 'completed', stored: 1 });
+    expect(harness.calls).toEqual([{ surface: 'post', url: POST_URL }]);
+    expect((await getLeadSource(db, WORKSPACE_ID, generic.source.id))?.status).toBe('pending');
+    expect((await getLeadSource(db, WORKSPACE_ID, owned.source.id))?.status).toBe('completed');
+    expect(await listLeads(db, WORKSPACE_ID, owned.source.id)).toEqual([
+      expect.objectContaining({
+        profileUrl: 'https://www.linkedin.com/in/engaged-founder/',
+        postUrl: POST_URL,
+        interactionKind: 'comment'
+      })
+    ]);
+  });
 });
 
 describe('the gate', () => {

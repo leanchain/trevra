@@ -181,6 +181,7 @@ export const LEAD_SOURCE_KINDS = [
 ] as const;
 
 export type LeadSourceStatus = 'pending' | 'running' | 'completed' | 'failed';
+export const TREVRA_PUBLISHED_POST_ORIGIN = 'trevra_published_post' as const;
 
 /** A small wire vocabulary shared by queue rows and account status. */
 export type LinkedInQueueWaitReason = 'computer' | 'account_paused' | 'account_cooldown' | 'worker';
@@ -191,6 +192,8 @@ export interface LinkedInLeadSource {
   seatKey: string;
   kind: LeadSourceKind;
   url: string;
+  originType: string | null;
+  originId: string | null;
   status: LeadSourceStatus;
   requestedAt: string;
   finishedAt: string | null;
@@ -248,6 +251,8 @@ interface LeadSourceRow {
   seat_key: string;
   kind: string;
   url: string;
+  origin_type: string | null;
+  origin_id: string | null;
   status: string;
   requested_at: string;
   finished_at: string | null;
@@ -275,7 +280,7 @@ interface LeadRow {
 }
 
 const SOURCE_COLUMNS = `
-  id, workspace_id, seat_key, kind, url, status, requested_at, finished_at,
+  id, workspace_id, seat_key, kind, url, origin_type, origin_id, status, requested_at, finished_at,
   result_count, pages_done, failure_reason, created_at, updated_at
 `;
 
@@ -298,6 +303,8 @@ function toSource(row: LeadSourceRow): LinkedInLeadSource {
     seatKey: row.seat_key,
     kind: row.kind as LeadSourceKind,
     url: row.url,
+    originType: row.origin_type,
+    originId: row.origin_id,
     status: row.status as LeadSourceStatus,
     requestedAt: row.requested_at,
     finishedAt: row.finished_at,
@@ -337,6 +344,9 @@ export interface LeadSourceInsert {
   kind: LeadSourceKind;
   /** As the operator supplied it. Validated here, never rewritten. */
   url: string;
+  /** Internal provenance only. Generic HTTP callers never set these. */
+  originType?: string;
+  originId?: string;
 }
 
 /**
@@ -433,26 +443,47 @@ export async function createLeadSource(
     .prepare(
       `
     INSERT INTO linkedin_lead_sources
-      (id, workspace_id, seat_key, kind, url, status, requested_at, created_at, updated_at)
-    VALUES (?,?,?,?,?,'pending',?,?,?)
+      (id, workspace_id, seat_key, kind, url, origin_type, origin_id, status, requested_at, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,'pending',?,?,?)
     ON CONFLICT DO NOTHING
     RETURNING ${SOURCE_COLUMNS}
   `
     )
-    .get<LeadSourceRow>(sourceId, input.workspaceId, seatKey, input.kind, url, iso, iso, iso);
+    .get<LeadSourceRow>(
+      sourceId,
+      input.workspaceId,
+      seatKey,
+      input.kind,
+      url,
+      input.originType ?? null,
+      input.originId ?? null,
+      iso,
+      iso,
+      iso
+    );
   if (inserted) return { source: toSource(inserted), duplicate: false };
 
-  // The guard fired. The live row is the answer -- and there is exactly one,
-  // because that is what the index enforces.
-  const existing = await db
-    .prepare(
-      `
+  // Provenance wins over URL when an internal publisher supplied it. A posted
+  // row is terminal, so re-registering the same Trevra post should still return
+  // its one historical source rather than manufacturing a second observation.
+  const existing =
+    input.originType && input.originId
+      ? await db
+          .prepare(
+            `SELECT ${SOURCE_COLUMNS} FROM linkedin_lead_sources
+           WHERE workspace_id=? AND seat_key=? AND origin_type=? AND origin_id=?
+           ORDER BY requested_at ASC LIMIT 1`
+          )
+          .get<LeadSourceRow>(input.workspaceId, seatKey, input.originType, input.originId)
+      : await db
+          .prepare(
+            `
     SELECT ${SOURCE_COLUMNS} FROM linkedin_lead_sources
     WHERE workspace_id=? AND seat_key=? AND kind=? AND LOWER(url)=LOWER(?) AND status IN ('pending','running')
     ORDER BY requested_at ASC LIMIT 1
   `
-    )
-    .get<LeadSourceRow>(input.workspaceId, seatKey, input.kind, url);
+          )
+          .get<LeadSourceRow>(input.workspaceId, seatKey, input.kind, url);
   if (!existing)
     throw new Error('The lead source could not be created and no live source claims its URL.');
   return { source: toSource(existing), duplicate: true };
@@ -505,7 +536,8 @@ export async function claimLeadSource(
   db: Db,
   workspaceId: string,
   now: Date,
-  seatKey = OWNER_SEAT_KEY
+  seatKey = OWNER_SEAT_KEY,
+  originType: string | null = null
 ): Promise<LinkedInLeadSource | null> {
   const row = await db
     .prepare(
@@ -514,6 +546,7 @@ export async function claimLeadSource(
     WHERE id = (
       SELECT id FROM linkedin_lead_sources
       WHERE workspace_id=? AND seat_key=? AND status='pending'
+        AND (?::text IS NULL OR origin_type=?)
       ORDER BY requested_at ASC
       FOR UPDATE SKIP LOCKED
       LIMIT 1
@@ -521,7 +554,7 @@ export async function claimLeadSource(
     RETURNING ${SOURCE_COLUMNS}
   `
     )
-    .get<LeadSourceRow>(now.toISOString(), workspaceId, seatKey);
+    .get<LeadSourceRow>(now.toISOString(), workspaceId, seatKey, originType, originType);
   return row ? toSource(row) : null;
 }
 
@@ -1232,7 +1265,7 @@ export async function runPendingLeadSources(
   db: Db,
   workspaceId: string,
   deps: LeadSourceRunDeps,
-  options: { maxSources?: number } = {}
+  options: { maxSources?: number; originType?: string } = {}
 ): Promise<LeadSourceRunResult[]> {
   if (!leadSourcingEnabled(deps.config)) return [];
   const now = deps.now ?? (() => new Date());
@@ -1247,7 +1280,13 @@ export async function runPendingLeadSources(
   // budget would mean nothing. One pass touches each source at most once.
   const seen = new Set<string>();
   for (let index = 0; index < maxSources; index += 1) {
-    const source = await claimLeadSource(db, workspaceId, now(), deps.seatKey ?? OWNER_SEAT_KEY);
+    const source = await claimLeadSource(
+      db,
+      workspaceId,
+      now(),
+      deps.seatKey ?? OWNER_SEAT_KEY,
+      options.originType ?? null
+    );
     if (!source) break;
     if (seen.has(source.id)) {
       // Put it back untouched: it is parked, not failed, and the next visit is
