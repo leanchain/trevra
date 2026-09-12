@@ -37,7 +37,9 @@ Today it:
 - probes only the public Shopify/WooCommerce catalog APIs that can contribute product evidence, so generic sites do not pay for an unrelated WordPress REST probe;
 - captures bounded, paginated Shopify and WooCommerce public catalogs for product-launch diffs;
 - detects repeated/ignored pagination and marks the catalog capped instead of looping or pretending the sample is complete;
-- returns homepage HTML to Trevra's ecommerce-app detector so app install/removal signals come from the same independent crawl.
+- returns homepage HTML to Trevra's ecommerce-app detector so app install/removal signals come from the same independent crawl;
+- records first-party newsletter signup surfaces and social-profile links as weak presence signals, without pretending presence means activity or growth;
+- follows at most one same-origin newsletter page and records a company-published Substack publication target when present.
 
 An imported platform tag is only a weak prior. Live endpoint evidence wins. The crawler therefore operates on any Trevra account independently of how that account was sourced.
 
@@ -47,8 +49,7 @@ An imported platform tag is only a weak prior. Live endpoint evidence wins. The 
 
 - Every real request counts toward the domain budget, including retries and redirect hops.
 - Redirects remain HTTPS and inside the requested host or canonical `www` variant; an arbitrary public redirect is not treated as permission to crawl another site.
-- A missing/gone robots resource (`404`/`410`) means no declared restriction; operational failures and other denial/rate-limit statuses such as `401`, `403`, `429`, or `5xx` fail closed for scheduled crawling rather than silently assuming permission.
-- A normal robots `4xx` means no declared restriction; an operational robots failure, `429`, or `5xx` fails closed for scheduled crawling rather than silently assuming permission.
+- A missing/gone robots resource (`404`/`410`) means no declared restriction; operational failures and denial/rate-limit statuses such as `401`, `403`, `429`, or `5xx` fail closed for scheduled crawling rather than silently assuming permission.
 - `Crawl-delay` is honored. Trevra also applies a 250 ms courtesy delay when no delay is declared.
 - Robots policy is cached for one hour in production, bounded to 1,024 domains per process.
 - A decoded page body is capped at 8 MiB and robots.txt at 512 KiB. Oversized content is a failed read, never a truncated document passed off as complete evidence.
@@ -59,6 +60,34 @@ An imported platform tag is only a weak prior. Live endpoint evidence wins. The 
 The account watcher reserves part of its page budget for hiring/pricing rather than letting a large catalog starve non-commerce observation. Catalog enumeration is separately capped by product count and request count. When Trevra cannot prove it saw the complete catalog, `productCapped=true`; downstream copy must never turn that into an exact catalog-size claim.
 
 Each scheduled sweep emits crawl telemetry to the existing sweep logger: request budget consumption, bytes read, retries, robots state and effective crawl delay. A provider or crawler failure remains operational degradation and does not become a synthetic "nothing changed" observation.
+
+## Built-in measured external surfaces
+
+Presence and activity are deliberately separate. `newsletter-signup-added` and `social-profile-added` are low-strength facts from the company's own site. `newsletter-started`, `newsletter-silent`, `social-growth` and `social-cadence-up` require comparable measurements over time.
+
+Trevra owns the history and change semantics for these raw metrics:
+
+- `meta.active_ads`
+- `social.followers`
+- `social.posts_30d`
+- `newsletter.posts_30d`
+
+The first measurement is a baseline only. Missing metrics mean **not measured**, never zero. Older/equal timestamps cannot roll a baseline backwards. Current thresholds are intentionally conservative: Meta ads must rise by at least 3 and 25% (or move from zero to nonzero), followers by at least 10 and 2%, and trailing-30-day posting cadence by at least 2 and 25%. Newsletter activity emits only on zero/nonzero transitions.
+
+### Instagram Business Discovery
+
+When the company publishes an Instagram profile on its own site and the deployment configures Meta's Instagram Business Discovery API, Trevra measures the public Professional account's follower count and, when the bounded media result is complete enough to prove it, public posts in the trailing 30 days.
+
+Configure both:
+
+- `TREVRA_META_GRAPH_ACCESS_TOKEN`
+- `TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID`
+
+Optional: `TREVRA_META_GRAPH_VERSION` (defaults to `v26.0`; malformed values are rejected). A personal/non-Professional target or an incomplete 30-day media page produces a warning and no fabricated measurement.
+
+### Substack public feed
+
+A company-published `*.substack.com` publication is measured through its public `/feed`. This needs no credential. Trevra emits `newsletter.posts_30d` only when an item older than 30 days proves the returned feed covers the whole measurement window. An all-recent feed may be truncated and is therefore left unmeasured.
 
 ## Deployment-owned HTTP observation providers
 
@@ -93,7 +122,9 @@ Trevra sends:
 
 ### Response
 
-The provider returns already-observed changes:
+The provider may return either already-interpreted changes (kept for backward compatibility) or raw measurements. Raw measurements are preferred because Trevra owns the historical baseline and thresholds centrally.
+
+Interpreted response example:
 
 ```json
 {
@@ -111,7 +142,25 @@ The provider returns already-observed changes:
 }
 ```
 
-Trevra accepts only known signal kinds with a valid HTTP(S) evidence URL and a parseable observation time. Provider timestamps more than one hour in the future are rejected so clock errors cannot manufacture recency points.
+Raw measurement example:
+
+```json
+{
+  "measurements": [
+    {
+      "metric": "social.followers",
+      "scope": "instagram:shop",
+      "value": 4200,
+      "evidenceUrl": "https://www.instagram.com/shop/",
+      "observedAt": "2026-09-12T07:45:00Z"
+    }
+  ]
+}
+```
+
+Trevra accepts only known signal/metric kinds with a valid HTTP(S) evidence URL and a parseable observation time. Provider timestamps more than one hour in the future are rejected so clock errors cannot manufacture recency points.
+
+Meta Ad Library remains on this external-measurement seam rather than using an advertiser-name scraper. Meta's official API can expose all ad types for EU/UK delivery, but a professional implementation still needs a trustworthy advertiser/Page identity mapping; Trevra will not turn a guessed brand-name match into `meta.active_ads`.
 
 ## Composite scoring
 

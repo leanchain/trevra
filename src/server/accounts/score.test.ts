@@ -102,6 +102,19 @@ describe('the weight table', () => {
     expect(SIGNAL_WEIGHTS['tech-added']).toBeGreaterThan(SIGNAL_WEIGHTS['tech-removed']);
   });
 
+  it('keeps first-party channel presence weaker than measured channel activity', () => {
+    expect(SIGNAL_WEIGHTS['newsletter-signup-added']).toBeLessThan(
+      SIGNAL_WEIGHTS['newsletter-started']
+    );
+    expect(SIGNAL_WEIGHTS['social-profile-added']).toBeLessThan(SIGNAL_WEIGHTS['social-growth']);
+    expect(SIGNAL_WEIGHTS['newsletter-signup-removed']).toBeLessThan(
+      SIGNAL_WEIGHTS['newsletter-signup-added']
+    );
+    expect(SIGNAL_WEIGHTS['social-profile-removed']).toBeLessThan(
+      SIGNAL_WEIGHTS['social-profile-added']
+    );
+  });
+
   it('treats a contraction as a subtraction and a removal as a whisper', () => {
     expect(SIGNAL_WEIGHTS['hiring-down']).toBeLessThan(0);
     expect(SIGNAL_WEIGHTS['tech-removed']).toBeGreaterThan(0);

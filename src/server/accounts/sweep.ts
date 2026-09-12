@@ -563,7 +563,14 @@ export async function sweepAccount(
     const external = await collectExternalObservations(account.domain, {
       providers: deps.observationProviders,
       fetchImpl: deps.fetchImpl,
-      now: startedAt
+      now: startedAt,
+      db,
+      workspaceId: account.workspaceId,
+      context: {
+        socialProfiles: watched.snapshot.socialProfiles ?? [],
+        newsletterSignups: watched.snapshot.newsletterSignups ?? [],
+        newsletterPublications: watched.snapshot.newsletterPublications ?? []
+      }
     });
     incoming.push(
       ...external.observations.map((observation) => ({

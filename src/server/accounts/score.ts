@@ -168,12 +168,18 @@ export const SIGNAL_WEIGHTS: Record<AccountSignalKind, number> = {
   'storefront-rebuild': 20,
   'newsletter-started': 20,
   'social-growth': 18,
+  // First-party presence changes are useful corroboration, not proof that the
+  // channel is active or growing. Keep them materially below measured activity.
+  'newsletter-signup-added': 12,
+  'social-profile-added': 10,
   'headline-changed': 16,
   'tech-added': 15,
   'social-cadence-up': 14,
   'newsletter-silent': 10,
   'commerce-app-removed': 8,
   'tech-removed': 6,
+  'newsletter-signup-removed': 4,
+  'social-profile-removed': 3,
 
   // A shrinking team is weak negative evidence. A closed role can also mean it
   // was filled, so contraction never outweighs corroborating positive movement.
@@ -201,6 +207,10 @@ const KIND_LABELS: Record<AccountSignalKind, string> = {
   'headline-changed': 'a homepage rewrite',
   'commerce-app-added': 'a new ecommerce app',
   'commerce-app-removed': 'an ecommerce app disappearing',
+  'newsletter-signup-added': 'a newsletter signup surface appearing',
+  'newsletter-signup-removed': 'a newsletter signup surface disappearing',
+  'social-profile-added': 'a social profile being published',
+  'social-profile-removed': 'a social profile link disappearing',
   'newsletter-started': 'newsletter activity starting',
   'newsletter-silent': 'newsletter activity going quiet',
   'social-growth': 'social audience growth',

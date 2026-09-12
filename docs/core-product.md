@@ -61,8 +61,9 @@ Today's `clients` table plus the marketplace CSV importer is 80% of this.
 Per account, on a schedule: public commentary (GitHub, HN, Reddit, Lobsters,
 dev.to, Mastodon, Stack Exchange — **all seven already exist as scouts**), site
 change diffs, hiring/careers page diffs, ecommerce product/catalog and storefront
-app changes, plus deployment-owned observation providers for Meta ads,
-newsletter activity, social growth and other expensive external surfaces. Storefront
+app changes, first-party newsletter/social surface diffs, built-in Substack public-feed
+activity, optional Instagram Business Discovery metrics, plus deployment-owned
+observation providers for Meta ads and other expensive external surfaces. Storefront
 crawling runs independently inside Trevra. See `docs/ecommerce-observation-plane.md`.
 
 **Works properly when:** every observation carries a **source URL and a

@@ -1,12 +1,24 @@
 import { envCredentials } from '../research/types.js';
+import type { Db } from '../db.js';
 import type { FetchLike } from '../skills/guard.js';
+import { interpretMeasurements } from './measurements.js';
 import { configuredHttpObservationProviders } from './providers/http.js';
-import type { ExternalObservation, ObservationProvider } from './types.js';
+import { configuredInstagramBusinessDiscoveryProviders } from './providers/instagram.js';
+import { configuredSubstackPublicFeedProviders } from './providers/substack.js';
+import type {
+  ExternalObservation,
+  ObservationAccountContext,
+  ObservationProvider
+} from './types.js';
 
 export interface CollectObservationOptions {
   providers?: readonly ObservationProvider[];
   fetchImpl?: FetchLike;
   now?: Date;
+  /** Required to turn raw provider measurements into stateful Trevra observations. */
+  db?: Db;
+  workspaceId?: string;
+  context?: ObservationAccountContext;
 }
 
 export interface CollectedObservations {
@@ -24,7 +36,11 @@ export async function collectExternalObservations(
   options: CollectObservationOptions = {}
 ): Promise<CollectedObservations> {
   const now = options.now ?? new Date();
-  const providers = options.providers ?? configuredHttpObservationProviders();
+  const providers = options.providers ?? [
+    ...configuredSubstackPublicFeedProviders(),
+    ...configuredInstagramBusinessDiscoveryProviders(),
+    ...configuredHttpObservationProviders()
+  ];
   const observations: ExternalObservation[] = [];
   const warnings: string[] = [];
 
@@ -38,10 +54,29 @@ export async function collectExternalObservations(
       const result = await provider.observe(domain, {
         credentials: envCredentials,
         fetchImpl: options.fetchImpl,
-        now
+        now,
+        context: options.context
       });
       observations.push(...result.observations);
       warnings.push(...result.warnings);
+      if (result.measurements?.length) {
+        if (!options.db || !options.workspaceId) {
+          warnings.push(
+            `${provider.name} returned raw measurements, but no workspace persistence was supplied; measurements were not interpreted.`
+          );
+        } else {
+          const interpreted = await interpretMeasurements({
+            db: options.db,
+            workspaceId: options.workspaceId,
+            providerKey: provider.key,
+            domain,
+            measurements: result.measurements,
+            now
+          });
+          observations.push(...interpreted.observations);
+          warnings.push(...interpreted.warnings);
+        }
+      }
     } catch (cause) {
       warnings.push(
         `${provider.name} failed: ${cause instanceof Error ? cause.message : String(cause)}.`

@@ -87,6 +87,53 @@ describe('HTTP ecommerce observation provider', () => {
     );
   });
 
+  it('accepts raw measurements so the collector can stay stateless', async () => {
+    const provider = httpObservationProvider({ ...SPEC, tokenEnv: null });
+    const result = await provider.observe('shop.example', {
+      credentials: credentials(),
+      now: new Date('2026-09-12T08:00:00.000Z'),
+      fetchImpl: async () =>
+        new Response(
+          JSON.stringify({
+            measurements: [
+              {
+                metric: 'meta.active_ads',
+                value: 12,
+                evidenceUrl: 'https://www.facebook.com/ads/library/?q=shop',
+                observedAt: '2026-09-12T07:45:00.000Z'
+              },
+              {
+                metric: 'social.followers',
+                scope: 'instagram:shop',
+                value: '4200',
+                sourceUrl: 'https://www.instagram.com/shop/',
+                lastSeenAt: '2026-09-12T07:40:00.000Z'
+              }
+            ]
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+    });
+    expect(result.observations).toEqual([]);
+    expect(result.measurements).toEqual([
+      {
+        metric: 'meta.active_ads',
+        scope: null,
+        value: 12,
+        evidenceUrl: 'https://www.facebook.com/ads/library/?q=shop',
+        observedAt: '2026-09-12T07:45:00.000Z'
+      },
+      {
+        metric: 'social.followers',
+        scope: 'instagram:shop',
+        value: 4200,
+        evidenceUrl: 'https://www.instagram.com/shop/',
+        observedAt: '2026-09-12T07:40:00.000Z'
+      }
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
   it('never turns future provider timestamps into artificially fresh signals', async () => {
     const provider = httpObservationProvider({ ...SPEC, tokenEnv: null });
     const result = await provider.observe('shop.example', {

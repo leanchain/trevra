@@ -4,6 +4,7 @@ import { normalizeDomain } from '../../skills/ladder.js';
 import type { CredentialAccessor } from '../../research/types.js';
 import {
   OBSERVATION_SURFACES,
+  type ExternalMeasurement,
   type ExternalObservation,
   type ObservationProvider,
   type ObservationProviderOptions,
@@ -147,13 +148,14 @@ export function httpObservationProvider(spec: HttpObservationProviderSpec): Obse
         }
         const payload = (await response.json()) as Record<string, unknown>;
         const raw = Array.isArray(payload.observations) ? payload.observations : [];
+        const rawMeasurements = Array.isArray(payload.measurements) ? payload.measurements : [];
         const warnings = Array.isArray(payload.warnings)
           ? payload.warnings
               .filter((value): value is string => typeof value === 'string')
               .slice(0, 50)
           : [];
-        if (!Array.isArray(payload.observations)) {
-          warnings.push(`${spec.name} responded without an observations array.`);
+        if (!Array.isArray(payload.observations) && !Array.isArray(payload.measurements)) {
+          warnings.push(`${spec.name} responded without observations or measurements.`);
         }
 
         const observations: ExternalObservation[] = [];
@@ -187,7 +189,31 @@ export function httpObservationProvider(spec: HttpObservationProviderSpec): Obse
           });
         }
 
-        return { providerKey: spec.key, observations, warnings };
+        const measurements: ExternalMeasurement[] = [];
+        for (const item of rawMeasurements.slice(0, MAX_OBSERVATIONS_PER_RUN)) {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+          const row = item as Record<string, unknown>;
+          const metric = text(row.metric, 80);
+          const scope = text(row.scope, 200);
+          const value = typeof row.value === 'number' ? row.value : Number(row.value);
+          const evidence = evidenceUrl(row.evidenceUrl ?? row.sourceUrl);
+          const seenAt = observedAt(row.observedAt ?? row.lastSeenAt, options.now);
+          if (!metric || !Number.isFinite(value) || value < 0 || !evidence || !seenAt) {
+            warnings.push(
+              `${spec.name} returned an incomplete measurement; metric, non-negative value, evidence URL and observedAt are required.`
+            );
+            continue;
+          }
+          measurements.push({
+            metric,
+            scope,
+            value,
+            evidenceUrl: evidence,
+            observedAt: seenAt
+          });
+        }
+
+        return { providerKey: spec.key, observations, measurements, warnings };
       } catch (cause) {
         return {
           providerKey: spec.key,

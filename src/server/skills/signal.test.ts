@@ -97,6 +97,56 @@ describe('diffSnapshots', () => {
     expect(signals[0].previous).not.toBe(signals[0].current);
   });
 
+  it('emits explicit first-party newsletter and social presence changes without calling them activity or growth', () => {
+    const before: ResearchSnapshot = {
+      ...AFTER,
+      newsletterSignups: [],
+      socialProfiles: []
+    };
+    const after: ResearchSnapshot = {
+      ...AFTER,
+      capturedAt: '2026-07-02T00:00:00.000Z',
+      newsletterSignups: [
+        {
+          sourceUrl: 'https://acme.test/newsletter',
+          provider: 'klaviyo',
+          key: 'klaviyo@https://acme.test/newsletter'
+        }
+      ],
+      socialProfiles: [
+        {
+          platform: 'instagram',
+          handle: 'acme',
+          url: 'https://www.instagram.com/acme'
+        }
+      ]
+    };
+    const signals = diffSnapshots(before, after);
+    expect(signals.map((signal) => signal.kind)).toEqual([
+      'newsletter-signup-added',
+      'social-profile-added'
+    ]);
+    expect(signals[0].detail).toContain('using klaviyo');
+    expect(signals[1].detail).toContain('instagram:acme');
+    expect(signals.map((signal) => signal.kind)).not.toContain('newsletter-started');
+    expect(signals.map((signal) => signal.kind)).not.toContain('social-growth');
+  });
+
+  it('does not manufacture surface changes when upgrading from a snapshot that never captured them', () => {
+    const current: ResearchSnapshot = {
+      ...AFTER,
+      newsletterSignups: [
+        {
+          sourceUrl: 'https://acme.test/',
+          provider: null,
+          key: 'first-party@https://acme.test/'
+        }
+      ],
+      socialProfiles: [{ platform: 'tiktok', handle: 'acme', url: 'https://www.tiktok.com/@acme' }]
+    };
+    expect(diffSnapshots(AFTER, current)).toEqual([]);
+  });
+
   it('separates ecommerce app changes from generic stack churn', () => {
     const changed: ResearchSnapshot = {
       ...BEFORE,
@@ -219,6 +269,51 @@ describe('captureSnapshot', () => {
     expect(snapshot.pricingUrl).toBe('https://acme.test/pricing');
     expect(snapshot.pricingHash).toHaveLength(16);
     expect(snapshot.tech).toEqual(['segment']);
+  });
+
+  it('captures first-party newsletter signup and published social profiles from the shared crawl', async () => {
+    const surfaces = site({
+      '/': () =>
+        html(`<html><body><h1>Acme</h1>
+          <form><h2>Subscribe to our newsletter</h2><input type="email" name="email"></form>
+          <a href="https://instagram.com/acme">Instagram</a>
+          <a href="https://www.tiktok.com/@acme">TikTok</a>
+        </body></html>`)
+    });
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['newsletter', 'social'],
+      fetchImpl: surfaces
+    });
+    expect(snapshot.newsletterSignups).toEqual([
+      {
+        sourceUrl: 'https://acme.test/',
+        provider: null,
+        key: 'first-party@https://acme.test/'
+      }
+    ]);
+    expect(
+      snapshot.socialProfiles?.map((profile) => `${profile.platform}:${profile.handle}`)
+    ).toEqual(['instagram:acme', 'tiktok:acme']);
+  });
+
+  it('follows at most one same-origin newsletter page when the homepage only links to it', async () => {
+    const seen: string[] = [];
+    const fetchImpl: FetchLike = async (url) => {
+      seen.push(new URL(url).pathname);
+      const path = new URL(url).pathname;
+      if (path === '/robots.txt') return new Response('', { status: 404 });
+      if (path === '/') return html('<a href="/newsletter">Newsletter</a>');
+      if (path === '/newsletter')
+        return html('<form><h2>Join our newsletter</h2><input type="email"></form>');
+      return new Response('not found', { status: 404 });
+    };
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['newsletter'],
+      fetchImpl,
+      pageBudget: 4
+    });
+    expect(snapshot.newsletterSignups?.[0]?.sourceUrl).toBe('https://acme.test/newsletter');
+    expect(seen.filter((path) => path === '/newsletter')).toHaveLength(1);
   });
 
   it('captures Shopify products from the bounded public endpoint', async () => {

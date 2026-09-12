@@ -418,6 +418,114 @@ describe('sweepAccount', () => {
     expect(second.signals).toEqual([]);
   });
 
+  it('owns provider measurement baselines and emits only meaningful newer changes', async () => {
+    const accountId = await makeAccount();
+    let activeAds = 0;
+    let followers = 100;
+    let socialPosts = 2;
+    let newsletterPosts = 0;
+    let observedAt = T0.toISOString();
+    const provider: ObservationProvider = {
+      key: 'raw-metrics',
+      name: 'Raw metric provider',
+      docsUrl: null,
+      credentialEnvVar: null,
+      surfaces: ['meta_ads', 'social', 'newsletter'],
+      availability: () => ({ mode: 'ready', reason: 'test' }),
+      async observe() {
+        return {
+          providerKey: 'raw-metrics',
+          observations: [],
+          warnings: [],
+          measurements: [
+            {
+              metric: 'meta.active_ads',
+              scope: null,
+              value: activeAds,
+              evidenceUrl: 'https://www.facebook.com/ads/library/?q=acme',
+              observedAt
+            },
+            {
+              metric: 'social.followers',
+              scope: 'instagram:acme',
+              value: followers,
+              evidenceUrl: 'https://www.instagram.com/acme/',
+              observedAt
+            },
+            {
+              metric: 'social.posts_30d',
+              scope: 'instagram:acme',
+              value: socialPosts,
+              evidenceUrl: 'https://www.instagram.com/acme/',
+              observedAt
+            },
+            {
+              metric: 'newsletter.posts_30d',
+              scope: 'newsletter',
+              value: newsletterPosts,
+              evidenceUrl: 'https://acme.test/newsletter',
+              observedAt
+            }
+          ]
+        };
+      }
+    };
+    const pages = {
+      '/': home('Shipping software faster'),
+      '/careers': careers(['Backend Engineer']),
+      '/pricing': pricing('29')
+    };
+
+    const providerLogs: string[] = [];
+    const baseline = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => T0,
+      fetchImpl: site(pages),
+      observationProviders: [provider],
+      log: (message) => providerLogs.push(message)
+    });
+    expect(baseline.signals.map((signal) => signal.kind)).toEqual(['first-capture']);
+    expect(providerLogs.filter((message) => message.startsWith('Observation provider:'))).toEqual(
+      []
+    );
+    const storedBaseline = await db
+      .prepare(
+        "SELECT domain,snapshot_json FROM research_snapshots WHERE workspace_id=? AND domain LIKE 'observation:%'"
+      )
+      .get<{ domain: string; snapshot_json: { measurements?: Record<string, unknown> } }>(
+        WORKSPACE_ID
+      );
+    expect(storedBaseline?.domain).toBe('observation:raw-metrics:acme.test');
+    expect(Object.keys(storedBaseline?.snapshot_json.measurements ?? {})).toHaveLength(4);
+
+    activeAds = 4;
+    followers = 120;
+    socialPosts = 4;
+    newsletterPosts = 3;
+    observedAt = at(24).toISOString();
+    const moved = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => at(24),
+      fetchImpl: site(pages),
+      observationProviders: [provider]
+    });
+    expect(new Set(moved.signals.map((signal) => signal.kind))).toEqual(
+      new Set(['meta-ads-started', 'social-growth', 'social-cadence-up', 'newsletter-started'])
+    );
+
+    // Small social/ad movement stays noise, while a real newsletter activity
+    // transition is still interpreted by Trevra rather than the provider.
+    activeAds = 5;
+    followers = 125;
+    socialPosts = 5;
+    newsletterPosts = 0;
+    observedAt = at(48).toISOString();
+    const quiet = await sweepAccount(db, await loadAccount(accountId), {
+      now: () => at(48),
+      fetchImpl: site(pages),
+      observationProviders: [provider]
+    });
+    expect(quiet.signals.map((signal) => signal.kind)).toEqual(['newsletter-silent']);
+  });
+
   it('stores nothing on a re-sweep of an unchanged site', async () => {
     const accountId = await makeAccount();
     const pages = {

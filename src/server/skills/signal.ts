@@ -15,6 +15,13 @@ import {
 } from './html.js';
 import { normalizeDomain } from './ladder.js';
 import { createPublicWebCrawler, type CrawlTelemetry } from '../crawl/public-web.js';
+import {
+  discoverSiteSurfaces,
+  NEWSLETTER_LINK_RE,
+  type NewsletterPublicationTarget,
+  type NewsletterSignupSurface,
+  type PublishedSocialProfile
+} from '../observations/site-surfaces.js';
 import { crawlStorefront, type StorefrontProduct } from '../storefront/crawler.js';
 import type { Skill, SkillContext, SkillEvidence } from './types.js';
 
@@ -39,7 +46,15 @@ import type { Skill, SkillContext, SkillEvidence } from './types.js';
  * the signal would be worth nothing within a week.
  */
 
-export const SIGNAL_WATCHES = ['hiring', 'pricing', 'headline', 'tech', 'products'] as const;
+export const SIGNAL_WATCHES = [
+  'hiring',
+  'pricing',
+  'headline',
+  'tech',
+  'products',
+  'newsletter',
+  'social'
+] as const;
 export type SignalWatch = (typeof SIGNAL_WATCHES)[number];
 
 export const DEFAULT_PAGE_BUDGET = 10;
@@ -53,6 +68,10 @@ export type SignalKind =
   | 'headline-changed'
   | 'commerce-app-added'
   | 'commerce-app-removed'
+  | 'newsletter-signup-added'
+  | 'newsletter-signup-removed'
+  | 'social-profile-added'
+  | 'social-profile-removed'
   | 'tech-added'
   | 'tech-removed';
 
@@ -66,6 +85,10 @@ const SIGNAL_ORDER: readonly SignalKind[] = [
   'headline-changed',
   'commerce-app-added',
   'commerce-app-removed',
+  'newsletter-signup-added',
+  'newsletter-signup-removed',
+  'social-profile-added',
+  'social-profile-removed',
   'tech-added',
   'tech-removed'
 ];
@@ -98,6 +121,12 @@ export interface ResearchSnapshot {
   /** True when the public endpoint hit Trevra's platform sample ceiling. */
   productCapped: boolean;
   productItems: CatalogItem[];
+  /** `null` = not captured. `[]` = captured, and no signup surface was found. */
+  newsletterSignups?: NewsletterSignupSurface[] | null;
+  /** Public newsletter publication targets linked by the company, when captured. */
+  newsletterPublications?: NewsletterPublicationTarget[] | null;
+  /** `null`/missing = not captured. `[]` = captured, and no published social profile was found. */
+  socialProfiles?: PublishedSocialProfile[] | null;
   /** `null` = not captured. `[]` = captured, and nothing matched. */
   tech: string[] | null;
 }
@@ -210,7 +239,10 @@ export async function captureSnapshot(
   });
   // Preserve room for the non-commerce watches. A product catalog is useful,
   // but it must not consume the whole account budget and starve careers/pricing.
-  const reserve = (watches.has('hiring') ? 2 : 0) + (watches.has('pricing') ? 2 : 0);
+  const reserve =
+    (watches.has('hiring') ? 2 : 0) +
+    (watches.has('pricing') ? 2 : 0) +
+    (watches.has('newsletter') ? 1 : 0);
   const maxCatalogRequests = watches.has('products')
     ? Math.max(0, Math.min(4, budget - 2 - reserve))
     : 0;
@@ -230,6 +262,41 @@ export async function captureSnapshot(
       : null;
   const detectedTech = html ? detectTech(html, storefront.homeHeaders) : [];
   const tech = watches.has('tech') && html ? detectedTech.map((item) => item.key).sort() : null;
+
+  const homeSurfaces = html ? discoverSiteSurfaces(html, storefront.homeUrl) : null;
+  let newsletterSignups: NewsletterSignupSurface[] | null = watches.has('newsletter')
+    ? (homeSurfaces?.newsletterSignups ?? null)
+    : null;
+  let newsletterPublications: NewsletterPublicationTarget[] | null = watches.has('newsletter')
+    ? (homeSurfaces?.newsletterPublications ?? null)
+    : null;
+  const socialProfiles: PublishedSocialProfile[] | null = watches.has('social')
+    ? (homeSurfaces?.socialProfiles ?? null)
+    : null;
+
+  // A dedicated first-party newsletter page is common even when the homepage
+  // only carries a footer link. Follow at most one same-origin page and use the
+  // same crawler budget/robots/pacing contract as every other site observer.
+  if (watches.has('newsletter') && html && newsletterSignups?.length === 0) {
+    const path = discoverPaths(html, base, NEWSLETTER_LINK_RE, [])[0];
+    if (path) {
+      const response = await crawler.get(`${base.origin}${path}`);
+      if (
+        response.response?.status === 200 &&
+        (!response.response.contentType || response.response.contentType.includes('html'))
+      ) {
+        const newsletterSurfaces = discoverSiteSurfaces(response.response.text, response.finalUrl);
+        newsletterSignups = newsletterSurfaces.newsletterSignups;
+        newsletterPublications = [
+          ...(newsletterPublications ?? []),
+          ...newsletterSurfaces.newsletterPublications.filter(
+            (target) =>
+              !(newsletterPublications ?? []).some((existing) => existing.url === target.url)
+          )
+        ];
+      }
+    }
+  }
 
   let jobsUrl: string | null = null;
   let jobCount: number | null = null;
@@ -284,6 +351,9 @@ export async function captureSnapshot(
     productCount,
     productCapped,
     productItems,
+    newsletterSignups,
+    newsletterPublications,
+    socialProfiles,
     tech
   };
 }
@@ -295,6 +365,10 @@ function summarize(snapshot: ResearchSnapshot): string {
     parts.push(
       `${snapshot.productCapped ? 'at least ' : ''}${snapshot.productCount} catalog product(s)`
     );
+  if (snapshot.newsletterSignups?.length)
+    parts.push(`${snapshot.newsletterSignups.length} newsletter signup surface(s)`);
+  if (snapshot.socialProfiles?.length)
+    parts.push(`${snapshot.socialProfiles.length} published social profile(s)`);
   if (snapshot.headline) parts.push(`headline \"${snapshot.headline}\"`);
   if (snapshot.tech !== null && snapshot.tech.length > 0)
     parts.push(`tech ${snapshot.tech.join(', ')}`);
@@ -391,6 +465,66 @@ export function diffSnapshots(
     });
   }
 
+  if (previous.newsletterSignups != null && current.newsletterSignups != null) {
+    const before = new Set(previous.newsletterSignups.map((surface) => surface.key));
+    const after = new Set(current.newsletterSignups.map((surface) => surface.key));
+    const added = current.newsletterSignups.filter((surface) => !before.has(surface.key));
+    const removed = previous.newsletterSignups.filter((surface) => !after.has(surface.key));
+    const previousState =
+      previous.newsletterSignups.map((surface) => surface.key).join(', ') || 'none';
+    const currentState =
+      current.newsletterSignups.map((surface) => surface.key).join(', ') || 'none';
+    if (added.length > 0) {
+      signals.push({
+        kind: 'newsletter-signup-added',
+        detail: `${current.domain} added a newsletter signup surface${added[0]?.provider ? ` using ${added[0].provider}` : ''}.`,
+        previous: previousState,
+        current: currentState
+      });
+    }
+    if (removed.length > 0) {
+      signals.push({
+        kind: 'newsletter-signup-removed',
+        detail: `${current.domain} removed a previously published newsletter signup surface.`,
+        previous: previousState,
+        current: currentState
+      });
+    }
+  }
+
+  if (previous.socialProfiles != null && current.socialProfiles != null) {
+    const key = (profile: PublishedSocialProfile) =>
+      `${profile.platform}:${profile.handle.toLowerCase()}`;
+    const before = new Set(previous.socialProfiles.map(key));
+    const after = new Set(current.socialProfiles.map(key));
+    const added = current.socialProfiles.filter((profile) => !before.has(key(profile)));
+    const removed = previous.socialProfiles.filter((profile) => !after.has(key(profile)));
+    const previousState = previous.socialProfiles.map(key).join(', ') || 'none';
+    const currentState = current.socialProfiles.map(key).join(', ') || 'none';
+    if (added.length > 0) {
+      signals.push({
+        kind: 'social-profile-added',
+        detail: `${current.domain} published ${added.length} new social profile link${added.length === 1 ? '' : 's'} (${added
+          .slice(0, 3)
+          .map((profile) => `${profile.platform}:${profile.handle}`)
+          .join('; ')}).`,
+        previous: previousState,
+        current: currentState
+      });
+    }
+    if (removed.length > 0) {
+      signals.push({
+        kind: 'social-profile-removed',
+        detail: `${current.domain} removed ${removed.length} previously published social profile link${removed.length === 1 ? '' : 's'} (${removed
+          .slice(0, 3)
+          .map((profile) => `${profile.platform}:${profile.handle}`)
+          .join('; ')}).`,
+        previous: previousState,
+        current: currentState
+      });
+    }
+  }
+
   if (previous.tech !== null && current.tech !== null) {
     const before = new Set(previous.tech);
     const after = new Set(current.tech);
@@ -453,6 +587,36 @@ const snapshotSchema = z.object({
   productCount: z.number().nullable().default(null),
   productCapped: z.boolean().default(false),
   productItems: z.array(z.object({ key: z.string(), label: z.string() })).default([]),
+  newsletterSignups: z
+    .array(
+      z.object({
+        sourceUrl: z.string(),
+        provider: z.string().nullable(),
+        key: z.string()
+      })
+    )
+    .nullable()
+    .default(null),
+  newsletterPublications: z
+    .array(
+      z.object({
+        platform: z.literal('substack'),
+        url: z.string(),
+        feedUrl: z.string()
+      })
+    )
+    .nullable()
+    .default(null),
+  socialProfiles: z
+    .array(
+      z.object({
+        platform: z.string(),
+        handle: z.string(),
+        url: z.string()
+      })
+    )
+    .nullable()
+    .default(null),
   tech: z.array(z.string()).nullable()
 });
 
@@ -551,7 +715,11 @@ export async function watchSignals(
           ? snapshot.pricingUrl
           : signal.kind === 'product-launch'
             ? snapshot.productUrl
-            : `https://${clean}`
+            : signal.kind.startsWith('newsletter-signup')
+              ? (snapshot.newsletterSignups?.[0]?.sourceUrl ?? `https://${clean}`)
+              : signal.kind === 'social-profile-added'
+                ? (snapshot.socialProfiles?.[0]?.url ?? `https://${clean}`)
+                : `https://${clean}`
     }))
   };
 }
@@ -577,6 +745,10 @@ const outputSchema = z.object({
         'headline-changed',
         'commerce-app-added',
         'commerce-app-removed',
+        'newsletter-signup-added',
+        'newsletter-signup-removed',
+        'social-profile-added',
+        'social-profile-removed',
         'tech-added',
         'tech-removed'
       ]),
@@ -599,7 +771,7 @@ export const watchSignalSkill: Skill<WatchInput, WatchResult> = {
     name: 'Watch a domain for change signals',
     version: '1.0.0',
     description:
-      'Capture hiring, pricing, headline, ecommerce app, and public Shopify/WooCommerce catalog snapshots for a domain and diff them into evidence-backed change signals.',
+      'Capture hiring, pricing, headline, ecommerce app, public product catalog, newsletter signup, and published social-profile snapshots for a domain and diff them into evidence-backed change signals.',
     sideEffect: 'network-read',
     requiresApproval: false,
     inputSchema,

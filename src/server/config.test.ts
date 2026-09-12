@@ -274,6 +274,33 @@ describe('single-operator production on loopback', () => {
     ).toThrow(/NANGO_API_KEY/);
   });
 
+  it('validates deployment-owned Instagram observation credentials before production boots', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_GRAPH_ACCESS_TOKEN: 'token-only'
+      })
+    ).toThrow(/TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_GRAPH_ACCESS_TOKEN: 'token',
+        TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID: '17841400000000000',
+        TREVRA_META_GRAPH_VERSION: '26'
+      })
+    ).toThrow(/TREVRA_META_GRAPH_VERSION/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_GRAPH_ACCESS_TOKEN: 'token',
+        TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID: '17841400000000000',
+        TREVRA_META_GRAPH_VERSION: 'v26.0'
+      })
+    ).not.toThrow();
+  });
+
   it('validates deployment-owned ecommerce observation adapters before production boots', () => {
     expect(() =>
       validateEnvironment({
