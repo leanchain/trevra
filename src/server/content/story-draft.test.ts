@@ -92,9 +92,60 @@ describe('prepareStoryLinkedInDraft', () => {
     });
     expect(result.post.publicationMeta).toMatchObject({
       contentOpportunityId: opportunity.id,
-      renderer: 'linkedin-evidence-v1'
+      renderer: 'linkedin-evidence-v2',
+      contentAngle: 'observation',
+      strategySource: 'heuristic'
+    });
+    expect(result.asset.generation).toMatchObject({
+      features: {
+        opportunityKind: 'company_change',
+        angle: 'observation',
+        hookFamily: 'change-led',
+        evidenceCount: 2,
+        entityCount: 1
+      },
+      learning: {
+        source: 'heuristic',
+        minimumSample: 3
+      }
     });
     expect(renderPostBody(result.post.blocks)).toContain('Acme added five platform roles.');
+  });
+
+  it('uses a teardown framing for a source-rich company change before enough personal history exists', async () => {
+    const opportunity = await upsertContentOpportunity(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        kind: 'company_change',
+        title: 'Acme: three changes',
+        thesis: 'Three independent changes line up.',
+        freshnessAt: NOW.toISOString(),
+        score: 94,
+        rationale: ['three kinds'],
+        fingerprint: 'story-draft-three',
+        evidence: [0, 1, 2].map((index) => ({
+          sourceType: 'account_signal' as const,
+          sourceId: `sig_three_${index}`,
+          label: `signal ${index}`,
+          detail: `Acme observed fact ${index + 1}.`,
+          sourceUrl: `https://acme.example/fact-${index + 1}`,
+          observedAt: NOW.toISOString()
+        }))
+      },
+      NOW
+    );
+    const result = await prepareStoryLinkedInDraft(
+      db,
+      { workspaceId: WORKSPACE, opportunityId: opportunity.id },
+      NOW
+    );
+    expect(result.asset.angle).toBe('teardown');
+    expect(result.asset.generation).toMatchObject({
+      features: { angle: 'teardown', hookFamily: 'teardown', evidenceCount: 3 },
+      learning: { source: 'heuristic' }
+    });
+    expect(renderPostBody(result.post.blocks)).toContain('A quick teardown of what changed:');
   });
 
   it('reuses one draft for repeated preparation of the same story and seat', async () => {

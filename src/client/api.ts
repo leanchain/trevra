@@ -51,6 +51,7 @@ import type {
 import type { PublicSkillManifest } from '../server/skill-api';
 import type { TodayPayload } from '../server/today';
 import type { ContentOpportunity } from '../server/content/types';
+import type { ContentDraftStrategy } from '../server/content/strategy';
 import type { ContentPerformanceReport } from '../server/content/performance';
 import type { PreparedOutreachResult } from '../server/outreach/prepare';
 import type { GtmIntent, GtmPlan, PreparedGtmPlanResult } from '../server/gtm/intent';
@@ -198,6 +199,15 @@ export async function getContentOpportunities(
 
 export async function getContentPerformance(limit = 100): Promise<ContentPerformanceReport> {
   return request(`/api/content/performance?limit=${encodeURIComponent(String(limit))}`);
+}
+
+export async function getContentDraftStrategies(
+  limit = 50
+): Promise<Record<string, ContentDraftStrategy>> {
+  const result = await request<{
+    strategies: Array<{ opportunityId: string; strategy: ContentDraftStrategy }>;
+  }>(`/api/content/draft-strategies?limit=${encodeURIComponent(String(limit))}`);
+  return Object.fromEntries(result.strategies.map((row) => [row.opportunityId, row.strategy]));
 }
 
 export async function refreshContentOpportunities(): Promise<ContentOpportunity[]> {

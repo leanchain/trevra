@@ -222,6 +222,70 @@ describe('content opportunity API', () => {
     );
   });
 
+  it('returns draft strategies only for ready stories in the authenticated workspace', async () => {
+    const own = await upsertContentOpportunity(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        kind: 'company_change',
+        title: 'Own strategy story',
+        thesis: 'Own evidence.',
+        freshnessAt: NOW.toISOString(),
+        score: 91,
+        rationale: [],
+        fingerprint: 'strategy-own',
+        evidence: [
+          {
+            sourceType: 'external_observation',
+            sourceId: 'strategy-own-evidence',
+            label: 'own',
+            detail: 'Own observed fact.',
+            sourceUrl: 'https://strategy-own.example/',
+            observedAt: NOW.toISOString()
+          }
+        ]
+      },
+      NOW
+    );
+    const foreign = await upsertContentOpportunity(
+      db,
+      {
+        workspaceId: OTHER,
+        kind: 'company_change',
+        title: 'Foreign strategy story',
+        thesis: 'Foreign evidence.',
+        freshnessAt: NOW.toISOString(),
+        score: 99,
+        rationale: [],
+        fingerprint: 'strategy-foreign',
+        evidence: [
+          {
+            sourceType: 'external_observation',
+            sourceId: 'strategy-foreign-evidence',
+            label: 'foreign',
+            detail: 'Foreign observed fact.',
+            sourceUrl: 'https://strategy-foreign.example/',
+            observedAt: NOW.toISOString()
+          }
+        ]
+      },
+      NOW
+    );
+
+    const result = await authed('get', '/api/content/draft-strategies?limit=200').expect(200);
+    expect(result.body.strategies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          opportunityId: own.id,
+          strategy: expect.objectContaining({ source: 'heuristic', minimumSample: 3 })
+        })
+      ])
+    );
+    expect(result.body.strategies).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ opportunityId: foreign.id })])
+    );
+  });
+
   it('creates one unscheduled LinkedIn draft per story+seat and cannot reach another workspace story', async () => {
     const story = await upsertContentOpportunity(
       db,

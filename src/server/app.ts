@@ -119,6 +119,7 @@ import { buildCompanyChangeOpportunities } from './content/opportunity-builder.j
 import { listContentOpportunities, setContentOpportunityStatus } from './content/opportunities.js';
 import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
 import { contentPerformanceReport } from './content/performance.js';
+import { contentDraftStrategy } from './content/strategy.js';
 import { DemandActionError, prepareDemandAction } from './demand/actions.js';
 import { listConversationMessages, listConversations } from './conversations.js';
 import { listEmailDeliveries } from './email-deliveries.js';
@@ -2705,6 +2706,28 @@ export function createApp(db: Db) {
           status: input.status ?? 'ready',
           limit: input.limit
         })
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/content/draft-strategies', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({ limit: z.coerce.number().int().min(1).max(200).optional() })
+        .parse(req.query);
+      const opportunities = await listContentOpportunities(db, req.auth!.workspaceId, {
+        status: 'ready',
+        limit: input.limit ?? 50
+      });
+      const report = await contentPerformanceReport(db, req.auth!.workspaceId, 200);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        strategies: opportunities.map((opportunity) => ({
+          opportunityId: opportunity.id,
+          strategy: contentDraftStrategy(opportunity, report)
+        }))
       });
     } catch (error) {
       next(error);

@@ -12,10 +12,12 @@ import {
 import type { ConnectionSummary, SkillRun } from '../../shared/types';
 import type { ContentOpportunity } from '../../server/content/types';
 import type { ContentPerformanceReport } from '../../server/content/performance';
+import type { ContentDraftStrategy } from '../../server/content/strategy';
 import {
   createWatch,
   draftContentOpportunityLinkedIn,
   draftMentionReply,
+  getContentDraftStrategies,
   getContentOpportunities,
   getContentPerformance,
   getOutreachOfferDefaults,
@@ -510,6 +512,7 @@ export function ResearchView({
   const [storiesLoaded, setStoriesLoaded] = useState(false);
   const [storiesError, setStoriesError] = useState('');
   const [performance, setPerformance] = useState<ContentPerformanceReport | null>(null);
+  const [draftStrategies, setDraftStrategies] = useState<Record<string, ContentDraftStrategy>>({});
   const [performanceLoaded, setPerformanceLoaded] = useState(false);
   const [performanceError, setPerformanceError] = useState('');
   const [storyBusy, setStoryBusy] = useState<string | null>(null);
@@ -556,16 +559,21 @@ export function ResearchView({
 
   useEffect(() => {
     let cancelled = false;
-    getContentOpportunities({ status: 'ready', limit: 20 })
-      .then((rows) => {
+    Promise.all([
+      getContentOpportunities({ status: 'ready', limit: 20 }),
+      getContentDraftStrategies(20)
+    ])
+      .then(([rows, strategies]) => {
         if (cancelled) return;
         setStories(rows);
+        setDraftStrategies(strategies);
         setStoriesError('');
         setStoriesLoaded(true);
       })
       .catch((error) => {
         if (cancelled) return;
         setStories([]);
+        setDraftStrategies({});
         setStoriesError(error instanceof Error ? error.message : 'Could not load market stories.');
         setStoriesLoaded(true);
       });
@@ -843,7 +851,9 @@ export function ResearchView({
     setRefreshingStories(true);
     setStoriesError('');
     try {
-      setStories(await refreshContentOpportunities());
+      const rows = await refreshContentOpportunities();
+      setStories(rows);
+      setDraftStrategies(await getContentDraftStrategies(20));
     } catch (error) {
       setStoriesError(error instanceof Error ? error.message : 'Could not refresh market stories.');
     } finally {
@@ -857,6 +867,11 @@ export function ResearchView({
     try {
       await updateContentOpportunityStatus(story.id, 'dismissed');
       setStories((current) => current.filter((item) => item.id !== story.id));
+      setDraftStrategies((current) => {
+        const next = { ...current };
+        delete next[story.id];
+        return next;
+      });
     } catch (error) {
       setStoriesError(error instanceof Error ? error.message : 'Could not dismiss this story.');
     } finally {
@@ -958,48 +973,64 @@ export function ResearchView({
           </div>
         ) : (
           <div className="research-story-list">
-            {stories.map((story) => (
-              <article className="client-card-large research-story-card" key={story.id}>
-                <span className="client-avatar large">{story.score}</span>
-                <div className="research-story-main">
-                  <h3>{story.title}</h3>
-                  <p>{story.thesis}</p>
-                  <div className="research-story-evidence" aria-label="Story evidence">
-                    {story.evidence.slice(0, 4).map((evidence) => (
-                      <a
-                        key={`${evidence.sourceType}:${evidence.sourceId}`}
-                        href={evidence.sourceUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        <strong>{evidence.label}</strong>
-                        <span>{evidence.detail}</span>
-                        <small>{new Date(evidence.observedAt).toLocaleString()}</small>
-                      </a>
-                    ))}
+            {stories.map((story) => {
+              const strategy = draftStrategies[story.id];
+              return (
+                <article className="client-card-large research-story-card" key={story.id}>
+                  <span className="client-avatar large">{story.score}</span>
+                  <div className="research-story-main">
+                    <h3>{story.title}</h3>
+                    <p>{story.thesis}</p>
+                    {strategy ? (
+                      <details className="research-story-strategy">
+                        <summary>
+                          Draft angle: <strong>{strategy.angle.replaceAll('_', ' ')}</strong>
+                          <span>
+                            {strategy.source === 'performance'
+                              ? 'learned from your outcomes'
+                              : 'deterministic starting rule'}
+                          </span>
+                        </summary>
+                        <p>{strategy.reason}</p>
+                      </details>
+                    ) : null}
+                    <div className="research-story-evidence" aria-label="Story evidence">
+                      {story.evidence.slice(0, 4).map((evidence) => (
+                        <a
+                          key={`${evidence.sourceType}:${evidence.sourceId}`}
+                          href={evidence.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <strong>{evidence.label}</strong>
+                          <span>{evidence.detail}</span>
+                          <small>{new Date(evidence.observedAt).toLocaleString()}</small>
+                        </a>
+                      ))}
+                    </div>
                   </div>
-                </div>
-                <div className="research-story-actions">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    disabled={storyBusy === story.id}
-                    onClick={() => void dismissStory(story)}
-                  >
-                    Dismiss
-                  </button>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={storyBusy === story.id}
-                    onClick={() => void draftStory(story)}
-                  >
-                    {storyBusy === story.id ? <LoaderCircle className="spin" size={15} /> : null}
-                    Draft post
-                  </button>
-                </div>
-              </article>
-            ))}
+                  <div className="research-story-actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={storyBusy === story.id}
+                      onClick={() => void dismissStory(story)}
+                    >
+                      Dismiss
+                    </button>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={storyBusy === story.id}
+                      onClick={() => void draftStory(story)}
+                    >
+                      {storyBusy === story.id ? <LoaderCircle className="spin" size={15} /> : null}
+                      {strategy ? `Draft ${strategy.angle.replaceAll('_', ' ')}` : 'Draft post'}
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
       </section>
