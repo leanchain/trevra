@@ -288,6 +288,7 @@ The drafter may use this later as input, but the calculation itself stays determ
 - [x] Recent first-party inbound + hot Account → `DemandCandidate`.
 - [x] `qualified_demand` recommendation with immutable proof and source timestamps.
 - [x] `Today` collapses duplicate inbound + hot-account events into one decision.
+- [x] `Today` remains visible before outreach activation, so inbound demand is never hidden behind setup.
 - [x] Worker refreshes qualified-demand recommendations without activating dormant stale-proposal automation.
 - [x] Hot Account ≥80 + exactly one explicit/verified known Person → outbound demand decision.
 - [x] Precision guards: multiple candidate People are not auto-selected; Accounts with open opportunities are not re-prospected.

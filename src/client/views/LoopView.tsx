@@ -442,17 +442,20 @@ export function LoopView({
 
   if (!explore && activation.signals.work !== true) {
     return (
-      <ActivationGuide
-        signals={activation.signals}
-        problems={activation.problems}
-        onRetry={() => void activation.reload()}
-        onNavigate={onNavigate}
-        onPlan={() => {
-          setPlannerInitiallyOpen(true);
-          setExplore(true);
-        }}
-        onExplore={() => setExplore(true)}
-      />
+      <>
+        <TodayAttention today={today} problem={todayError} onNavigate={onNavigate} />
+        <ActivationGuide
+          signals={activation.signals}
+          problems={activation.problems}
+          onRetry={() => void activation.reload()}
+          onNavigate={onNavigate}
+          onPlan={() => {
+            setPlannerInitiallyOpen(true);
+            setExplore(true);
+          }}
+          onExplore={() => setExplore(true)}
+        />
+      </>
     );
   }
 
@@ -628,6 +631,18 @@ function Metric({
   );
 }
 
+function todayActionLabel(
+  item: Awaited<ReturnType<typeof getToday>>['needsAttention'][number]
+): string {
+  if (item.kind === 'qualification_decision') {
+    return item.metadata.demandOrigin === 'known_contact' ? 'Prepare outreach' : 'Review demand';
+  }
+  if (item.kind === 'verified_reply') return 'Reply';
+  if (item.kind === 'inbound_submission') return 'Review inbound';
+  if (item.kind === 'high_priority_account') return 'Review account';
+  return 'Open';
+}
+
 function TodayAttention({
   today,
   problem,
@@ -677,7 +692,7 @@ function TodayAttention({
                 type="button"
                 onClick={() => onNavigate(item.href)}
               >
-                Open <ChevronRight size={15} />
+                {todayActionLabel(item)} <ChevronRight size={15} />
               </button>
             </li>
           ))}
