@@ -38,6 +38,7 @@ Today it:
 - captures bounded, paginated Shopify and WooCommerce public catalogs for product-launch diffs;
 - detects repeated/ignored pagination and marks the catalog capped instead of looping or pretending the sample is complete;
 - returns homepage HTML to Trevra's ecommerce-app detector so app install/removal signals come from the same independent crawl;
+- emits `storefront-rebuild` only when two consecutive live captures show a migration between recognized commerce platforms at >=0.8 confidence on both sides; low-confidence/generic-site changes do not qualify;
 - records first-party newsletter signup surfaces and social-profile links as weak presence signals, without pretending presence means activity or growth;
 - follows at most one same-origin newsletter page and records a company-published Substack publication target when present.
 
@@ -88,6 +89,12 @@ Optional: `TREVRA_META_GRAPH_VERSION` (defaults to `v26.0`; malformed values are
 ### Substack public feed
 
 A company-published `*.substack.com` publication is measured through its public `/feed`. This needs no credential. Trevra emits `newsletter.posts_30d` only when an item older than 30 days proves the returned feed covers the whole measurement window. An all-recent feed may be truncated and is therefore left unmeasured.
+
+### YouTube Data API
+
+When the company publishes a canonical YouTube `/channel/UC…` link and `TREVRA_YOUTUBE_API_KEY` is configured, Trevra resolves the channel's official uploads playlist through `channels.list`, measures public subscriber count when YouTube exposes it, and counts public uploads in the trailing 30 days through `playlistItems.list`. The collector paginates at most three 50-item pages; if more than 150 uploads still fit inside the 30-day window, cadence remains unmeasured rather than becoming a false exact count. Trevra does not guess a channel ID from an `@handle` URL.
+
+The earlier no-credential Atom-feed approach is intentionally not used: live qualification showed YouTube's current robots policy blocks that feed path for Trevra's crawler. The Data API is the supported acquisition path.
 
 ## Deployment-owned HTTP observation providers
 

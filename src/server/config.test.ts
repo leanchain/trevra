@@ -301,6 +301,12 @@ describe('single-operator production on loopback', () => {
     ).not.toThrow();
   });
 
+  it('accepts an optional YouTube Data API key for measured channel activity', () => {
+    expect(() =>
+      validateEnvironment({ ...production, TREVRA_YOUTUBE_API_KEY: 'youtube-api-key' })
+    ).not.toThrow();
+  });
+
   it('validates deployment-owned ecommerce observation adapters before production boots', () => {
     expect(() =>
       validateEnvironment({

@@ -85,6 +85,44 @@ describe('diffSnapshots', () => {
     expect(signals[4].detail).toContain('dropped hubspot');
   });
 
+  it('emits storefront-rebuild only for high-confidence commerce-platform migrations', () => {
+    const shopify: ResearchSnapshot = {
+      ...BEFORE,
+      storefrontPlatform: 'shopify',
+      storefrontPlatformConfidence: 1
+    };
+    const woo: ResearchSnapshot = {
+      ...AFTER,
+      headline: BEFORE.headline,
+      jobCount: BEFORE.jobCount,
+      jobTitles: BEFORE.jobTitles,
+      pricingHash: BEFORE.pricingHash,
+      tech: BEFORE.tech,
+      storefrontPlatform: 'woocommerce',
+      storefrontPlatformConfidence: 0.9
+    };
+    expect(diffSnapshots(shopify, woo).map((signal) => signal.kind)).toEqual([
+      'storefront-rebuild'
+    ]);
+    expect(diffSnapshots(shopify, woo)[0].detail).toContain('shopify to woocommerce');
+
+    expect(
+      diffSnapshots(shopify, { ...woo, storefrontPlatformConfidence: 0.7 }).map(
+        (signal) => signal.kind
+      )
+    ).not.toContain('storefront-rebuild');
+    expect(
+      diffSnapshots(shopify, {
+        ...woo,
+        storefrontPlatform: 'webflow',
+        storefrontPlatformConfidence: 1
+      }).map((signal) => signal.kind)
+    ).not.toContain('storefront-rebuild');
+    expect(
+      diffSnapshots({ ...shopify, storefrontPlatform: undefined }, woo).map((signal) => signal.kind)
+    ).not.toContain('storefront-rebuild');
+  });
+
   it('detects product launches from the public catalog without treating a baseline as a launch', () => {
     const launched: ResearchSnapshot = {
       ...AFTER,
@@ -363,6 +401,8 @@ describe('captureSnapshot', () => {
     expect(snapshot.jobCount).toBeNull();
     expect(snapshot.pricingHash).toBeNull();
     expect(snapshot.productCount).toBeNull();
+    expect(snapshot.storefrontPlatform).toBeNull();
+    expect(snapshot.storefrontPlatformConfidence).toBeNull();
     expect(snapshot.tech).toBeNull();
   });
 

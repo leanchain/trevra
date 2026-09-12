@@ -5,6 +5,7 @@ import { interpretMeasurements } from './measurements.js';
 import { configuredHttpObservationProviders } from './providers/http.js';
 import { configuredInstagramBusinessDiscoveryProviders } from './providers/instagram.js';
 import { configuredSubstackPublicFeedProviders } from './providers/substack.js';
+import { configuredYouTubeDataApiProviders } from './providers/youtube.js';
 import type {
   ExternalObservation,
   ObservationAccountContext,
@@ -38,6 +39,7 @@ export async function collectExternalObservations(
   const now = options.now ?? new Date();
   const providers = options.providers ?? [
     ...configuredSubstackPublicFeedProviders(),
+    ...configuredYouTubeDataApiProviders(),
     ...configuredInstagramBusinessDiscoveryProviders(),
     ...configuredHttpObservationProviders()
   ];

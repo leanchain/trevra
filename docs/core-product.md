@@ -62,8 +62,8 @@ Per account, on a schedule: public commentary (GitHub, HN, Reddit, Lobsters,
 dev.to, Mastodon, Stack Exchange — **all seven already exist as scouts**), site
 change diffs, hiring/careers page diffs, ecommerce product/catalog and storefront
 app changes, first-party newsletter/social surface diffs, built-in Substack public-feed
-activity, optional Instagram Business Discovery metrics, plus deployment-owned
-observation providers for Meta ads and other expensive external surfaces. Storefront
+activity, optional Instagram Business Discovery and YouTube Data API metrics, plus
+deployment-owned observation providers for Meta ads and other expensive external surfaces. Storefront
 crawling runs independently inside Trevra. See `docs/ecommerce-observation-plane.md`.
 
 **Works properly when:** every observation carries a **source URL and a

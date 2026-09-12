@@ -22,7 +22,11 @@ import {
   type NewsletterSignupSurface,
   type PublishedSocialProfile
 } from '../observations/site-surfaces.js';
-import { crawlStorefront, type StorefrontProduct } from '../storefront/crawler.js';
+import {
+  crawlStorefront,
+  type StorefrontPlatform,
+  type StorefrontProduct
+} from '../storefront/crawler.js';
 import type { Skill, SkillContext, SkillEvidence } from './types.js';
 
 /**
@@ -52,6 +56,7 @@ export const SIGNAL_WATCHES = [
   'headline',
   'tech',
   'products',
+  'storefront',
   'newsletter',
   'social'
 ] as const;
@@ -65,6 +70,7 @@ export type SignalKind =
   | 'hiring-up'
   | 'hiring-down'
   | 'pricing-changed'
+  | 'storefront-rebuild'
   | 'headline-changed'
   | 'commerce-app-added'
   | 'commerce-app-removed'
@@ -82,6 +88,7 @@ const SIGNAL_ORDER: readonly SignalKind[] = [
   'hiring-up',
   'hiring-down',
   'pricing-changed',
+  'storefront-rebuild',
   'headline-changed',
   'commerce-app-added',
   'commerce-app-removed',
@@ -121,6 +128,9 @@ export interface ResearchSnapshot {
   /** True when the public endpoint hit Trevra's platform sample ceiling. */
   productCapped: boolean;
   productItems: CatalogItem[];
+  /** Live storefront platform fingerprint. Null/missing means the storefront was not captured. */
+  storefrontPlatform?: StorefrontPlatform | null;
+  storefrontPlatformConfidence?: number | null;
   /** `null` = not captured. `[]` = captured, and no signup surface was found. */
   newsletterSignups?: NewsletterSignupSurface[] | null;
   /** Public newsletter publication targets linked by the company, when captured. */
@@ -335,6 +345,9 @@ export async function captureSnapshot(
       ? storefront.productItems.length
       : null;
   const productCapped = watches.has('products') ? storefront.productCapped : false;
+  const storefrontPlatform = watches.has('storefront') && html ? storefront.platform : null;
+  const storefrontPlatformConfidence =
+    watches.has('storefront') && html ? storefront.platformConfidence : null;
 
   options.onCrawlTelemetry?.(crawler.telemetry());
 
@@ -351,6 +364,8 @@ export async function captureSnapshot(
     productCount,
     productCapped,
     productItems,
+    storefrontPlatform,
+    storefrontPlatformConfidence,
     newsletterSignups,
     newsletterPublications,
     socialProfiles,
@@ -449,6 +464,31 @@ export function diffSnapshots(
       detail: `Pricing page content changed on ${current.pricingUrl ?? current.domain} (${previous.pricingHash} -> ${current.pricingHash}).`,
       previous: previous.pricingHash,
       current: current.pricingHash
+    });
+  }
+
+  const commercePlatforms = new Set<StorefrontPlatform>([
+    'shopify',
+    'woocommerce',
+    'magento',
+    'shopware',
+    'bigcommerce',
+    'prestashop'
+  ]);
+  if (
+    previous.storefrontPlatform != null &&
+    current.storefrontPlatform != null &&
+    previous.storefrontPlatform !== current.storefrontPlatform &&
+    commercePlatforms.has(previous.storefrontPlatform) &&
+    commercePlatforms.has(current.storefrontPlatform) &&
+    (previous.storefrontPlatformConfidence ?? 0) >= 0.8 &&
+    (current.storefrontPlatformConfidence ?? 0) >= 0.8
+  ) {
+    signals.push({
+      kind: 'storefront-rebuild',
+      detail: `${current.domain} moved its storefront platform from ${previous.storefrontPlatform} to ${current.storefrontPlatform}.`,
+      previous: previous.storefrontPlatform,
+      current: current.storefrontPlatform
     });
   }
 
@@ -587,6 +627,22 @@ const snapshotSchema = z.object({
   productCount: z.number().nullable().default(null),
   productCapped: z.boolean().default(false),
   productItems: z.array(z.object({ key: z.string(), label: z.string() })).default([]),
+  storefrontPlatform: z
+    .enum([
+      'shopify',
+      'woocommerce',
+      'wordpress',
+      'magento',
+      'wix',
+      'shopware',
+      'bigcommerce',
+      'prestashop',
+      'webflow',
+      'other'
+    ])
+    .nullable()
+    .default(null),
+  storefrontPlatformConfidence: z.number().min(0).max(1).nullable().default(null),
   newsletterSignups: z
     .array(
       z.object({
@@ -715,11 +771,13 @@ export async function watchSignals(
           ? snapshot.pricingUrl
           : signal.kind === 'product-launch'
             ? snapshot.productUrl
-            : signal.kind.startsWith('newsletter-signup')
-              ? (snapshot.newsletterSignups?.[0]?.sourceUrl ?? `https://${clean}`)
-              : signal.kind === 'social-profile-added'
-                ? (snapshot.socialProfiles?.[0]?.url ?? `https://${clean}`)
-                : `https://${clean}`
+            : signal.kind === 'storefront-rebuild'
+              ? `https://${clean}`
+              : signal.kind.startsWith('newsletter-signup')
+                ? (snapshot.newsletterSignups?.[0]?.sourceUrl ?? `https://${clean}`)
+                : signal.kind === 'social-profile-added'
+                  ? (snapshot.socialProfiles?.[0]?.url ?? `https://${clean}`)
+                  : `https://${clean}`
     }))
   };
 }
@@ -742,6 +800,7 @@ const outputSchema = z.object({
         'hiring-up',
         'hiring-down',
         'pricing-changed',
+        'storefront-rebuild',
         'headline-changed',
         'commerce-app-added',
         'commerce-app-removed',
