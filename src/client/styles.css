@@ -13482,3 +13482,116 @@ button:disabled {
     white-space: normal;
   }
 }
+
+/* Commercial distribution learning. Reach and pipeline are intentionally in
+   the same surface, but never collapsed into one score: a founder can see the
+   exact funnel Trevra can prove and which platform metrics are still unknown. */
+.research-performance-panel {
+  min-width: 0;
+}
+.research-performance-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.research-performance-metrics > div {
+  display: grid;
+  gap: 2px;
+  padding: 10px 11px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--t-surface-2);
+}
+.research-performance-metrics strong {
+  font-size: var(--t-text-lg);
+}
+.research-performance-metrics span {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+}
+.research-performance-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+  gap: 16px;
+}
+.research-performance-body h4 {
+  margin: 0 0 8px;
+}
+.research-performance-publications,
+.research-learning-list {
+  display: grid;
+  gap: 8px;
+}
+.research-performance-publications > article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+}
+.research-performance-publications > article > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+.research-performance-publications > article > div:first-child span {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+}
+.research-performance-chain {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
+.research-performance-chain span {
+  padding: 3px 6px;
+  border-radius: var(--t-r-pill);
+  background: var(--t-surface-2);
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+  white-space: nowrap;
+}
+.research-performance-publications a {
+  font-size: var(--t-text-xs);
+  white-space: nowrap;
+}
+.research-learning-list > p {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 9px 10px;
+  border-left: 2px solid var(--t-line-strong);
+  background: var(--t-surface-2);
+}
+.research-learning-list > p > strong {
+  text-transform: capitalize;
+}
+.research-learning-list > p > span,
+.research-learning-list > p > small {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+
+@media (max-width: 900px) {
+  .research-performance-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .research-performance-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .research-performance-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .research-performance-publications > article {
+    grid-template-columns: 1fr;
+  }
+  .research-performance-chain {
+    justify-content: flex-start;
+  }
+}

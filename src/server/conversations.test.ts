@@ -118,6 +118,55 @@ describe('shared GTM conversations', () => {
       ['email', 'outbound', 'Email hello'],
       ['linkedin', 'inbound', 'Interested — Friday works.']
     ]);
+    const verification = await db
+      .prepare(
+        `SELECT channel,direction,outcome_kind,verification_status
+         FROM conversation_messages
+         WHERE workspace_id=? AND conversation_id=?
+         ORDER BY occurred_at`
+      )
+      .all<Record<string, unknown>>(WORKSPACE, conversationId!);
+    expect(verification).toEqual([
+      {
+        channel: 'email',
+        direction: 'outbound',
+        outcome_kind: null,
+        verification_status: 'verified'
+      },
+      {
+        channel: 'linkedin',
+        direction: 'inbound',
+        outcome_kind: 'reply',
+        verification_status: 'verified'
+      }
+    ]);
+  });
+
+  it('marks a connected-email inbound message as a provider-verified reply', async () => {
+    await ingestCanonicalRecord(db, WORKSPACE, 'gmail', null, {
+      kind: 'message',
+      id: 'gmail-inbound-verified',
+      accountName: 'Acme',
+      personName: 'Maya Chen',
+      personEmail: 'maya@example.com',
+      direction: 'inbound',
+      subject: 'Re: Hello',
+      body: 'Yes, let’s talk.',
+      occurredAt: '2026-08-21T07:45:00.000Z'
+    });
+    const row = await db
+      .prepare(
+        `SELECT direction,outcome_kind,verification_status
+         FROM conversation_messages
+         WHERE workspace_id=? AND source_type='legacy_message'
+         ORDER BY occurred_at DESC LIMIT 1`
+      )
+      .get<Record<string, unknown>>(WORKSPACE);
+    expect(row).toMatchObject({
+      direction: 'inbound',
+      outcome_kind: 'reply',
+      verification_status: 'verified'
+    });
   });
 
   it('keeps conversation reads workspace-scoped', async () => {

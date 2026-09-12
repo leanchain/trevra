@@ -1,13 +1,23 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { CircleAlert, Database, LoaderCircle, MessageSquare, Newspaper, X } from 'lucide-react';
+import {
+  CircleAlert,
+  Database,
+  LoaderCircle,
+  MessageSquare,
+  Newspaper,
+  Target,
+  X
+} from 'lucide-react';
 import type { ConnectionSummary, SkillRun } from '../../shared/types';
 import type { ContentOpportunity } from '../../server/content/types';
+import type { ContentPerformanceReport } from '../../server/content/performance';
 import {
   createWatch,
   draftContentOpportunityLinkedIn,
   draftMentionReply,
   getContentOpportunities,
+  getContentPerformance,
   getOutreachOfferDefaults,
   getOutreachThreads,
   getSkillRuns,
@@ -499,6 +509,9 @@ export function ResearchView({
   const [stories, setStories] = useState<ContentOpportunity[]>([]);
   const [storiesLoaded, setStoriesLoaded] = useState(false);
   const [storiesError, setStoriesError] = useState('');
+  const [performance, setPerformance] = useState<ContentPerformanceReport | null>(null);
+  const [performanceLoaded, setPerformanceLoaded] = useState(false);
+  const [performanceError, setPerformanceError] = useState('');
   const [storyBusy, setStoryBusy] = useState<string | null>(null);
   const [refreshingStories, setRefreshingStories] = useState(false);
   const [redditOpen, setRedditOpen] = useState(false);
@@ -555,6 +568,28 @@ export function ResearchView({
         setStories([]);
         setStoriesError(error instanceof Error ? error.message : 'Could not load market stories.');
         setStoriesLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getContentPerformance(100)
+      .then((report) => {
+        if (cancelled) return;
+        setPerformance(report);
+        setPerformanceError('');
+        setPerformanceLoaded(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setPerformance(null);
+        setPerformanceError(
+          error instanceof Error ? error.message : 'Could not load distribution outcomes.'
+        );
+        setPerformanceLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -966,6 +1001,106 @@ export function ResearchView({
               </article>
             ))}
           </div>
+        )}
+      </section>
+
+      <section className="page-panel research-performance-panel">
+        <div className="section-heading">
+          <div>
+            <h3 aria-level={2}>Distribution outcomes</h3>
+            <p>
+              What published market intelligence turned into people, replies and pipeline. Reach
+              stays blank until Trevra has an observed platform metric.
+            </p>
+          </div>
+        </div>
+        {!performanceLoaded ? (
+          <div className="empty-state">
+            <LoaderCircle className="spin" size={24} />
+            <p>Tracing published stories to commercial outcomes…</p>
+          </div>
+        ) : performanceError ? (
+          <div className="error-banner">{performanceError}</div>
+        ) : !performance || performance.totals.published === 0 ? (
+          <div className="empty-state">
+            <Target size={24} />
+            <h4 aria-level={3}>No published story has an outcome trail yet</h4>
+            <p>
+              Publish an evidence-backed draft first; Trevra will keep the provenance from post to
+              pipeline.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="research-performance-metrics" aria-label="Distribution outcome totals">
+              {[
+                ['Published', performance.totals.published],
+                ['Engagers', performance.totals.engagers],
+                ['Qualified', performance.totals.qualifiedDemand],
+                ['Replies', performance.totals.verifiedReplies],
+                ['Opportunities', performance.totals.opportunities],
+                ['Won', performance.totals.won]
+              ].map(([label, value]) => (
+                <div key={String(label)}>
+                  <strong>{Number(value).toLocaleString()}</strong>
+                  <span>{label}</span>
+                </div>
+              ))}
+            </div>
+            <div className="research-performance-body">
+              <div>
+                <h4 aria-level={3}>Recent published stories</h4>
+                <div className="research-performance-publications">
+                  {performance.publications.slice(0, 5).map((publication) => (
+                    <article key={publication.postId}>
+                      <div>
+                        <strong>
+                          {publication.opportunityKind?.replaceAll('_', ' ') ?? 'Market story'}
+                        </strong>
+                        <span>
+                          {publication.latestMetrics?.impressions == null
+                            ? 'Reach not observed'
+                            : `${publication.latestMetrics.impressions.toLocaleString()} impressions`}
+                        </span>
+                      </div>
+                      <div className="research-performance-chain">
+                        <span>{publication.commercial.engagers} engaged</span>
+                        <span>{publication.commercial.qualifiedDemand} qualified</span>
+                        <span>{publication.commercial.verifiedReplies} replied</span>
+                        <span>{publication.commercial.opportunities} opps</span>
+                        <span>{publication.commercial.won} won</span>
+                      </div>
+                      {publication.postedUrl && (
+                        <a href={publication.postedUrl} target="_blank" rel="noreferrer">
+                          See post
+                        </a>
+                      )}
+                    </article>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <h4 aria-level={3}>What Trevra has learned</h4>
+                <div className="research-learning-list">
+                  {performance.learning
+                    .filter(
+                      (bucket) =>
+                        bucket.dimension === 'angle' || bucket.dimension === 'opportunity_kind'
+                    )
+                    .slice(0, 6)
+                    .map((bucket) => (
+                      <p key={`${bucket.dimension}:${bucket.value}`}>
+                        <strong>{bucket.value.replaceAll('_', ' ')}</strong>
+                        <span>{bucket.summary}</span>
+                        {!bucket.eligibleForComparison && (
+                          <small>Needs at least 3 published samples before comparison.</small>
+                        )}
+                      </p>
+                    ))}
+                </div>
+              </div>
+            </div>
+          </>
         )}
       </section>
 

@@ -51,6 +51,7 @@ import type {
 import type { PublicSkillManifest } from '../server/skill-api';
 import type { TodayPayload } from '../server/today';
 import type { ContentOpportunity } from '../server/content/types';
+import type { ContentPerformanceReport } from '../server/content/performance';
 import type { PreparedOutreachResult } from '../server/outreach/prepare';
 import type { GtmIntent, GtmPlan, PreparedGtmPlanResult } from '../server/gtm/intent';
 import type { ConversationMessage, ConversationSummary } from '../server/conversations';
@@ -193,6 +194,10 @@ export async function getContentOpportunities(
     `/api/content/opportunities${query.size ? `?${query}` : ''}`
   );
   return result.opportunities;
+}
+
+export async function getContentPerformance(limit = 100): Promise<ContentPerformanceReport> {
+  return request(`/api/content/performance?limit=${encodeURIComponent(String(limit))}`);
 }
 
 export async function refreshContentOpportunities(): Promise<ContentOpportunity[]> {

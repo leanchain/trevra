@@ -220,13 +220,15 @@ export async function projectLinkedInThread(
         `
         INSERT INTO conversation_messages (
           id,workspace_id,conversation_id,channel_id,channel,provider,direction,body,external_ref,
-          source_type,source_id,actor_type,actor_id,occurred_at,created_at
-        ) VALUES (?,?,?,?,'linkedin','linkedin',?,?,?,?,?,?,?,?,?)
+          source_type,source_id,actor_type,actor_id,outcome_kind,verification_status,occurred_at,created_at
+        ) VALUES (?,?,?,?,'linkedin','linkedin',?,?,?,?,?,?,?,?,'verified',?,?)
         ON CONFLICT (workspace_id,source_type,source_id) DO UPDATE SET
           conversation_id=EXCLUDED.conversation_id,
           channel_id=EXCLUDED.channel_id,
           actor_type=COALESCE(conversation_messages.actor_type,EXCLUDED.actor_type),
-          actor_id=COALESCE(conversation_messages.actor_id,EXCLUDED.actor_id)
+          actor_id=COALESCE(conversation_messages.actor_id,EXCLUDED.actor_id),
+          outcome_kind=EXCLUDED.outcome_kind,
+          verification_status='verified'
       `
       )
       .run(
@@ -241,6 +243,7 @@ export async function projectLinkedInThread(
         String(message.id),
         actorType,
         actorId,
+        message.direction === 'in' ? 'reply' : null,
         occurredAt,
         String(message.created_at ?? now.toISOString())
       );
@@ -282,12 +285,14 @@ export async function projectCanonicalMessage(
       `
       INSERT INTO conversation_messages (
         id,workspace_id,conversation_id,channel,provider,direction,subject,body,external_ref,
-        source_type,source_id,occurred_at,created_at
-      ) VALUES (?,?,?,'email',?,?,?,?,?,'legacy_message',?,?,?)
+        source_type,source_id,outcome_kind,verification_status,occurred_at,created_at
+      ) VALUES (?,?,?,'email',?,?,?,?,?,'legacy_message',?,?,'verified',?,?)
       ON CONFLICT (workspace_id,source_type,source_id) DO UPDATE SET
         conversation_id=EXCLUDED.conversation_id,
         subject=EXCLUDED.subject,
         body=EXCLUDED.body,
+        outcome_kind=EXCLUDED.outcome_kind,
+        verification_status='verified',
         occurred_at=EXCLUDED.occurred_at
     `
     )
@@ -301,6 +306,7 @@ export async function projectCanonicalMessage(
       String(message.body ?? ''),
       message.external_id ? String(message.external_id) : null,
       String(message.id),
+      message.direction === 'inbound' ? 'reply' : null,
       occurredAt,
       String(message.created_at ?? now.toISOString())
     );

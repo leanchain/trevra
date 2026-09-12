@@ -3,6 +3,7 @@ import { runAccountSweep } from './accounts/sweep.js';
 import { rescoreAccounts } from './accounts/score.js';
 import { rejectedSignalShapes } from './accounts/store.js';
 import { runRecommendationEngine } from './recommendation-engine.js';
+import { promoteVerifiedDemandRepliesToOpportunities } from './demand/opportunities.js';
 import { buildCompanyChangeOpportunities } from './content/opportunity-builder.js';
 
 /**
@@ -69,6 +70,16 @@ export async function runAutomationCycle(db: Db, workspaceId: string): Promise<A
   // network calls; each candidate remains workspace-scoped and evidence-backed.
   try {
     await runRecommendationEngine(db, workspaceId, new Date(), { includeStaleProposals: false });
+  } catch {
+    result.failed += 1;
+  }
+
+  // A weak signal may become a real commercial conversation after the original
+  // recommendation is sent. Promote only provider-verified replies that are
+  // later than Trevra's recommendation-attributed outbound message; this is a
+  // pure local projection and therefore safe to retry every cycle.
+  try {
+    await promoteVerifiedDemandRepliesToOpportunities(db, workspaceId, new Date());
   } catch {
     result.failed += 1;
   }

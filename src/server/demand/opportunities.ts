@@ -30,6 +30,13 @@ export interface QualifiedOpportunityAttribution {
   created: boolean;
 }
 
+export interface VerifiedReplyOpportunityAttribution {
+  opportunityId: string;
+  recommendationId: string;
+  inboundMessageId: string;
+  created: boolean;
+}
+
 /**
  * Materialize one qualified Opportunity-lite row when the recommendation's own
  * proof contains an explicit high-intent inbound request.
@@ -160,4 +167,127 @@ export async function ensureQualifiedOpportunityFromRecommendation(
     inboundKind: request.kind,
     created: Boolean(inserted)
   };
+}
+
+/**
+ * Promote recommendation-attributed outreach only after a later provider-verified
+ * human reply exists in the same canonical Person conversation.
+ *
+ * This is deliberately a weaker pipeline state than an explicit demo/pricing
+ * request: a reply proves a commercial conversation exists, but it does not
+ * prove qualification. The Opportunity therefore starts at `new`; a human or
+ * later deterministic qualification step advances it.
+ */
+export async function promoteVerifiedDemandRepliesToOpportunities(
+  db: Db,
+  workspaceId: string,
+  now: Date = new Date()
+): Promise<VerifiedReplyOpportunityAttribution[]> {
+  const rows = await db
+    .prepare(
+      `
+      SELECT DISTINCT ON (r.id)
+        r.id AS recommendation_id,r.person_id,r.account_id,r.title,
+        p.name AS person_name,a.name AS account_name,
+        inbound.id AS inbound_message_id,inbound.occurred_at AS inbound_at
+      FROM recommendations r
+      JOIN contacts p
+        ON p.workspace_id=r.workspace_id AND p.id=r.person_id
+      JOIN accounts a
+        ON a.workspace_id=r.workspace_id AND a.id=r.account_id
+      JOIN conversations c
+        ON c.workspace_id=r.workspace_id AND c.person_id=r.person_id
+      JOIN LATERAL (
+        SELECT cm.occurred_at
+        FROM conversation_messages cm
+        WHERE cm.workspace_id=r.workspace_id
+          AND cm.conversation_id=c.id
+          AND cm.direction='outbound'
+          AND cm.source_type IN ('qualified_demand_outreach','qualified_demand_reply')
+          AND cm.source_id=r.id
+        ORDER BY cm.occurred_at DESC,cm.created_at DESC,cm.id DESC
+        LIMIT 1
+      ) outbound ON TRUE
+      JOIN LATERAL (
+        SELECT cm.id,cm.occurred_at
+        FROM conversation_messages cm
+        WHERE cm.workspace_id=r.workspace_id
+          AND cm.conversation_id=c.id
+          AND cm.direction='inbound'
+          AND cm.verification_status='verified'
+          AND cm.outcome_kind='reply'
+          AND cm.occurred_at>outbound.occurred_at
+        ORDER BY cm.occurred_at ASC,cm.created_at ASC,cm.id ASC
+        LIMIT 1
+      ) inbound ON TRUE
+      WHERE r.workspace_id=?
+        AND r.type='qualified_demand'
+        AND r.person_id IS NOT NULL
+        AND r.account_id IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM opportunities o
+          WHERE o.workspace_id=r.workspace_id
+            AND o.origin_recommendation_id=r.id
+        )
+      ORDER BY r.id,inbound.occurred_at ASC,inbound.id ASC
+      LIMIT 100
+    `
+    )
+    .all<Record<string, unknown>>(workspaceId);
+
+  const created: VerifiedReplyOpportunityAttribution[] = [];
+  for (const row of rows) {
+    const recommendationId = String(row.recommendation_id);
+    const inboundMessageId = String(row.inbound_message_id);
+    const opportunityId = id('opp');
+    const timestamp = now.toISOString();
+    const accountName = String(row.account_name ?? '').trim();
+    const personName = String(row.person_name ?? '').trim();
+    const title = `${accountName || personName || 'Demand'}: verified reply`;
+    const inserted = await db
+      .prepare(
+        `
+        INSERT INTO opportunities (
+          id,workspace_id,person_id,account_id,title,stage,owner_type,owner_id,
+          next_action,next_action_at,created_at,updated_at,closed_at,origin_recommendation_id
+        ) VALUES (?,?,?,?,?,'new','system',NULL,?,NULL,?,?,NULL,?)
+        ON CONFLICT (workspace_id,origin_recommendation_id) WHERE origin_recommendation_id IS NOT NULL
+        DO NOTHING
+        RETURNING id
+      `
+      )
+      .get<{ id: string }>(
+        opportunityId,
+        workspaceId,
+        String(row.person_id),
+        String(row.account_id),
+        title,
+        'Review the verified reply and qualify or disqualify the commercial opportunity.',
+        timestamp,
+        timestamp,
+        recommendationId
+      );
+    if (!inserted) continue;
+
+    await appendDomainEvent(db, {
+      workspaceId,
+      streamType: 'opportunity',
+      streamId: inserted.id,
+      eventType: 'opportunity.created_from_verified_demand_reply',
+      actorType: 'system',
+      correlationId: recommendationId,
+      payload: {
+        recommendationId,
+        inboundMessageId,
+        stage: 'new'
+      }
+    });
+    created.push({
+      opportunityId: inserted.id,
+      recommendationId,
+      inboundMessageId,
+      created: true
+    });
+  }
+  return created;
 }

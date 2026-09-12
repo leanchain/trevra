@@ -6,7 +6,11 @@ import { closeAuthDatabase, migrateAuthDatabase } from '../auth-service.js';
 import { createAccount } from '../accounts/store.js';
 import { createApp } from '../app.js';
 import { openDatabase, type Db } from '../db.js';
+import { createContentAsset } from './assets.js';
+import { appendLinkedInContentMetric } from './performance.js';
 import { upsertContentOpportunity } from './opportunities.js';
+import { createPost, markPostPublished } from '../linkedin/posts.js';
+import { upsertSeat } from '../linkedin/seats.js';
 
 let db: Db;
 let app: Express;
@@ -140,6 +144,82 @@ describe('content opportunity API', () => {
     expect(
       (await authed('get', '/api/content/opportunities').expect(200)).body.opportunities
     ).toEqual([]);
+  });
+
+  it('keeps publication performance scoped to the authenticated workspace', async () => {
+    for (const workspaceId of [WORKSPACE, OTHER]) {
+      await upsertSeat(db, workspaceId, { label: 'Owner', timezone: 'UTC' }, NOW);
+      const story = await upsertContentOpportunity(
+        db,
+        {
+          workspaceId,
+          kind: 'company_change',
+          title: `${workspaceId} published story`,
+          thesis: 'Published evidence.',
+          freshnessAt: NOW.toISOString(),
+          score: 88,
+          rationale: [],
+          fingerprint: `published-${workspaceId}`,
+          evidence: [
+            {
+              sourceType: 'external_observation',
+              sourceId: `evidence-${workspaceId}`,
+              label: 'Observed change',
+              detail: 'Observed change.',
+              sourceUrl: `https://${workspaceId}.example/`,
+              observedAt: NOW.toISOString()
+            }
+          ]
+        },
+        NOW
+      );
+      const asset = await createContentAsset(
+        db,
+        { workspaceId, opportunityId: story.id, format: 'text_post', angle: 'observation' },
+        NOW
+      );
+      const postId = `lipost_${workspaceId}`;
+      await createPost(
+        db,
+        {
+          id: postId,
+          workspaceId,
+          blocks: [{ runs: [{ type: 'text', text: workspaceId }] }],
+          contentAssetId: asset.id
+        },
+        NOW
+      );
+      await markPostPublished(
+        db,
+        postId,
+        { postedUrl: `https://www.linkedin.com/feed/update/urn:li:activity:${workspaceId}/` },
+        NOW
+      );
+      await appendLinkedInContentMetric(
+        db,
+        {
+          workspaceId,
+          postId,
+          observedAt: NOW.toISOString(),
+          impressions: workspaceId === WORKSPACE ? 321 : 999
+        },
+        NOW
+      );
+    }
+
+    const report = await authed('get', '/api/content/performance').expect(200);
+    expect(report.body.totals.published).toBeGreaterThanOrEqual(1);
+    expect(report.body.publications).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          postId: `lipost_${WORKSPACE}`,
+          latestMetrics: expect.objectContaining({ impressions: 321 })
+        })
+      ])
+    );
+    expect(report.body.publications).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ postId: `lipost_${OTHER}` })])
+    );
   });
 
   it('creates one unscheduled LinkedIn draft per story+seat and cannot reach another workspace story', async () => {

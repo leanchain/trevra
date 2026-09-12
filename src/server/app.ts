@@ -118,6 +118,7 @@ import { getToday } from './today.js';
 import { buildCompanyChangeOpportunities } from './content/opportunity-builder.js';
 import { listContentOpportunities, setContentOpportunityStatus } from './content/opportunities.js';
 import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
+import { contentPerformanceReport } from './content/performance.js';
 import { DemandActionError, prepareDemandAction } from './demand/actions.js';
 import { listConversationMessages, listConversations } from './conversations.js';
 import { listEmailDeliveries } from './email-deliveries.js';
@@ -2740,6 +2741,18 @@ export function createApp(db: Db) {
       );
       if (!opportunity) return res.status(404).json({ error: 'Content opportunity not found' });
       res.json({ opportunity });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/content/performance', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({ limit: z.coerce.number().int().min(1).max(500).optional() })
+        .parse(req.query);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await contentPerformanceReport(db, req.auth!.workspaceId, input.limit ?? 100));
     } catch (error) {
       next(error);
     }
