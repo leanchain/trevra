@@ -938,5 +938,28 @@ describe('buildDemandCandidates', () => {
       );
 
     expect(await buildDemandCandidates(db, workspaceId, NOW)).toEqual([]);
+
+    await db
+      .prepare('UPDATE opportunities SET updated_at=? WHERE workspace_id=? AND id=?')
+      .run('2026-08-10T08:00:00.000Z', workspaceId, 'opp_open_demand');
+    const reengagement = await buildDemandCandidates(db, workspaceId, NOW);
+    expect(reengagement).toHaveLength(1);
+    expect(reengagement[0]).toMatchObject({
+      sourceKey: `demand:${personId}:${account.id}`,
+      personId,
+      accountId: account.id,
+      title: 'Re-engage Sarah Chen at Open Opportunity Co',
+      recommendedAction: 'prepare_outreach',
+      dimensions: { relationship: 0.85 }
+    });
+    expect(reengagement[0]!.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: 'opportunity',
+          sourceId: 'opp_open_demand',
+          label: 'Dormant qualified opportunity'
+        })
+      ])
+    );
   });
 });

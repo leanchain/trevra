@@ -56,6 +56,7 @@ export interface DemandCandidate {
 const DAY_MS = 86_400_000;
 const FIRST_PARTY_WINDOW_DAYS = 14;
 const SIGNAL_WINDOW_DAYS = 60;
+const DORMANT_OPPORTUNITY_DAYS = 14;
 const MAX_ACCOUNT_SIGNAL_EVIDENCE = 4;
 
 /**
@@ -559,6 +560,125 @@ export async function buildDemandCandidates(
     });
     seenSourceKeys.add(sourceKey);
     firstPartyAccountIds.add(accountId);
+  }
+
+  // Re-engagement counterpart: a previously qualified/new opportunity went
+  // quiet, then the Account became hot again. The old Opportunity is commercial
+  // context, not a reason to suppress fresh demand forever. Meeting/proposal
+  // stages are excluded here because they already have their own next-step and
+  // stale-proposal handling.
+  const dormantSince = new Date(now.getTime() - DORMANT_OPPORTUNITY_DAYS * DAY_MS).toISOString();
+  const dormantRows = await db
+    .prepare(
+      `
+      SELECT
+        o.id AS opportunity_id,o.person_id,o.account_id,o.title AS opportunity_title,
+        o.stage AS opportunity_stage,o.updated_at AS opportunity_updated_at,
+        p.name AS person_name,p.email AS person_email,
+        a.name AS account_name,a.domain,
+        sc.score,sc.distinct_kinds,sc.newest_signal_at,sc.computed_at
+      FROM opportunities o
+      JOIN contacts p ON p.workspace_id=o.workspace_id AND p.id=o.person_id
+      JOIN accounts a ON a.workspace_id=o.workspace_id AND a.id=o.account_id
+      JOIN account_scores sc ON sc.workspace_id=o.workspace_id AND sc.account_id=o.account_id
+      WHERE o.workspace_id=?
+        AND o.person_id IS NOT NULL
+        AND o.account_id IS NOT NULL
+        AND o.stage IN ('new','qualified')
+        AND o.updated_at<=?::timestamptz
+        AND sc.tier='hot'
+        AND sc.score>=80
+        AND COALESCE(sc.newest_signal_at,sc.computed_at)>=?::timestamptz
+      ORDER BY sc.score DESC,COALESCE(sc.newest_signal_at,sc.computed_at) DESC,o.updated_at ASC,o.id
+      LIMIT 50
+    `
+    )
+    .all<Record<string, unknown>>(workspaceId, dormantSince, recentSince);
+
+  for (const row of dormantRows) {
+    const personId = String(row.person_id);
+    const accountId = String(row.account_id);
+    if (firstPartyAccountIds.has(accountId)) continue;
+    const sourceKey = `demand:${personId}:${accountId}`;
+    if (seenSourceKeys.has(sourceKey)) continue;
+    const signals = await loadAccountSignals(db, workspaceId, accountId, signalSince);
+    if (signals.length === 0) continue;
+
+    const score = Math.max(0, Math.min(100, Number(row.score ?? 0)));
+    const distinctKinds = Math.max(0, Number(row.distinct_kinds ?? 0));
+    const personName = String(row.person_name ?? row.person_email ?? 'Known person');
+    const accountName = String(row.account_name ?? row.domain ?? 'Account');
+    const observedAt = iso(row.newest_signal_at ?? row.computed_at);
+    const opportunityUpdatedAt = iso(row.opportunity_updated_at);
+    const staleDays = Math.max(
+      DORMANT_OPPORTUNITY_DAYS,
+      Math.floor((now.getTime() - Date.parse(opportunityUpdatedAt)) / DAY_MS)
+    );
+    const relationshipState = await loadRelationshipState(
+      db,
+      workspaceId,
+      personId,
+      accountId,
+      now
+    );
+    const recommendedAction: DemandRecommendedAction = relationshipState.recentInbound
+      ? 'reply'
+      : 'prepare_outreach';
+    const evidence: DemandEvidence[] = [
+      {
+        sourceType: 'opportunity',
+        sourceId: String(row.opportunity_id),
+        label: `Dormant ${String(row.opportunity_stage)} opportunity`,
+        category: 'history',
+        excerpt: `${String(row.opportunity_title)} has had no opportunity update for ${staleDays} days.`,
+        observedAt: opportunityUpdatedAt
+      },
+      {
+        sourceType: 'account_score',
+        sourceId: accountId,
+        label: 'Composite account intent',
+        category: 'supporting',
+        excerpt: `${accountName} is hot again at ${score}/100 across ${distinctKinds} independent signal kinds.`,
+        observedAt
+      },
+      ...accountSignalEvidence(signals),
+      ...relationshipState.evidence.filter(
+        (item) =>
+          !(item.sourceType === 'opportunity' && item.sourceId === String(row.opportunity_id))
+      )
+    ];
+
+    candidates.push({
+      sourceKey,
+      personId,
+      accountId,
+      personName,
+      accountName,
+      dimensions: {
+        fit: null,
+        accountIntent: Number((score / 100).toFixed(3)),
+        personIntent: 0,
+        firstPartyIntent: 0,
+        relationship: relationshipState.score,
+        recency: recencyFor(observedAt, now)
+      },
+      qualification: 'act_now',
+      recommendedAction,
+      title: relationshipState.recentInbound
+        ? `Reply to ${personName} at ${accountName}`
+        : `Re-engage ${personName} at ${accountName}`,
+      summary: `${accountName} is hot again at ${score}/100 while the ${String(row.opportunity_stage)} opportunity has been quiet for ${staleDays} days.`,
+      rationale: [
+        `${String(row.opportunity_stage)} opportunity has been dormant for ${staleDays} days`,
+        `account scorer is hot at ${score}/100 across ${distinctKinds} signal kinds`,
+        ...(relationshipState.recentInbound
+          ? ['a recent inbound conversation means the next action is a reply']
+          : ['fresh account evidence makes re-engagement timely']),
+        `${signals.length} source-backed account signal${signals.length === 1 ? '' : 's'} are available for context`
+      ],
+      evidence
+    });
+    seenSourceKeys.add(sourceKey);
   }
 
   // Outbound counterpart: a hot account with deterministic known contacts.
