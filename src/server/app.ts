@@ -115,6 +115,7 @@ import {
 } from './ledger-export.js';
 import { LOOP_COST_DEFAULT_WINDOW_DAYS, LOOP_COST_MAX_WINDOW_DAYS, loopCost } from './loop-cost.js';
 import { getToday } from './today.js';
+import { DemandActionError, prepareDemandAction } from './demand/actions.js';
 import { listConversationMessages, listConversations } from './conversations.js';
 import { listEmailDeliveries } from './email-deliveries.js';
 import { ConversationReplyError, prepareConversationEmailReply } from './conversation-replies.js';
@@ -2682,6 +2683,23 @@ export function createApp(db: Db) {
       res.setHeader('Cache-Control', 'no-store');
       res.json(await getToday(db, req.auth!.workspaceId, new Date()));
     } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/recommendations/:id/prepare', async (req: AuthedRequest, res, next) => {
+    try {
+      const result = await prepareDemandAction(db, {
+        workspaceId: req.auth!.workspaceId,
+        actorUserId: req.auth!.userId,
+        recommendationId: String(req.params.id)
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(201).json(result);
+    } catch (error) {
+      if (error instanceof DemandActionError) {
+        return res.status(error.status).json({ error: error.message });
+      }
       next(error);
     }
   });

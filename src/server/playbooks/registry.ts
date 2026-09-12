@@ -358,6 +358,77 @@ export const threadReplyPlaybook: PlaybookDefinition = {
   source: { type: 'builtin' }
 };
 
+export const qualifiedDemandEmailPlaybook: PlaybookDefinition = {
+  id: 'gtm.qualified-demand-email',
+  version: '1.0.0',
+  name: 'Qualified demand email',
+  description:
+    'Prepare one evidence-backed email for a qualified Person × Account recommendation and require approval of the exact bytes before provider execution.',
+  inputSchema: z
+    .object({
+      recommendationId: z.string().trim().min(1).max(160),
+      conversationId: z.string().trim().min(1).max(160),
+      personId: z.string().trim().min(1).max(160),
+      accountId: z.string().trim().min(1).max(160),
+      recipient: z.string().email(),
+      subject: z.string().trim().min(1).max(200),
+      body: z.string().trim().min(1).max(20_000),
+      evidence: z
+        .array(
+          z.object({
+            sourceType: z.string().min(1).max(120),
+            sourceId: z.string().min(1).max(200),
+            label: z.string().min(1).max(200),
+            excerpt: z.string().min(1).max(1200),
+            externalUrl: z.string().url().nullable().optional(),
+            observedAt: z.string().datetime().nullable().optional()
+          })
+        )
+        .max(12)
+    })
+    .strict(),
+  steps: [
+    {
+      id: 'approve-outreach',
+      type: 'approval',
+      title: 'Approve qualified demand outreach',
+      payload: {
+        recipient: { $ref: '$.input.recipient' },
+        subject: { $ref: '$.input.subject' },
+        body: { $ref: '$.input.body' },
+        metadata: {
+          conversationId: { $ref: '$.input.conversationId' },
+          personId: { $ref: '$.input.personId' },
+          accountId: { $ref: '$.input.accountId' },
+          recommendationId: { $ref: '$.input.recommendationId' },
+          evidence: { $ref: '$.input.evidence' },
+          deliveryPurpose: 'outreach',
+          deliverySourceType: 'qualified_demand',
+          deliverySourceId: { $ref: '$.input.recommendationId' },
+          conversationSourceType: 'qualified_demand_outreach',
+          conversationSourceId: { $ref: '$.input.recommendationId' },
+          intent: 'qualified-demand-email'
+        }
+      }
+    },
+    {
+      id: 'send-outreach',
+      type: 'action',
+      actionType: 'email.send',
+      approvalStepId: 'approve-outreach',
+      needs: ['approve-outreach'],
+      payload: { $ref: '$.steps.approve-outreach.input' },
+      retry: { maxAttempts: 1, delaySeconds: 0 }
+    }
+  ],
+  output: {
+    approved: { $ref: '$.steps.approve-outreach.output.approved' },
+    delivery: { $ref: '$.steps.send-outreach.output' },
+    recommendationId: { $ref: '$.input.recommendationId' }
+  },
+  source: { type: 'builtin' }
+};
+
 export const conversationEmailReplyPlaybook: PlaybookDefinition = {
   id: 'gtm.conversation-email-reply',
   version: '1.0.0',
@@ -373,7 +444,9 @@ export const conversationEmailReplyPlaybook: PlaybookDefinition = {
       subject: z.string().trim().min(1).max(200),
       body: z.string().trim().min(1).max(20_000),
       threadExternalRef: z.string().trim().min(1).max(1000),
-      threadIdempotencyKey: z.string().trim().max(500).nullable().optional()
+      threadIdempotencyKey: z.string().trim().max(500).nullable().optional(),
+      recommendationId: z.string().trim().max(160).nullable().optional(),
+      accountId: z.string().trim().max(160).nullable().optional()
     })
     .strict(),
   steps: [
@@ -394,6 +467,10 @@ export const conversationEmailReplyPlaybook: PlaybookDefinition = {
           deliveryPurpose: 'reply',
           deliverySourceType: 'conversation_reply',
           deliverySourceId: { $ref: '$.input.idempotencyKey' },
+          recommendationId: { $ref: '$.input.recommendationId' },
+          accountId: { $ref: '$.input.accountId' },
+          conversationSourceType: 'conversation_reply',
+          conversationSourceId: { $ref: '$.input.idempotencyKey' },
           intent: 'conversation-email-reply'
         }
       }
@@ -418,6 +495,7 @@ export const conversationEmailReplyPlaybook: PlaybookDefinition = {
 registerPlaybook(auditLedOutreachPlaybook);
 registerPlaybook(communityOutreachPlaybook);
 registerPlaybook(threadReplyPlaybook);
+registerPlaybook(qualifiedDemandEmailPlaybook);
 registerPlaybook(conversationEmailReplyPlaybook);
 
 export function registerPlaybook(playbook: PlaybookDefinition): PlaybookDefinition {

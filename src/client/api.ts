@@ -182,6 +182,14 @@ export async function getToday(): Promise<TodayPayload> {
   return request('/api/today');
 }
 
+export async function prepareDemandRecommendation(
+  recommendationId: string
+): Promise<{ mode: 'reply' | 'outreach'; run: PlaybookRun }> {
+  return request(`/api/recommendations/${encodeURIComponent(recommendationId)}/prepare`, {
+    method: 'POST'
+  });
+}
+
 export async function planGtmIntent(intent: GtmIntent): Promise<GtmPlan> {
   const result = await request<{ plan: GtmPlan }>('/api/gtm/plan', {
     method: 'POST',

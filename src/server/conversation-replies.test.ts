@@ -84,6 +84,10 @@ describe('conversation email reply preparation', () => {
         deliveryPurpose: 'reply',
         deliverySourceType: 'conversation_reply',
         deliverySourceId: 'reply-idempotency-001',
+        recommendationId: null,
+        accountId: null,
+        conversationSourceType: 'conversation_reply',
+        conversationSourceId: 'reply-idempotency-001',
         intent: 'conversation-email-reply'
       }
     });

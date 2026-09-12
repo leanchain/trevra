@@ -13323,3 +13323,78 @@ button:disabled {
     color: var(--t-green-700);
   }
 }
+
+/* One founder decision can expand into the exact payload Trevra prepared. The
+   review spans the text/action columns so evidence context stays visible above
+   it and approval never looks like a second unrelated list row. */
+.onboarding-steps li.today-item-expanded {
+  align-items: start;
+}
+.today-action-review {
+  grid-column: 2 / -1;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface-2);
+}
+.today-action-review-head,
+.today-action-review-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.today-action-review-head small {
+  margin-top: 2px;
+}
+.today-action-review dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+.today-action-review dl > div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+}
+.today-action-review dt {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.today-action-review dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--t-text-sm);
+}
+.today-action-review pre {
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--panel);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: var(--t-text-sm);
+  line-height: 1.5;
+}
+.today-action-review-actions {
+  justify-content: flex-end;
+}
+@media (max-width: 680px) {
+  .today-action-review {
+    grid-column: 1 / -1;
+  }
+  .today-action-review-head,
+  .today-action-review-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .today-action-review-actions button {
+    width: 100%;
+  }
+}

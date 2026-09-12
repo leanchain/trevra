@@ -20,6 +20,8 @@ export interface PrepareConversationEmailReplyInput {
   idempotencyKey: string;
   subject: string;
   body: string;
+  recommendationId?: string | null;
+  accountId?: string | null;
 }
 
 interface StoredReplyInput {
@@ -31,6 +33,8 @@ interface StoredReplyInput {
   body?: unknown;
   threadExternalRef?: unknown;
   threadIdempotencyKey?: unknown;
+  recommendationId?: unknown;
+  accountId?: unknown;
 }
 
 function jsonObject(value: unknown): StoredReplyInput {
@@ -193,7 +197,9 @@ export async function prepareConversationEmailReply(
     subject,
     body,
     threadExternalRef,
-    threadIdempotencyKey: prior?.idempotency_key ?? null
+    threadIdempotencyKey: prior?.idempotency_key ?? null,
+    recommendationId: input.recommendationId?.trim() || null,
+    accountId: input.accountId?.trim() || null
   };
 
   try {

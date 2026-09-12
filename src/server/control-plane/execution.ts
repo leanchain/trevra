@@ -51,6 +51,8 @@ export async function executePreparedPlaybookAction(
     const conversationId =
       typeof metadata.conversationId === 'string' ? metadata.conversationId : '';
     const personId = typeof metadata.personId === 'string' ? metadata.personId : '';
+    const recommendationId =
+      typeof metadata.recommendationId === 'string' ? metadata.recommendationId.trim() : '';
     if (conversationId && personId) {
       // The provider write has already succeeded. Shared Conversation is a
       // projection, so a projection failure must never turn this into a retry
@@ -66,11 +68,32 @@ export async function executePreparedPlaybookAction(
           subject: payload.subject,
           body: payload.body,
           payloadHash: input.payloadHash,
-          actorType: 'system'
+          actorType: 'system',
+          sourceType:
+            recommendationId && metadata.conversationSourceType === 'conversation_reply'
+              ? 'qualified_demand_reply'
+              : typeof metadata.conversationSourceType === 'string'
+                ? metadata.conversationSourceType
+                : null,
+          sourceId:
+            recommendationId && metadata.conversationSourceType === 'conversation_reply'
+              ? recommendationId
+              : typeof metadata.conversationSourceId === 'string'
+                ? metadata.conversationSourceId
+                : null
         });
       } catch {
         /* idempotent derived-state projection can be reconciled later */
       }
+    }
+    if (recommendationId) {
+      // Approval is permission, not an outcome. Close the recommendation only
+      // after the provider confirms the external write.
+      await db
+        .prepare(
+          "UPDATE recommendations SET status='completed',updated_at=? WHERE workspace_id=? AND id=? AND type='qualified_demand'"
+        )
+        .run(new Date().toISOString(), input.workspaceId, recommendationId);
     }
     return { ...delivery, actionType };
   }

@@ -94,6 +94,38 @@ async function ensureConversation(
   if (!row) throw new Error('Conversation could not be created or resolved.');
   return row;
 }
+
+/**
+ * Ensure the canonical Person has a Conversation before an outbound message is
+ * prepared. Preparing is not communication, so a newly-created shell carries
+ * no last_activity_at; the provider-confirmed projection fills that only after
+ * an external send actually succeeds.
+ */
+export async function ensureConversationForPerson(
+  db: Db,
+  workspaceId: string,
+  personId: string,
+  now: Date = new Date()
+): Promise<string> {
+  const person = await db
+    .prepare('SELECT 1 AS present FROM contacts WHERE workspace_id=? AND id=?')
+    .get<{ present: number }>(workspaceId, personId);
+  if (!person) throw new Error('Person not found in this workspace.');
+  const at = now.toISOString();
+  const row = await db
+    .prepare(
+      `
+      INSERT INTO conversations (id,workspace_id,person_id,last_activity_at,created_at,updated_at)
+      VALUES (?,?,?,NULL,?,?)
+      ON CONFLICT (workspace_id,person_id) DO UPDATE SET
+        updated_at=GREATEST(conversations.updated_at,EXCLUDED.updated_at)
+      RETURNING id
+    `
+    )
+    .get<{ id: string }>(id('conv'), workspaceId, personId, at, at);
+  if (!row) throw new Error('Conversation could not be created or resolved.');
+  return row.id;
+}
 /**
  * Project one LinkedIn thread into the canonical Person-led conversation view.
  * The LinkedIn tables remain authoritative for safety, pacing and provider state.
@@ -428,6 +460,8 @@ export async function projectPreparedConversationEmail(
     payloadHash: string;
     actorType?: string | null;
     actorId?: string | null;
+    sourceType?: string | null;
+    sourceId?: string | null;
   },
   now: Date = new Date()
 ): Promise<boolean> {
@@ -456,7 +490,7 @@ export async function projectPreparedConversationEmail(
       INSERT INTO conversation_messages (
         id,workspace_id,conversation_id,channel,provider,direction,subject,body,external_ref,
         source_type,source_id,actor_type,actor_id,occurred_at,created_at
-      ) VALUES (?,?,?,'email',?,'outbound',?,?,?,'playbook_email_action',?,?,?,?,?)
+      ) VALUES (?,?,?,'email',?,'outbound',?,?,?,?,?,?,?,?,?)
       ON CONFLICT (workspace_id,source_type,source_id) DO UPDATE SET
         provider=EXCLUDED.provider,
         subject=EXCLUDED.subject,
@@ -475,7 +509,8 @@ export async function projectPreparedConversationEmail(
       input.subject,
       input.body,
       input.externalRef,
-      input.payloadHash,
+      input.sourceType?.trim() || 'playbook_email_action',
+      input.sourceId?.trim() || input.payloadHash,
       input.actorType ?? 'system',
       input.actorId ?? null,
       occurredAt,

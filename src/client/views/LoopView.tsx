@@ -12,6 +12,8 @@ import {
   getPlaybookRuns,
   getPolicies,
   getToday,
+  decidePlaybookStep,
+  prepareDemandRecommendation,
   planGtmIntent,
   prepareCompiledGtmPlan,
   type LinkedInAnalytics,
@@ -443,7 +445,12 @@ export function LoopView({
   if (!explore && activation.signals.work !== true) {
     return (
       <>
-        <TodayAttention today={today} problem={todayError} onNavigate={onNavigate} />
+        <TodayAttention
+          today={today}
+          problem={todayError}
+          onNavigate={onNavigate}
+          onRefresh={() => void loadToday()}
+        />
         <ActivationGuide
           signals={activation.signals}
           problems={activation.problems}
@@ -463,7 +470,12 @@ export function LoopView({
 
   return (
     <>
-      <TodayAttention today={today} problem={todayError} onNavigate={onNavigate} />
+      <TodayAttention
+        today={today}
+        problem={todayError}
+        onNavigate={onNavigate}
+        onRefresh={() => void loadToday()}
+      />
 
       {today && today.needsAttention.length === 0 && block && (
         <section className="loop-block" aria-label="Current blocker">
@@ -646,13 +658,79 @@ function todayActionLabel(
 function TodayAttention({
   today,
   problem,
-  onNavigate
+  onNavigate,
+  onRefresh
 }: {
   today: Awaited<ReturnType<typeof getToday>> | null;
   problem: string;
   onNavigate: (path: string) => void;
+  onRefresh: () => void;
 }) {
   const items = today?.needsAttention ?? [];
+  const [prepared, setPrepared] = useState<
+    Record<string, { mode: 'reply' | 'outreach'; run: PlaybookRun }>
+  >({});
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState('');
+
+  const prepare = async (item: Awaited<ReturnType<typeof getToday>>['needsAttention'][number]) => {
+    if (item.metadata.recommendationType === 'person_discovery') {
+      onNavigate(item.href);
+      return;
+    }
+    if (item.reference.type !== 'recommendation') {
+      onNavigate(item.href);
+      return;
+    }
+    setBusyId(item.id);
+    setActionError('');
+    try {
+      const result = await prepareDemandRecommendation(item.reference.id);
+      setPrepared((current) => ({ ...current, [item.id]: result }));
+    } catch (error) {
+      setActionError(errorMessage(error, 'Unable to prepare this action. Nothing was sent.'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const decide = async (
+    itemId: string,
+    entry: { mode: 'reply' | 'outreach'; run: PlaybookRun },
+    decision: 'approve' | 'reject'
+  ) => {
+    const approval = entry.run.steps.find(
+      (step) => step.stepType === 'approval' && step.status === 'waiting_approval'
+    );
+    if (!approval) return;
+    setBusyId(itemId);
+    setActionError('');
+    try {
+      const run = await decidePlaybookStep(entry.run.id, approval.stepId, decision);
+      if (decision === 'reject') {
+        setPrepared((current) => {
+          const next = { ...current };
+          delete next[itemId];
+          return next;
+        });
+      } else {
+        setPrepared((current) => ({ ...current, [itemId]: { ...entry, run } }));
+        if (run.status === 'completed') onRefresh();
+      }
+    } catch (error) {
+      setActionError(
+        errorMessage(
+          error,
+          decision === 'approve'
+            ? 'Unable to approve this action. Nothing was sent.'
+            : 'Unable to discard this action.'
+        )
+      );
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <section className="recommendations-panel">
       <div className="section-heading">
@@ -663,13 +741,12 @@ function TodayAttention({
         {today && <span className="status-pill">{items.length} open</span>}
       </div>
 
-      {problem ? (
-        <div className="error-banner">{problem}</div>
-      ) : !today ? (
+      {(problem || actionError) && <div className="error-banner">{problem || actionError}</div>}
+      {!problem && !today ? (
         <p className="onboarding-loading">
           <LoaderCircle className="spin" size={16} /> Reading your GTM state…
         </p>
-      ) : items.length === 0 ? (
+      ) : today && items.length === 0 ? (
         <div className="empty-state">
           <CheckCircle2 size={24} />
           <h4>Nothing needs you right now</h4>
@@ -680,22 +757,88 @@ function TodayAttention({
         </div>
       ) : (
         <ol className="onboarding-steps">
-          {items.map((item) => (
-            <li key={item.id}>
-              <Inbox size={19} />
-              <div>
-                <strong>{item.title}</strong>
-                <small>{item.detail}</small>
-              </div>
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => onNavigate(item.href)}
-              >
-                {todayActionLabel(item)} <ChevronRight size={15} />
-              </button>
-            </li>
-          ))}
+          {items.map((item) => {
+            const entry = prepared[item.id];
+            const approval = entry?.run.steps.find(
+              (step) => step.stepType === 'approval' && step.status === 'waiting_approval'
+            );
+            const payload =
+              approval?.input &&
+              typeof approval.input === 'object' &&
+              !Array.isArray(approval.input)
+                ? (approval.input as Record<string, unknown>)
+                : null;
+            const completed = entry?.run.status === 'completed';
+            const isDemand = item.kind === 'qualification_decision';
+            return (
+              <li key={item.id} className={entry ? 'today-item-expanded' : undefined}>
+                <Inbox size={19} />
+                <div>
+                  <strong>{item.title}</strong>
+                  <small>{item.detail}</small>
+                </div>
+                <button
+                  className={isDemand ? 'primary-button' : 'secondary-button'}
+                  type="button"
+                  disabled={busyId === item.id || completed}
+                  onClick={() => void (isDemand ? prepare(item) : onNavigate(item.href))}
+                >
+                  {busyId === item.id
+                    ? 'Working…'
+                    : completed
+                      ? 'Done'
+                      : isDemand && item.metadata.recommendationType !== 'person_discovery'
+                        ? entry
+                          ? 'Prepared'
+                          : 'Prepare action'
+                        : todayActionLabel(item)}{' '}
+                  {!entry && <ChevronRight size={15} />}
+                </button>
+                {entry && payload && approval && (
+                  <div className="today-action-review">
+                    <div className="today-action-review-head">
+                      <div>
+                        <strong>
+                          {entry.mode === 'reply' ? 'Email reply ready' : 'Email ready'}
+                        </strong>
+                        <small>Nothing is sent until you approve these exact bytes.</small>
+                      </div>
+                      <span className="status-pill">{entry.mode}</span>
+                    </div>
+                    <dl>
+                      <div>
+                        <dt>To</dt>
+                        <dd>{String(payload.recipient ?? '')}</dd>
+                      </div>
+                      <div>
+                        <dt>Subject</dt>
+                        <dd>{String(payload.subject ?? '')}</dd>
+                      </div>
+                    </dl>
+                    <pre>{String(payload.body ?? '')}</pre>
+                    <div className="today-action-review-actions">
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={busyId === item.id}
+                        onClick={() => void decide(item.id, entry, 'reject')}
+                      >
+                        Discard
+                      </button>
+                      <button
+                        className="primary-button"
+                        type="button"
+                        disabled={busyId === item.id}
+                        onClick={() => void decide(item.id, entry, 'approve')}
+                      >
+                        Approve & send
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
         </ol>
       )}
     </section>
