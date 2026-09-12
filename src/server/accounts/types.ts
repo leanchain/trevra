@@ -29,6 +29,8 @@ export const ACCOUNT_SIGNAL_KINDS = [
   'release-notes-changed',
   'integration-added',
   'integration-removed',
+  'customer-proof-added',
+  'customer-proof-removed',
   'hiring-up',
   'hiring-down',
   'pricing-changed',

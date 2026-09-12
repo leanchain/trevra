@@ -55,6 +55,7 @@ export const SIGNAL_WATCHES = [
   'pricing',
   'releases',
   'integrations',
+  'customers',
   'headline',
   'tech',
   'products',
@@ -64,11 +65,10 @@ export const SIGNAL_WATCHES = [
 ] as const;
 export type SignalWatch = (typeof SIGNAL_WATCHES)[number];
 
-// Releases and integration inventory each add one bounded first-party page read.
-// Twelve preserves the catalog request headroom the original 10-page budget had
-// before those two observers existed, rather than silently trading ecommerce
-// coverage for the new B2B surfaces.
-export const DEFAULT_PAGE_BUDGET = 12;
+// Release notes, integration inventory and customer proof each add one bounded
+// first-party page read. Thirteen preserves the catalog request headroom the
+// original 10-page budget had before these B2B observers existed.
+export const DEFAULT_PAGE_BUDGET = 13;
 
 export type SignalKind =
   | 'first-capture'
@@ -76,6 +76,8 @@ export type SignalKind =
   | 'release-notes-changed'
   | 'integration-added'
   | 'integration-removed'
+  | 'customer-proof-added'
+  | 'customer-proof-removed'
   | 'hiring-up'
   | 'hiring-down'
   | 'pricing-changed'
@@ -97,6 +99,8 @@ const SIGNAL_ORDER: readonly SignalKind[] = [
   'release-notes-changed',
   'integration-added',
   'integration-removed',
+  'customer-proof-added',
+  'customer-proof-removed',
   'hiring-up',
   'hiring-down',
   'pricing-changed',
@@ -128,6 +132,11 @@ export interface IntegrationItem {
   label: string;
 }
 
+export interface CustomerProofItem {
+  key: string;
+  label: string;
+}
+
 export interface ResearchSnapshot {
   domain: string;
   capturedAt: string;
@@ -149,6 +158,10 @@ export interface ResearchSnapshot {
   integrationsUrl?: string | null;
   /** Stable integration detail links. `null` = not captured, `[]` = page captured with no usable detail links. */
   integrationItems?: IntegrationItem[] | null;
+  /** First-party customers/case-studies page when captured. */
+  customerProofUrl?: string | null;
+  /** Stable customer-story detail links. `null` = not captured. */
+  customerProofItems?: CustomerProofItem[] | null;
   /** Public Shopify/WooCommerce catalog endpoint, when one was readable. */
   productUrl: string | null;
   /** Number of records in the bounded public sample. Null means not captured. */
@@ -177,7 +190,32 @@ const RELEASE_LINK_RE =
 const INTEGRATION_LINK_RE =
   /\b(integrations?|integration marketplace|app marketplace|connectors?)\b/i;
 const INTEGRATION_DETAIL_PATH_RE = /\/(?:integrations?|connectors?)\/[^/?#]+/i;
+const CUSTOMER_PROOF_LINK_RE =
+  /\b(customers|customer stories|case stud(?:y|ies)|success stories|client stories)\b/i;
+const CUSTOMER_PROOF_DETAIL_PATH_RE =
+  /\/(?:customers?|case-studies|customer-stories|success-stories|client-stories)\/[^/?#]+/i;
 const HEADING_LINK_RE = /<h[2-4]\b[^>]*>[\s\S]*?<\/h[2-4]>/gi;
+const GENERIC_CUSTOMER_PROOF_TEXT = new Set([
+  'customer',
+  'customers',
+  'all customers',
+  'customer story',
+  'customer stories',
+  'case study',
+  'case studies',
+  'success story',
+  'success stories',
+  'client story',
+  'client stories',
+  'read case study',
+  'read customer story',
+  'view case study',
+  'view story',
+  'learn more',
+  'read more',
+  'browse all',
+  'browse all →'
+]);
 const GENERIC_INTEGRATION_TEXT = new Set([
   'integration',
   'integrations',
@@ -329,6 +367,27 @@ function hasIntegrationPageIdentity(html: string): boolean {
   );
 }
 
+function hasCustomerProofPageIdentity(html: string): boolean {
+  return (
+    CUSTOMER_PROOF_LINK_RE.test(firstHeading(html) ?? '') ||
+    CUSTOMER_PROOF_LINK_RE.test(pageTitle(html) ?? '')
+  );
+}
+
+function fallbackPathLabel(path: string): string {
+  const raw = decodeURIComponent(path.split('/').filter(Boolean).at(-1) ?? '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!raw) return '';
+  return raw
+    .split(' ')
+    .map((word) =>
+      word.length <= 3 ? word.toUpperCase() : `${word[0]?.toUpperCase() ?? ''}${word.slice(1)}`
+    )
+    .join(' ');
+}
+
 /** Stable first-party integration-detail links from an integrations page. */
 export function extractIntegrationItems(html: string, pageUrl: string): IntegrationItem[] {
   let source: URL;
@@ -378,8 +437,77 @@ export function extractIntegrationItems(html: string, pageUrl: string): Integrat
   return [...found.values()].sort((a, b) => a.key.localeCompare(b.key));
 }
 
+function customerNavigationPaths(html: string, source: URL): Set<string> {
+  const paths = new Set<string>();
+  const addLinks = (markup: string) => {
+    for (const link of extractLinks(markup)) {
+      try {
+        const target = new URL(link.href, source);
+        if (target.origin !== source.origin) continue;
+        paths.add(target.pathname.replace(/\/+$/, '').toLowerCase() || '/');
+      } catch {
+        // Malformed navigation links are irrelevant.
+      }
+    }
+  };
+
+  for (const match of html.matchAll(/<nav\b[^>]*>[\s\S]*?<\/nav>/gi)) addLinks(match[0]);
+  for (const match of html.matchAll(
+    /<a\b[^>]*(?:data-active|aria-current|role\s*=\s*["']tab["'])[^>]*>[\s\S]*?<\/a>/gi
+  ))
+    addLinks(match[0]);
+  return paths;
+}
+
+/** Stable first-party customer/case-study detail links. */
+export function extractCustomerProofItems(html: string, pageUrl: string): CustomerProofItem[] {
+  let source: URL;
+  try {
+    source = new URL(pageUrl);
+  } catch {
+    return [];
+  }
+  const rootPath = source.pathname.replace(/\/+$/, '') || '/';
+  const categoryPaths = customerNavigationPaths(html, source);
+  for (const heading of html.matchAll(HEADING_LINK_RE)) {
+    for (const link of extractLinks(heading[0])) {
+      try {
+        const target = new URL(link.href, source);
+        if (target.origin !== source.origin) continue;
+        categoryPaths.add(target.pathname.replace(/\/+$/, '').toLowerCase() || '/');
+      } catch {
+        // Malformed heading links are not customer evidence.
+      }
+    }
+  }
+
+  const found = new Map<string, CustomerProofItem>();
+  for (const link of extractLinks(html)) {
+    let target: URL;
+    try {
+      target = new URL(link.href, source);
+    } catch {
+      continue;
+    }
+    if (target.origin !== source.origin) continue;
+    const path = target.pathname.replace(/\/+$/, '') || '/';
+    const key = path.toLowerCase();
+    const underRoot = rootPath !== '/' && path.startsWith(`${rootPath}/`);
+    if (!underRoot && !CUSTOMER_PROOF_DETAIL_PATH_RE.test(path)) continue;
+    if (path === rootPath || categoryPaths.has(key)) continue;
+
+    const label = fallbackPathLabel(path);
+    if (label.length < 2 || label.length > 100) continue;
+    if (GENERIC_CUSTOMER_PROOF_TEXT.has(label.toLowerCase())) continue;
+    if (!found.has(key)) found.set(key, { key, label });
+    if (found.size >= 200) break;
+  }
+  return [...found.values()].sort((a, b) => a.key.localeCompare(b.key));
+}
+
 const PRICE_AMOUNT_RE =
   /(?:[$€£¥]\s?\d[\d.,]*|(?:CHF|USD|EUR|GBP|CAD|AUD|JPY|SEK|NOK|DKK|PLN)\s?\d[\d.,]*|\d[\d.,]*\s?(?:CHF|USD|EUR|GBP|CAD|AUD|JPY|SEK|NOK|DKK|PLN))/gi;
+/(?:[$€£¥]\s?\d[\d.,]*|(?:CHF|USD|EUR|GBP|CAD|AUD|JPY|SEK|NOK|DKK|PLN)\s?\d[\d.,]*|\d[\d.,]*\s?(?:CHF|USD|EUR|GBP|CAD|AUD|JPY|SEK|NOK|DKK|PLN))/gi;
 const BILLING_SUFFIX_RE =
   /^\s*(?:(?:\/\s*(?:month|mo|year|yr|user|seat)(?:\s*\/\s*(?:month|mo|year|yr))?)|(?:per\s+(?:month|mo|year|yr|user|seat)(?:\s*\/\s*(?:month|mo|year|yr))?))/i;
 const PLAN_FACT_RE =
@@ -500,6 +628,7 @@ export async function captureSnapshot(
     (watches.has('pricing') ? 2 : 0) +
     (watches.has('releases') ? 1 : 0) +
     (watches.has('integrations') ? 1 : 0) +
+    (watches.has('customers') ? 1 : 0) +
     (watches.has('newsletter') ? 1 : 0);
   const maxCatalogRequests = watches.has('products')
     ? Math.max(0, Math.min(4, budget - 2 - reserve))
@@ -709,6 +838,27 @@ export async function captureSnapshot(
     }
   }
 
+  let customerProofUrl: string | null = null;
+  let customerProofItems: CustomerProofItem[] | null = null;
+  if (watches.has('customers')) {
+    const explicitCustomerPaths = discoverPaths(html, base, CUSTOMER_PROOF_LINK_RE, []);
+    const customerPaths = [
+      ...explicitCustomerPaths,
+      ...['/customers', '/case-studies'].filter((path) => !explicitCustomerPaths.includes(path))
+    ].slice(0, 3);
+    for (const path of customerPaths) {
+      const pageUrl = `${base.origin}${path}`;
+      const response = await get(pageUrl);
+      if (response === null || response.status !== 200) continue;
+      if (response.contentType && !response.contentType.includes('html')) continue;
+      if (!explicitCustomerPaths.includes(path) && !hasCustomerProofPageIdentity(response.text))
+        continue;
+      customerProofUrl = pageUrl;
+      customerProofItems = extractCustomerProofItems(response.text, pageUrl);
+      break;
+    }
+  }
+
   const productUrl = watches.has('products') ? storefront.productUrl : null;
   const productItems: CatalogItem[] = watches.has('products')
     ? (storefront.productItems ?? [])
@@ -739,6 +889,8 @@ export async function captureSnapshot(
     releaseNotesFacts,
     integrationsUrl,
     integrationItems,
+    customerProofUrl,
+    customerProofItems,
     productUrl,
     productCount,
     productCapped,
@@ -771,6 +923,8 @@ function summarize(snapshot: ResearchSnapshot): string {
     parts.push(`release notes at ${snapshot.releaseNotesUrl ?? snapshot.domain}`);
   if (snapshot.integrationItems?.length)
     parts.push(`${snapshot.integrationItems.length} published integration(s)`);
+  if (snapshot.customerProofItems?.length)
+    parts.push(`${snapshot.customerProofItems.length} customer proof item(s)`);
   return parts.length > 0 ? parts.join('; ') : 'nothing readable';
 }
 
@@ -877,6 +1031,37 @@ export function diffSnapshots(
       signals.push({
         kind: 'integration-removed',
         detail: `${current.domain} removed ${removed.length} previously published integration${removed.length === 1 ? '' : 's'} from ${current.integrationsUrl ?? current.domain} (${removed
+          .slice(0, 4)
+          .map((item) => item.label)
+          .join('; ')}).`,
+        previous: previousState,
+        current: currentState
+      });
+    }
+  }
+
+  if (previous.customerProofItems != null && current.customerProofItems != null) {
+    const before = new Set(previous.customerProofItems.map((item) => item.key));
+    const after = new Set(current.customerProofItems.map((item) => item.key));
+    const added = current.customerProofItems.filter((item) => !before.has(item.key));
+    const removed = previous.customerProofItems.filter((item) => !after.has(item.key));
+    const previousState = itemStateHash(previous.customerProofItems);
+    const currentState = itemStateHash(current.customerProofItems);
+    if (added.length > 0) {
+      signals.push({
+        kind: 'customer-proof-added',
+        detail: `${current.domain} published ${added.length} new customer proof item${added.length === 1 ? '' : 's'} on ${current.customerProofUrl ?? current.domain} (${added
+          .slice(0, 4)
+          .map((item) => item.label)
+          .join('; ')}).`,
+        previous: previousState,
+        current: currentState
+      });
+    }
+    if (removed.length > 0) {
+      signals.push({
+        kind: 'customer-proof-removed',
+        detail: `${current.domain} removed ${removed.length} previously published customer proof item${removed.length === 1 ? '' : 's'} from ${current.customerProofUrl ?? current.domain} (${removed
           .slice(0, 4)
           .map((item) => item.label)
           .join('; ')}).`,
@@ -1108,6 +1293,12 @@ const snapshotSchema = z.object({
     .max(200)
     .nullable()
     .default(null),
+  customerProofUrl: z.string().nullable().default(null),
+  customerProofItems: z
+    .array(z.object({ key: z.string(), label: z.string() }))
+    .max(200)
+    .nullable()
+    .default(null),
   productUrl: z.string().nullable().default(null),
   productCount: z.number().nullable().default(null),
   productCapped: z.boolean().default(false),
@@ -1258,15 +1449,17 @@ export async function watchSignals(
             ? snapshot.releaseNotesUrl
             : signal.kind === 'integration-added' || signal.kind === 'integration-removed'
               ? snapshot.integrationsUrl
-              : signal.kind === 'product-launch'
-                ? snapshot.productUrl
-                : signal.kind === 'storefront-rebuild'
-                  ? `https://${clean}`
-                  : signal.kind.startsWith('newsletter-signup')
-                    ? (snapshot.newsletterSignups?.[0]?.sourceUrl ?? `https://${clean}`)
-                    : signal.kind === 'social-profile-added'
-                      ? (snapshot.socialProfiles?.[0]?.url ?? `https://${clean}`)
-                      : `https://${clean}`
+              : signal.kind === 'customer-proof-added' || signal.kind === 'customer-proof-removed'
+                ? snapshot.customerProofUrl
+                : signal.kind === 'product-launch'
+                  ? snapshot.productUrl
+                  : signal.kind === 'storefront-rebuild'
+                    ? `https://${clean}`
+                    : signal.kind.startsWith('newsletter-signup')
+                      ? (snapshot.newsletterSignups?.[0]?.sourceUrl ?? `https://${clean}`)
+                      : signal.kind === 'social-profile-added'
+                        ? (snapshot.socialProfiles?.[0]?.url ?? `https://${clean}`)
+                        : `https://${clean}`
     }))
   };
 }
@@ -1289,6 +1482,8 @@ const outputSchema = z.object({
         'release-notes-changed',
         'integration-added',
         'integration-removed',
+        'customer-proof-added',
+        'customer-proof-removed',
         'hiring-up',
         'hiring-down',
         'pricing-changed',
@@ -1322,7 +1517,7 @@ export const watchSignalSkill: Skill<WatchInput, WatchResult> = {
     name: 'Watch a domain for change signals',
     version: '1.0.0',
     description:
-      'Capture hiring, pricing, release notes, first-party integrations, headline, ecommerce app, public product catalog, newsletter signup, and published social-profile snapshots for a domain and diff them into evidence-backed change signals.',
+      'Capture hiring, pricing, release notes, first-party integrations and customer proof, headline, ecommerce app, public product catalog, newsletter signup, and published social-profile snapshots for a domain and diff them into evidence-backed change signals.',
     sideEffect: 'network-read',
     requiresApproval: false,
     inputSchema,

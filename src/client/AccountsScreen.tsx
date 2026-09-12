@@ -98,6 +98,8 @@ const KIND_LABELS: Record<string, string> = {
   'release-notes-changed': 'Release notes changed',
   'integration-added': 'A product integration appeared',
   'integration-removed': 'A product integration disappeared',
+  'customer-proof-added': 'A customer story appeared',
+  'customer-proof-removed': 'A customer story disappeared',
   'hiring-up': 'More roles on the careers page',
   'hiring-down': 'Fewer roles on the careers page',
   'pricing-changed': 'The pricing page changed',

@@ -4,6 +4,7 @@ import {
   captureSnapshot,
   contentHash,
   diffSnapshots,
+  extractCustomerProofItems,
   extractIntegrationItems,
   extractJobPostings,
   extractPricingFacts,
@@ -215,6 +216,37 @@ describe('diffSnapshots', () => {
     expect(signals[0].current).toBe(signals[1].current);
   });
 
+  it('diffs customer proof inventory as commercial traction evidence', () => {
+    const before: ResearchSnapshot = {
+      ...AFTER,
+      headline: BEFORE.headline,
+      jobCount: BEFORE.jobCount,
+      jobTitles: BEFORE.jobTitles,
+      pricingHash: BEFORE.pricingHash,
+      tech: BEFORE.tech,
+      customerProofUrl: 'https://acme.test/customers',
+      customerProofItems: [
+        { key: '/customers/orbit', label: 'Orbit' },
+        { key: '/customers/northstar', label: 'Northstar' }
+      ]
+    };
+    const after: ResearchSnapshot = {
+      ...before,
+      capturedAt: '2026-07-02T00:00:00.000Z',
+      customerProofItems: [
+        { key: '/customers/orbit', label: 'Orbit' },
+        { key: '/customers/contoso', label: 'Contoso' }
+      ]
+    };
+    const signals = diffSnapshots(before, after);
+    expect(signals.map((signal) => signal.kind)).toEqual([
+      'customer-proof-added',
+      'customer-proof-removed'
+    ]);
+    expect(signals[0].detail).toContain('Contoso');
+    expect(signals[1].detail).toContain('Northstar');
+  });
+
   it('emits storefront-rebuild only for high-confidence commerce-platform migrations', () => {
     const shopify: ResearchSnapshot = {
       ...BEFORE,
@@ -420,6 +452,40 @@ describe('integration inventory', () => {
     ]);
   });
 });
+describe('customer proof inventory', () => {
+  it('keeps same-origin customer stories and drops category links, CTAs and off-origin stories', () => {
+    expect(
+      extractCustomerProofItems(
+        `<h3><a href="/customers/enterprise">Enterprise</a></h3>
+         <a href="/customers/orbit">Orbit Read case study</a>
+         <a href="/customers/northstar">Northstar</a>
+         <a href="/customers">All customers</a>
+         <a href="https://evil.example/customers/contoso">Contoso</a>`,
+        'https://acme.test/customers'
+      )
+    ).toEqual([
+      { key: '/customers/northstar', label: 'Northstar' },
+      { key: '/customers/orbit', label: 'Orbit' }
+    ]);
+  });
+
+  it('drops navigation tabs and canonicalizes noisy card copy from the story path', () => {
+    expect(
+      extractCustomerProofItems(
+        `<nav><a href="/customers/all">All customer stories</a></nav>
+         <a data-active="false" href="/customers/ai">AI</a>
+         <a href="/customers/amazon">Amazon logo Watch video Amazon simplifies payments</a>
+         <a href="/customers/atlassian">1 more</a>
+         <a href="/customers/dandelion-chocolate">How Dandelion Chocolate scales craft</a>`,
+        'https://acme.test/customers'
+      )
+    ).toEqual([
+      { key: '/customers/amazon', label: 'Amazon' },
+      { key: '/customers/atlassian', label: 'Atlassian' },
+      { key: '/customers/dandelion-chocolate', label: 'Dandelion Chocolate' }
+    ]);
+  });
+});
 
 describe('contentHash', () => {
   it('hashes visible text, so a changed build id is not a pricing change', () => {
@@ -487,6 +553,50 @@ describe('captureSnapshot', () => {
     expect(snapshot.pricingHash).toHaveLength(16);
     expect(snapshot.pricingFacts).toEqual(['29 EUR per seat']);
     expect(snapshot.tech).toEqual(['segment']);
+  });
+
+  it('captures an explicitly published first-party customer stories page', async () => {
+    const seen: string[] = [];
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(input);
+      seen.push(url.pathname);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+      if (url.pathname === '/') return html('<h1>Acme</h1><a href="/customers">Customers</a>');
+      if (url.pathname === '/customers')
+        return html(
+          '<h1>Customer stories</h1><a href="/customers/orbit">Orbit</a><a href="/customers/northstar">Northstar</a>'
+        );
+      return new Response('not found', { status: 404 });
+    };
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['customers'],
+      fetchImpl,
+      pageBudget: 4
+    });
+    expect(snapshot.customerProofUrl).toBe('https://acme.test/customers');
+    expect(snapshot.customerProofItems).toEqual([
+      { key: '/customers/northstar', label: 'Northstar' },
+      { key: '/customers/orbit', label: 'Orbit' }
+    ]);
+    expect(seen.filter((path) => path === '/customers')).toHaveLength(1);
+  });
+
+  it('rejects an unrelated customer-page fallback that does not identify as customer proof', async () => {
+    const fetchImpl: FetchLike = async (input) => {
+      const url = new URL(input);
+      if (url.pathname === '/robots.txt') return new Response('', { status: 404 });
+      if (url.pathname === '/') return html('<h1>Acme</h1>');
+      if (url.pathname === '/customers')
+        return html('<h1>Account login</h1><a href="/customers/orbit">Orbit</a>');
+      return new Response('not found', { status: 404 });
+    };
+    const snapshot = await captureSnapshot('acme.test', {
+      watch: ['customers'],
+      fetchImpl,
+      pageBudget: 5
+    });
+    expect(snapshot.customerProofUrl).toBeNull();
+    expect(snapshot.customerProofItems).toBeNull();
   });
 
   it('captures an explicitly published first-party integrations marketplace', async () => {
