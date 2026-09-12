@@ -121,6 +121,8 @@ export interface ResearchSnapshot {
   jobTitles: string[];
   pricingUrl: string | null;
   pricingHash: string | null;
+  /** Bounded visible price/plan facts from the captured pricing page. Missing means an older snapshot. */
+  pricingFacts?: string[] | null;
   /** Public Shopify/WooCommerce catalog endpoint, when one was readable. */
   productUrl: string | null;
   /** Number of records in the bounded public sample. Null means not captured. */
@@ -210,6 +212,52 @@ export function extractJobPostings(html: string, pageUrl: string): string[] {
 
 export function contentHash(html: string): string {
   return createHash('sha256').update(stripTags(html)).digest('hex').slice(0, 16);
+}
+
+const PRICE_AMOUNT_RE =
+  /(?:[$€£¥]\s?\d[\d.,]*|(?:CHF|USD|EUR|GBP|CAD|AUD|JPY|SEK|NOK|DKK|PLN)\s?\d[\d.,]*|\d[\d.,]*\s?(?:CHF|USD|EUR|GBP|CAD|AUD|JPY|SEK|NOK|DKK|PLN))/gi;
+const BILLING_SUFFIX_RE =
+  /^\s*(?:(?:\/\s*(?:month|mo|year|yr|user|seat)(?:\s*\/\s*(?:month|mo|year|yr))?)|(?:per\s+(?:month|mo|year|yr|user|seat)(?:\s*\/\s*(?:month|mo|year|yr))?))/i;
+const PLAN_FACT_RE =
+  /\b(?:free plan|enterprise plan|custom pricing|contact sales|contact us for pricing)\b/gi;
+
+/**
+ * Small human-readable facts for explaining a pricing-page change.
+ * Detection remains hash-based; these facts only make the evidence useful and,
+ * when both snapshots have them, prevent unrelated pricing-page copy churn from
+ * masquerading as a price/plan move.
+ */
+export function extractPricingFacts(html: string): string[] {
+  const visible = stripTags(html);
+  const seen = new Set<string>();
+  const facts: string[] = [];
+  const add = (fact: string) => {
+    const clean = fact.replace(/\s+/g, ' ').trim();
+    if (!clean) return;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    facts.push(clean);
+  };
+
+  for (const match of visible.matchAll(PRICE_AMOUNT_RE)) {
+    const amount = match[0];
+    const end = (match.index ?? 0) + amount.length;
+    const tail = visible.slice(end, end + 48);
+    // Animated number components can flatten as "$ 1 0" while the real text
+    // also contains "$10". Do not preserve the partial first digit as a price.
+    if (/^\s+\d\b/.test(tail)) continue;
+    const suffix = BILLING_SUFFIX_RE.exec(tail)?.[0] ?? '';
+    add(`${amount}${suffix}`);
+    if (facts.length >= 12) break;
+  }
+  if (facts.length < 12) {
+    for (const match of visible.matchAll(PLAN_FACT_RE)) {
+      add(match[0]);
+      if (facts.length >= 12) break;
+    }
+  }
+  return facts.sort();
 }
 
 function catalogStateHash(items: readonly CatalogItem[]): string {
@@ -434,6 +482,7 @@ export async function captureSnapshot(
 
   let pricingUrl: string | null = null;
   let pricingHash: string | null = null;
+  let pricingFacts: string[] | null = null;
   if (watches.has('pricing')) {
     for (const path of discoverPaths(html, base, PRICING_LINK_RE, ['/pricing', '/plans'])) {
       const response = await get(`${base.origin}${path}`);
@@ -441,6 +490,7 @@ export async function captureSnapshot(
       if (response.contentType && !response.contentType.includes('html')) continue;
       pricingUrl = `${base.origin}${path}`;
       pricingHash = contentHash(response.text);
+      pricingFacts = extractPricingFacts(response.text);
       break;
     }
   }
@@ -469,6 +519,7 @@ export async function captureSnapshot(
     jobTitles,
     pricingUrl,
     pricingHash,
+    pricingFacts,
     productUrl,
     productCount,
     productCapped,
@@ -568,12 +619,36 @@ export function diffSnapshots(
     current.pricingHash !== null &&
     previous.pricingHash !== current.pricingHash
   ) {
-    signals.push({
-      kind: 'pricing-changed',
-      detail: `Pricing page content changed on ${current.pricingUrl ?? current.domain} (${previous.pricingHash} -> ${current.pricingHash}).`,
-      previous: previous.pricingHash,
-      current: current.pricingHash
-    });
+    const previousFacts = previous.pricingFacts;
+    const currentFacts = current.pricingFacts;
+    const comparableFacts = Array.isArray(previousFacts) && Array.isArray(currentFacts);
+    const removed = comparableFacts
+      ? previousFacts.filter((fact) => !currentFacts.includes(fact))
+      : [];
+    const added = comparableFacts
+      ? currentFacts.filter((fact) => !previousFacts.includes(fact))
+      : [];
+    // If both captures had structured pricing facts and those facts did not
+    // move, the hash change was surrounding copy/layout churn, not pricing.
+    if (!comparableFacts || removed.length > 0 || added.length > 0) {
+      const quote = (fact: string) => `“${fact.replace(/[“”"]/g, "'")}”`;
+      const factDetail = comparableFacts
+        ? [
+            removed.length > 0 ? `removed ${removed.slice(0, 2).map(quote).join('; ')}` : null,
+            added.length > 0 ? `added ${added.slice(0, 2).map(quote).join('; ')}` : null
+          ]
+            .filter(Boolean)
+            .join('; ')
+        : '';
+      signals.push({
+        kind: 'pricing-changed',
+        detail: factDetail
+          ? `Pricing changed on ${current.pricingUrl ?? current.domain}: ${factDetail}.`
+          : `Pricing page content changed on ${current.pricingUrl ?? current.domain} (${previous.pricingHash} -> ${current.pricingHash}).`,
+        previous: previous.pricingHash,
+        current: current.pricingHash
+      });
+    }
   }
 
   const commercePlatforms = new Set<StorefrontPlatform>([
@@ -732,6 +807,7 @@ const snapshotSchema = z.object({
   jobTitles: z.array(z.string()),
   pricingUrl: z.string().nullable(),
   pricingHash: z.string().nullable(),
+  pricingFacts: z.array(z.string()).max(12).nullable().optional(),
   productUrl: z.string().nullable().default(null),
   productCount: z.number().nullable().default(null),
   productCapped: z.boolean().default(false),

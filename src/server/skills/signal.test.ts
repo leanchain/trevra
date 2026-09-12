@@ -5,6 +5,7 @@ import {
   contentHash,
   diffSnapshots,
   extractJobPostings,
+  extractPricingFacts,
   watchSignals,
   type ResearchSnapshot
 } from './signal.js';
@@ -83,6 +84,50 @@ describe('diffSnapshots', () => {
     );
     expect(signals[3].detail).toContain('added segment');
     expect(signals[4].detail).toContain('dropped hubspot');
+  });
+
+  it('explains pricing changes with visible facts and ignores surrounding copy churn', () => {
+    const before: ResearchSnapshot = {
+      ...BEFORE,
+      headline: AFTER.headline,
+      jobCount: AFTER.jobCount,
+      jobTitles: AFTER.jobTitles,
+      tech: AFTER.tech,
+      pricingFacts: ['Starter €29 / month', 'Enterprise plan']
+    };
+    const after: ResearchSnapshot = {
+      ...AFTER,
+      pricingFacts: ['Starter €39 / month', 'Enterprise plan']
+    };
+    const pricing = diffSnapshots(before, after).find(
+      (signal) => signal.kind === 'pricing-changed'
+    );
+    expect(pricing?.detail).toContain('removed “Starter €29 / month”');
+    expect(pricing?.detail).toContain('added “Starter €39 / month”');
+    expect(pricing?.previous).toBe(BEFORE.pricingHash);
+    expect(pricing?.current).toBe(AFTER.pricingHash);
+
+    const copyOnly = diffSnapshots(before, {
+      ...after,
+      pricingFacts: before.pricingFacts,
+      pricingHash: 'cccccccccccccccc'
+    });
+    expect(copyOnly.map((signal) => signal.kind)).not.toContain('pricing-changed');
+  });
+
+  it('keeps hash-based pricing wording when either snapshot predates pricing facts', () => {
+    const previous: ResearchSnapshot = {
+      ...BEFORE,
+      headline: AFTER.headline,
+      jobCount: AFTER.jobCount,
+      jobTitles: AFTER.jobTitles,
+      tech: AFTER.tech
+    };
+    const current: ResearchSnapshot = { ...AFTER, pricingFacts: ['€39 / month'] };
+    const pricing = diffSnapshots(previous, current).find(
+      (signal) => signal.kind === 'pricing-changed'
+    );
+    expect(pricing?.detail).toContain('aaaaaaaaaaaaaaaa -> bbbbbbbbbbbbbbbb');
   });
 
   it('emits storefront-rebuild only for high-confidence commerce-platform migrations', () => {
@@ -260,7 +305,7 @@ describe('extractJobPostings', () => {
   });
 });
 
-describe('contentHash', () => {
+describe('contentHash and pricing facts', () => {
   it('hashes visible text, so a changed build id is not a pricing change', () => {
     const a =
       '<html><script src="/_next/static/abc123/main.js"></script><body><h2>29 EUR</h2></body></html>';
@@ -268,6 +313,15 @@ describe('contentHash', () => {
       '<html><script src="/_next/static/zzz999/main.js"></script><body><h2>29 EUR</h2></body></html>';
     expect(contentHash(a)).toBe(contentHash(b));
     expect(contentHash(a)).not.toBe(contentHash(a.replace('29', '39')));
+  });
+
+  it('extracts bounded human-readable price and plan facts without script noise', () => {
+    expect(
+      extractPricingFacts(`<script>window.price = '$999'</script>
+        <h2>Starter</h2><p>€29 / month</p>
+        <h2>Enterprise plan</h2><p>Contact sales</p>
+        <p>30 day free trial</p><div>$ 1 0 per user/month</div>`)
+    ).toEqual(['Contact sales', 'Enterprise plan', '€29 / month']);
   });
 });
 
@@ -315,6 +369,7 @@ describe('captureSnapshot', () => {
     expect(snapshot.jobTitles).toEqual(['Head of RevOps']);
     expect(snapshot.pricingUrl).toBe('https://acme.test/pricing');
     expect(snapshot.pricingHash).toHaveLength(16);
+    expect(snapshot.pricingFacts).toEqual(['29 EUR per seat']);
     expect(snapshot.tech).toEqual(['segment']);
   });
 

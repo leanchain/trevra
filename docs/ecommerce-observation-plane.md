@@ -7,7 +7,7 @@ Trevra's ecommerce observation plane turns dated changes around a store into the
 Native account sweeps now cover:
 
 - hiring/careers changes, including explicitly published external ATS boards;
-- pricing and homepage changes;
+- pricing and homepage changes; pricing-page hashes remain the deterministic detector, while bounded visible price/plan facts explain the change and suppress copy-only churn when both snapshots contain comparable facts;
 - generic site technology changes;
 - Shopify and WooCommerce public product catalogs;
 - ecommerce app installs/removals visible in storefront markup, including Klaviyo, Mailchimp, Omnisend, Brevo, Attentive, Recharge, Gorgias, Yotpo and Judge.me.
