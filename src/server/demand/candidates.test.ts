@@ -420,6 +420,135 @@ describe('buildDemandCandidates', () => {
     expect(await buildDemandCandidates(db, workspaceId, NOW)).toEqual([]);
   });
 
+  it('uses the saved campaign buyer role to choose one clear contact among several', async () => {
+    const workspaceId = await seedWorkspace('Persona-ranked contacts');
+    const account = await createAccount(
+      db,
+      workspaceId,
+      { domain: 'persona-ranked.example', name: 'Persona Ranked Co', source: 'manual' },
+      new Date('2026-09-10T08:00:00.000Z')
+    );
+
+    await db
+      .prepare(
+        `INSERT INTO linkedin_campaigns
+         (id,workspace_id,name,status,sequence_json,brief_json,seat_key,created_at,updated_at)
+         VALUES (?,?,?,'draft','{}'::jsonb,?::jsonb,'owner',?,?)`
+      )
+      .run(
+        'lic_persona_ranked',
+        workspaceId,
+        'Engineering leaders',
+        JSON.stringify({
+          icp: { role: 'VP Engineering', segment: 'B2B SaaS', pain: 'Platform scale' }
+        }),
+        '2026-09-11T08:00:00.000Z',
+        '2026-09-11T08:00:00.000Z'
+      );
+
+    for (const [index, name, role] of [
+      [0, 'Sarah Chen', 'VP Engineering'],
+      [1, 'Alex Meyer', 'Head of Sales']
+    ] as const) {
+      const personId = `con_persona_${index}`;
+      await db
+        .prepare(
+          `INSERT INTO contacts
+           (id,workspace_id,name,email,email_normalized,role,created_at,updated_at)
+           VALUES (?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          personId,
+          workspaceId,
+          name,
+          `${personId}@example.test`,
+          `${personId}@example.test`,
+          role,
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+      await db
+        .prepare(
+          `INSERT INTO account_contacts
+           (id,workspace_id,account_id,contact_id,role,source,confidence,created_at,updated_at)
+           VALUES (?,?,?,?,?,'manual','explicit',?,?)`
+        )
+        .run(
+          `ac_persona_${index}`,
+          workspaceId,
+          account.id,
+          personId,
+          role,
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+    }
+
+    await db
+      .prepare(
+        `INSERT INTO account_scores
+         (workspace_id,account_id,score,tier,distinct_kinds,newest_signal_at,rationale_json,computed_at)
+         VALUES (?,?,?,?,?,?,?,?)`
+      )
+      .run(
+        workspaceId,
+        account.id,
+        96,
+        'hot',
+        2,
+        '2026-09-12T07:00:00.000Z',
+        '{}',
+        '2026-09-12T07:01:00.000Z'
+      );
+    for (const [index, kind, detail, url] of [
+      [
+        0,
+        'hiring-up',
+        'Added platform engineering roles.',
+        'https://persona-ranked.example/careers'
+      ],
+      [1, 'tech-added', 'Added a new infrastructure tool.', 'https://persona-ranked.example/']
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_persona_${index}`,
+          workspaceId,
+          account.id,
+          kind,
+          detail,
+          url,
+          `2026-09-12T0${6 + index}:00:00.000Z`,
+          `persona-ranked-${index}`,
+          `2026-09-12T0${6 + index}:00:00.000Z`
+        );
+    }
+
+    const candidates = await buildDemandCandidates(db, workspaceId, NOW);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      personId: 'con_persona_0',
+      personName: 'Sarah Chen',
+      accountId: account.id,
+      recommendedAction: 'prepare_outreach'
+    });
+    expect(candidates[0]?.summary).toContain('clear best role match');
+    expect(candidates[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceType: 'campaign_brief',
+          sourceId: 'lic_persona_ranked',
+          excerpt: expect.stringContaining('VP Engineering')
+        })
+      ])
+    );
+  });
+
   it('does not create fresh outreach demand when the account already has an open opportunity', async () => {
     const workspaceId = await seedWorkspace('Open opportunity');
     const personId = id('con');

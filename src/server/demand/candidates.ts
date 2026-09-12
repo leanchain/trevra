@@ -5,7 +5,12 @@ export type DemandRecommendedAction =
   'reply' | 'prepare_outreach' | 'find_person' | 'qualify' | 'watch';
 
 export interface DemandEvidence {
-  sourceType: 'inbound_submission' | 'account_contact' | 'account_score' | 'account_signal';
+  sourceType:
+    | 'inbound_submission'
+    | 'account_contact'
+    | 'account_score'
+    | 'account_signal'
+    | 'campaign_brief';
   sourceId: string;
   label: string;
   category: 'request' | 'history' | 'supporting';
@@ -116,6 +121,101 @@ function accountSignalEvidence(signals: Record<string, unknown>[]): DemandEviden
   }));
 }
 
+interface BuyerPersona {
+  campaignId: string;
+  role: string;
+  observedAt: string;
+}
+
+const ROLE_STOP_WORDS = new Set(['a', 'an', 'and', 'for', 'of', 'the', 'to']);
+const ROLE_ALIASES: Record<string, string[]> = {
+  vp: ['vice', 'president'],
+  svp: ['senior', 'vice', 'president'],
+  evp: ['executive', 'vice', 'president'],
+  cto: ['chief', 'technology', 'officer'],
+  cio: ['chief', 'information', 'officer'],
+  ciso: ['chief', 'information', 'security', 'officer'],
+  ceo: ['chief', 'executive', 'officer'],
+  cmo: ['chief', 'marketing', 'officer'],
+  cro: ['chief', 'revenue', 'officer'],
+  coo: ['chief', 'operating', 'officer']
+};
+
+function roleTokens(value: string): Set<string> {
+  const raw = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  const expanded = raw.flatMap((token) => ROLE_ALIASES[token] ?? [token]);
+  return new Set(expanded.filter((token) => !ROLE_STOP_WORDS.has(token)));
+}
+
+/**
+ * Conservative title similarity. It answers only whether a saved buyer role
+ * clearly distinguishes one known contact from the others; it is not an ICP
+ * or identity model. A weak/tied result returns no winner.
+ */
+function roleMatchScore(targetRole: string, candidateRole: string): number {
+  const target = roleTokens(targetRole);
+  const candidate = roleTokens(candidateRole);
+  if (target.size === 0 || candidate.size === 0) return 0;
+  if ([...target].every((token) => candidate.has(token)) && target.size === candidate.size)
+    return 1;
+  let overlap = 0;
+  for (const token of target) if (candidate.has(token)) overlap += 1;
+  if (overlap === 0) return 0;
+  const targetCoverage = overlap / target.size;
+  const candidateCoverage = overlap / candidate.size;
+  return Number((targetCoverage * 0.7 + candidateCoverage * 0.3).toFixed(3));
+}
+
+async function loadBuyerPersona(db: Db, workspaceId: string): Promise<BuyerPersona | null> {
+  const row = await db
+    .prepare(
+      `
+      SELECT id,brief_json #>> '{icp,role}' AS role,created_at
+      FROM linkedin_campaigns
+      WHERE workspace_id=?
+        AND NULLIF(BTRIM(brief_json #>> '{icp,role}'),'') IS NOT NULL
+      ORDER BY created_at DESC,id DESC
+      LIMIT 1
+    `
+    )
+    .get<Record<string, unknown>>(workspaceId);
+  if (!row) return null;
+  const role = String(row.role ?? '').trim();
+  return role ? { campaignId: String(row.id), role, observedAt: iso(row.created_at) } : null;
+}
+
+function selectKnownContact(
+  rows: Record<string, unknown>[],
+  persona: BuyerPersona | null
+): { row: Record<string, unknown>; roleScore: number | null; usedPersona: boolean } | null {
+  if (rows.length === 1) return { row: rows[0]!, roleScore: null, usedPersona: false };
+  if (!persona) return null;
+
+  const scored = rows
+    .map((row) => {
+      const role = String(row.association_role ?? row.person_role ?? '').trim();
+      const roleScore = roleMatchScore(persona.role, role);
+      const confidenceBonus = String(row.association_confidence) === 'verified' ? 0.03 : 0;
+      return { row, roleScore, selectionScore: roleScore + confidenceBonus };
+    })
+    .sort((left, right) =>
+      right.selectionScore !== left.selectionScore
+        ? right.selectionScore - left.selectionScore
+        : String(left.row.contact_id).localeCompare(String(right.row.contact_id))
+    );
+
+  const best = scored[0];
+  const runnerUp = scored[1];
+  if (!best || best.roleScore < 0.6) return null;
+  if (runnerUp && best.selectionScore - runnerUp.selectionScore < 0.2) return null;
+  return { row: best.row, roleScore: best.roleScore, usedPersona: true };
+}
+
 /**
  * Build the founder-facing commercial candidates that exist *between* raw
  * evidence and a persisted recommendation.
@@ -173,6 +273,7 @@ export async function buildDemandCandidates(
 
   const candidates: DemandCandidate[] = [];
   const seenSourceKeys = new Set<string>();
+  const firstPartyAccountIds = new Set<string>();
   for (const row of rows) {
     const personId = String(row.person_id);
     const accountId = String(row.account_id);
@@ -252,61 +353,64 @@ export async function buildDemandCandidates(
       evidence
     });
     seenSourceKeys.add(sourceKey);
+    firstPartyAccountIds.add(accountId);
   }
 
-  // Outbound counterpart: a hot account with one known, deterministic contact.
-  // EXACTLY ONE is deliberate. Until Trevra has a workspace persona / buying-role
-  // model, choosing among several contacts would be pretending to know who the
-  // right buyer is. One explicit/verified association is enough to prepare a
-  // reviewable outreach decision; inferred associations are not.
+  // Outbound counterpart: a hot account with deterministic known contacts.
+  // One contact is safe to surface directly. With several, Trevra may choose
+  // only when the operator's latest saved campaign ICP role clearly separates
+  // one person from the rest. No persona or no clear margin means no guess.
+  const buyerPersona = await loadBuyerPersona(db, workspaceId);
   const knownContactRows = await db
     .prepare(
       `
-      WITH eligible_contacts AS (
+      WITH hot_accounts AS (
         SELECT
-          ac.id AS account_contact_id,
-          ac.account_id,
-          ac.contact_id,
-          ac.role AS association_role,
-          ac.source AS association_source,
-          ac.confidence AS association_confidence,
-          ac.updated_at AS association_updated_at,
-          p.name AS person_name,
-          p.email AS person_email,
-          p.role AS person_role,
-          COUNT(*) OVER (PARTITION BY ac.account_id) AS eligible_count
-        FROM account_contacts ac
-        JOIN contacts p
-          ON p.workspace_id=ac.workspace_id AND p.id=ac.contact_id
-        WHERE ac.workspace_id=? AND ac.confidence IN ('explicit','verified')
+          a.id AS account_id,a.name AS account_name,a.domain,
+          sc.score,sc.distinct_kinds,sc.newest_signal_at,sc.computed_at
+        FROM account_scores sc
+        JOIN accounts a ON a.workspace_id=sc.workspace_id AND a.id=sc.account_id
+        WHERE sc.workspace_id=?
+          AND sc.tier='hot'
+          AND sc.score>=80
+          AND COALESCE(sc.newest_signal_at,sc.computed_at)>=?::timestamptz
+          AND NOT EXISTS (
+            SELECT 1 FROM opportunities o
+            WHERE o.workspace_id=sc.workspace_id
+              AND o.account_id=sc.account_id
+              AND o.stage NOT IN ('won','lost')
+          )
+        ORDER BY sc.score DESC,COALESCE(sc.newest_signal_at,sc.computed_at) DESC,a.id
+        LIMIT 50
       )
       SELECT
-        a.id AS account_id,a.name AS account_name,a.domain,
-        sc.score,sc.distinct_kinds,sc.newest_signal_at,sc.computed_at,
-        e.account_contact_id,e.contact_id,e.association_role,e.association_source,
-        e.association_confidence,e.association_updated_at,e.person_name,e.person_email,e.person_role
-      FROM account_scores sc
-      JOIN accounts a ON a.workspace_id=sc.workspace_id AND a.id=sc.account_id
-      JOIN eligible_contacts e ON e.account_id=sc.account_id AND e.eligible_count=1
-      WHERE sc.workspace_id=?
-        AND sc.tier='hot'
-        AND sc.score>=80
-        AND COALESCE(sc.newest_signal_at,sc.computed_at)>=?::timestamptz
-        AND NOT EXISTS (
-          SELECT 1 FROM opportunities o
-          WHERE o.workspace_id=sc.workspace_id
-            AND o.account_id=sc.account_id
-            AND o.stage NOT IN ('won','lost')
-        )
-      ORDER BY sc.score DESC,COALESCE(sc.newest_signal_at,sc.computed_at) DESC,a.id
-      LIMIT 50
+        h.*,ac.id AS account_contact_id,ac.contact_id,
+        ac.role AS association_role,ac.source AS association_source,
+        ac.confidence AS association_confidence,ac.updated_at AS association_updated_at,
+        p.name AS person_name,p.email AS person_email,p.role AS person_role
+      FROM hot_accounts h
+      JOIN account_contacts ac ON ac.account_id=h.account_id
+      JOIN contacts p ON p.workspace_id=ac.workspace_id AND p.id=ac.contact_id
+      WHERE ac.workspace_id=? AND ac.confidence IN ('explicit','verified')
+      ORDER BY h.score DESC,COALESCE(h.newest_signal_at,h.computed_at) DESC,h.account_id,ac.id
     `
     )
-    .all<Record<string, unknown>>(workspaceId, workspaceId, recentSince);
+    .all<Record<string, unknown>>(workspaceId, recentSince, workspaceId);
 
+  const contactsByAccount = new Map<string, Record<string, unknown>[]>();
   for (const row of knownContactRows) {
-    const personId = String(row.contact_id);
     const accountId = String(row.account_id);
+    const existing = contactsByAccount.get(accountId) ?? [];
+    existing.push(row);
+    contactsByAccount.set(accountId, existing);
+  }
+
+  for (const [accountId, rowsForAccount] of contactsByAccount) {
+    if (firstPartyAccountIds.has(accountId)) continue;
+    const selection = selectKnownContact(rowsForAccount, buyerPersona);
+    if (!selection) continue;
+    const row = selection.row;
+    const personId = String(row.contact_id);
     const sourceKey = `demand:${personId}:${accountId}`;
     if (seenSourceKeys.has(sourceKey)) continue;
 
@@ -336,6 +440,18 @@ export async function buildDemandCandidates(
         excerpt: `${personName}${associationRole ? ` · ${associationRole}` : ''} is an ${confidence} contact for ${accountName}.`,
         observedAt: iso(row.association_updated_at)
       },
+      ...(selection.usedPersona && buyerPersona
+        ? [
+            {
+              sourceType: 'campaign_brief' as const,
+              sourceId: buyerPersona.campaignId,
+              label: 'Saved buyer role',
+              category: 'history' as const,
+              excerpt: `Latest campaign ICP role: ${buyerPersona.role}. ${personName}'s role matched at ${Math.round((selection.roleScore ?? 0) * 100)}%.`,
+              observedAt: buyerPersona.observedAt
+            }
+          ]
+        : []),
       {
         sourceType: 'account_score',
         sourceId: accountId,
@@ -346,6 +462,11 @@ export async function buildDemandCandidates(
       },
       ...accountSignalEvidence(signals)
     ];
+
+    const selectionSentence =
+      selection.usedPersona && buyerPersona
+        ? `${personName}${associationRole ? ` (${associationRole})` : ''} is the clear best role match for the saved buyer role “${buyerPersona.role}”.`
+        : `${personName}${associationRole ? ` (${associationRole})` : ''} is the one explicit/verified contact already on the account.`;
 
     candidates.push({
       sourceKey,
@@ -364,10 +485,12 @@ export async function buildDemandCandidates(
       qualification: 'act_now',
       recommendedAction: 'prepare_outreach',
       title: `Reach out to ${personName} at ${accountName}`,
-      summary: `${accountName}: ${score}/100 account intent${signalSummary ? ` · ${signalSummary}` : ''}. ${personName}${associationRole ? ` (${associationRole})` : ''} is the one explicit/verified contact already on the account.`,
+      summary: `${accountName}: ${score}/100 account intent${signalSummary ? ` · ${signalSummary}` : ''}. ${selectionSentence}`,
       rationale: [
         `account scorer is hot at ${score}/100 across ${distinctKinds} signal kinds`,
-        `exactly one ${confidence} account contact is available`,
+        selection.usedPersona && buyerPersona
+          ? `${personName} is the clear best match for saved buyer role ${buyerPersona.role}`
+          : `exactly one ${confidence} account contact is available`,
         `${signals.length} source-backed account signal${signals.length === 1 ? '' : 's'} are available for context`
       ],
       evidence
