@@ -6,6 +6,10 @@ import type { Db } from './db.js';
 import { id } from './db.js';
 import { listPublicModulePopularity, listPublicRegistryModules } from './registry/service.js';
 import {
+  getPublishedContentReportBySlug,
+  type PublicContentReport
+} from './content/public-reports.js';
+import {
   JSON_LD_MARKER,
   PRODUCTION_ORIGIN,
   VERIFICATION_MARKER
@@ -158,6 +162,69 @@ function hostedWorkspaceUrl(env: NodeJS.ProcessEnv): string {
   }
 }
 
+function html(value: unknown): string {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function publicReportUrl(config: SiteConfig, report: PublicContentReport): string {
+  return `${config.origin}/signals/${encodeURIComponent(report.slug)}`;
+}
+
+/** Crawlable, snapshot-only public intelligence page. No workspace state is read here. */
+export function renderPublicSignalReport(
+  report: PublicContentReport,
+  config = getSiteConfig()
+): string {
+  const canonical = publicReportUrl(config, report);
+  const published = new Date(report.publishedAt).toISOString().slice(0, 10);
+  const patterns = report.snapshot.patterns
+    .map(
+      (pattern) => `<section class="signal-pattern">
+        <div class="signal-pattern-head"><h2>${html(pattern.label)}</h2><p>${pattern.accountCount} companies · ${pattern.signalCount} observed changes</p></div>
+        <div class="signal-evidence">${pattern.examples
+          .map(
+            (example) =>
+              `<article><h3>${html(example.accountName)}</h3><p>${html(example.detail)}</p><p class="signal-meta">Observed ${html(new Date(example.observedAt).toISOString().slice(0, 10))} · <a href="${html(example.sourceUrl)}" rel="noopener noreferrer">Source</a></p></article>`
+          )
+          .join('')}</div>
+      </section>`
+    )
+    .join('');
+  const methodology = report.methodology.map((line) => `<li>${html(line)}</li>`).join('');
+  const jsonLd = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'Report',
+    headline: report.title,
+    description: report.description,
+    datePublished: report.publishedAt,
+    url: canonical,
+    publisher: { '@type': 'Organization', name: config.name, url: config.origin }
+  }).replaceAll('<', '\\u003c');
+  return `<!doctype html><html lang="en"><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>${html(report.title)} · ${html(config.name)}</title>
+    <meta name="description" content="${html(report.description)}">
+    <link rel="canonical" href="${html(canonical)}">
+    <meta property="og:type" content="article"><meta property="og:title" content="${html(report.title)}">
+    <meta property="og:description" content="${html(report.description)}"><meta property="og:url" content="${html(canonical)}">
+    <meta name="twitter:card" content="summary_large_image"><meta name="twitter:title" content="${html(report.title)}">
+    <meta name="twitter:description" content="${html(report.description)}">
+    <link rel="stylesheet" href="/signal-report.css">
+    <script type="application/ld+json">${jsonLd}</script>
+  </head><body><main class="signal-report">
+    <nav><a href="/">${html(config.name)}</a><span>Market intelligence</span></nav>
+    <header><p class="signal-kicker">${html(report.snapshot.scopeLabel)} · ${report.snapshot.days} days</p><h1>${html(report.title)}</h1><p class="signal-deck">${html(report.description)}</p><p class="signal-meta">Published ${published} · ${report.snapshot.changedAccountCount} changed of ${report.snapshot.accountCount} watched companies · ${report.snapshot.signalCount} source-backed changes</p></header>
+    ${patterns}
+    <section class="signal-method"><h2>Methodology</h2><ul>${methodology}</ul></section>
+    <aside class="signal-cta"><p><strong>See market movement before it becomes obvious.</strong> ${html(config.name)} turns source-backed changes into research, distribution and qualified next actions.</p><a href="${html(config.hostedAppUrl || '/')}" data-hosted-cta>Explore ${html(config.name)}</a></aside>
+  </main></body></html>`;
+}
+
 export function registerPublicSiteRoutes(app: Express, db: Db): void {
   const config = getSiteConfig();
   const publicLimiter = rateLimit({
@@ -218,6 +285,23 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
       const module = modules.find((item) => item.id === String(req.params.id));
       if (!module) return res.status(404).json({ error: 'Public module not found' });
       res.json({ module });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/signals/:slug', publicLimiter, async (req, res, next) => {
+    try {
+      const report = await getPublishedContentReportBySlug(db, String(req.params.slug));
+      if (!report) return res.status(404).type('text/plain').send('Report not found');
+      res
+        .status(200)
+        .type('html')
+        .set({
+          'Cache-Control': 'public, max-age=300, stale-while-revalidate=3600',
+          'Content-Language': 'en'
+        })
+        .send(renderPublicSignalReport(report, config));
     } catch (error) {
       next(error);
     }

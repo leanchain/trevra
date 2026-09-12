@@ -277,6 +277,88 @@ describe('content opportunity API', () => {
     ]);
   });
 
+  it('publishes an immutable public pulse snapshot and removes it from the public route on unpublish', async () => {
+    for (const suffix of ['report-a', 'report-b'] as const) {
+      const account = await createAccount(
+        db,
+        WORKSPACE,
+        {
+          domain: `${suffix}.public-report.example`,
+          name: suffix,
+          source: 'manual',
+          tags: ['public-report-test']
+        },
+        NOW
+      );
+      await db
+        .prepare(
+          `INSERT INTO account_signals
+           (id,workspace_id,account_id,kind,detail,evidence_url,observed_at,fingerprint,created_at)
+           VALUES (?,?,?,?,?,?,?,?,?)`
+        )
+        .run(
+          `sig_${suffix}`,
+          WORKSPACE,
+          account.id,
+          'pricing-changed',
+          `${suffix} changed pricing.`,
+          `https://${suffix}.public-report.example/pricing`,
+          '2026-09-12T10:30:00.000Z',
+          `fp-${suffix}`,
+          '2026-09-12T10:30:00.000Z'
+        );
+    }
+
+    const created = await authed('post', '/api/content/public-reports/market-pulse')
+      .send({ days: 7, tag: 'public-report-test' })
+      .expect(201);
+    expect(created.body.report).toMatchObject({
+      workspaceId: WORKSPACE,
+      status: 'published',
+      template: 'market_pulse'
+    });
+    const slug = created.body.report.slug as string;
+    const publicPage = await request(app)
+      .get(`/signals/${encodeURIComponent(slug)}`)
+      .expect(200);
+    expect(publicPage.text).toContain('report-a changed pricing.');
+    expect(publicPage.text).toContain('report-b changed pricing.');
+    expect(publicPage.text).toContain('Methodology');
+    expect(publicPage.text).toContain('og:title');
+    expect(publicPage.text).not.toContain(WORKSPACE);
+    expect(publicPage.text).not.toContain('sig_report-a');
+
+    const replay = await authed('post', '/api/content/public-reports/market-pulse')
+      .send({ days: 7, tag: 'public-report-test' })
+      .expect(201);
+    expect(replay.body.report.id).toBe(created.body.report.id);
+    expect(replay.body.report.slug).toBe(slug);
+
+    await db
+      .prepare("UPDATE account_signals SET detail='MUTATED PRIVATE STATE' WHERE id='sig_report-a'")
+      .run();
+    const frozen = await request(app)
+      .get(`/signals/${encodeURIComponent(slug)}`)
+      .expect(200);
+    expect(frozen.text).toContain('report-a changed pricing.');
+    expect(frozen.text).not.toContain('MUTATED PRIVATE STATE');
+
+    const reports = await authed('get', '/api/content/public-reports').expect(200);
+    expect(reports.body.reports).toEqual([
+      expect.objectContaining({ id: created.body.report.id, status: 'published', slug })
+    ]);
+
+    await authed(
+      'post',
+      `/api/content/public-reports/${encodeURIComponent(created.body.report.id)}/unpublish`
+    )
+      .send({})
+      .expect(200);
+    await request(app)
+      .get(`/signals/${encodeURIComponent(slug)}`)
+      .expect(404);
+  });
+
   it('returns draft strategies only for ready stories in the authenticated workspace', async () => {
     const own = await upsertContentOpportunity(
       db,

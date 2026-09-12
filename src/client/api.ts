@@ -55,6 +55,7 @@ import type { ContentDraftStrategy } from '../server/content/strategy';
 import type { MarketPulse, MarketPulseDays } from '../server/content/pulse';
 import type { MarketPulseCadence, MarketPulseSchedule } from '../server/content/pulse-schedule';
 import type { ContentPerformanceReport } from '../server/content/performance';
+import type { PublicContentReport } from '../server/content/public-reports';
 import type { PreparedOutreachResult } from '../server/outreach/prepare';
 import type { GtmIntent, GtmPlan, PreparedGtmPlanResult } from '../server/gtm/intent';
 import type { ConversationMessage, ConversationSummary } from '../server/conversations';
@@ -232,6 +233,32 @@ export async function saveMarketPulseSchedule(input: {
     body: JSON.stringify({ ...input, tag: null })
   });
   return result.schedule;
+}
+
+export async function getPublicContentReports(): Promise<PublicContentReport[]> {
+  const result = await request<{ reports: PublicContentReport[] }>('/api/content/public-reports');
+  return result.reports;
+}
+
+export async function publishMarketPulseReport(
+  days: MarketPulseDays = 7
+): Promise<PublicContentReport> {
+  const result = await request<{ report: PublicContentReport }>(
+    '/api/content/public-reports/market-pulse',
+    {
+      method: 'POST',
+      body: JSON.stringify({ days, tag: null })
+    }
+  );
+  return result.report;
+}
+
+export async function unpublishPublicContentReport(reportId: string): Promise<PublicContentReport> {
+  const result = await request<{ report: PublicContentReport }>(
+    `/api/content/public-reports/${encodeURIComponent(reportId)}/unpublish`,
+    { method: 'POST', body: '{}' }
+  );
+  return result.report;
 }
 
 export async function getContentDraftStrategies(

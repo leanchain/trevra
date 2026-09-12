@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import {
   CircleAlert,
   Database,
+  ExternalLink,
   LoaderCircle,
   MessageSquare,
   Newspaper,
@@ -15,6 +16,7 @@ import type { ContentPerformanceReport } from '../../server/content/performance'
 import type { ContentDraftStrategy } from '../../server/content/strategy';
 import type { MarketPulse, MarketPulseDays } from '../../server/content/pulse';
 import type { MarketPulseSchedule } from '../../server/content/pulse-schedule';
+import type { PublicContentReport } from '../../server/content/public-reports';
 import {
   createWatch,
   draftContentOpportunityLinkedIn,
@@ -25,16 +27,19 @@ import {
   getContentPerformance,
   getMarketPulse,
   getMarketPulseSchedules,
+  getPublicContentReports,
   getOutreachOfferDefaults,
   getOutreachThreads,
   getSkillRuns,
   getWatchMentions,
   getWatchTrend,
   getWatches,
+  publishMarketPulseReport,
   refreshContentOpportunities,
   runWatch,
   saveMarketPulseSchedule,
   startPlaybook,
+  unpublishPublicContentReport,
   updateContentOpportunityStatus,
   type BrandWatch,
   type BrandWatchMention,
@@ -530,6 +535,8 @@ export function ResearchView({
   const [pulseError, setPulseError] = useState('');
   const [pulseSchedule, setPulseSchedule] = useState<MarketPulseSchedule | null>(null);
   const [pulseScheduleBusy, setPulseScheduleBusy] = useState(false);
+  const [publicReports, setPublicReports] = useState<PublicContentReport[]>([]);
+  const [publicReportBusy, setPublicReportBusy] = useState<string | null>(null);
   const [redditOpen, setRedditOpen] = useState(false);
   const [threads, setThreads] = useState<FeedThread[]>([]);
   const [threadsLoaded, setThreadsLoaded] = useState(false);
@@ -630,6 +637,20 @@ export function ResearchView({
       cancelled = true;
     };
   }, [pulseDays]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getPublicContentReports()
+      .then((reports) => {
+        if (!cancelled) setPublicReports(reports);
+      })
+      .catch(() => {
+        if (!cancelled) setPublicReports([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -926,6 +947,38 @@ export function ResearchView({
     }
   }
 
+  async function publishPulse(): Promise<void> {
+    setPublicReportBusy('publish');
+    setPulseError('');
+    try {
+      const report = await publishMarketPulseReport(pulseDays);
+      setPublicReports((current) => [report, ...current.filter((item) => item.id !== report.id)]);
+      setToast('Public market report published.');
+    } catch (error) {
+      setPulseError(
+        error instanceof Error ? error.message : 'Could not publish this market report.'
+      );
+    } finally {
+      setPublicReportBusy(null);
+    }
+  }
+
+  async function unpublishReport(report: PublicContentReport): Promise<void> {
+    setPublicReportBusy(report.id);
+    setPulseError('');
+    try {
+      const updated = await unpublishPublicContentReport(report.id);
+      setPublicReports((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item))
+      );
+      setToast('Public report unpublished.');
+    } catch (error) {
+      setPulseError(error instanceof Error ? error.message : 'Could not unpublish this report.');
+    } finally {
+      setPublicReportBusy(null);
+    }
+  }
+
   async function draftPulse(): Promise<void> {
     setPulseBusy(true);
     setPulseError('');
@@ -1138,16 +1191,71 @@ export function ResearchView({
             </div>
             <div className="research-pulse-actions">
               <span>{pulse.scopeLabel}</span>
-              <button
-                type="button"
-                className="primary-button"
-                disabled={!pulse.canDraft || pulseBusy}
-                onClick={() => void draftPulse()}
-              >
-                {pulseBusy ? <LoaderCircle className="spin" size={15} /> : null}
-                Draft pulse
-              </button>
+              <div className="research-pulse-action-buttons">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!pulse.canDraft || publicReportBusy !== null}
+                  onClick={() => void publishPulse()}
+                >
+                  {publicReportBusy === 'publish' ? (
+                    <LoaderCircle className="spin" size={15} />
+                  ) : null}
+                  Publish report
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={!pulse.canDraft || pulseBusy}
+                  onClick={() => void draftPulse()}
+                >
+                  {pulseBusy ? <LoaderCircle className="spin" size={15} /> : null}
+                  Draft pulse
+                </button>
+              </div>
             </div>
+            {publicReports.length > 0 ? (
+              <div className="research-public-reports">
+                <strong>Public reports</strong>
+                {publicReports.slice(0, 3).map((report) => (
+                  <div key={report.id} className="research-public-report-row">
+                    <div>
+                      <span>{report.title}</span>
+                      <small>
+                        {report.status === 'published' ? 'Public' : 'Unpublished'} ·{' '}
+                        {new Date(report.publishedAt).toLocaleDateString()}
+                      </small>
+                    </div>
+                    <div>
+                      {report.status === 'published' ? (
+                        <a
+                          className="secondary-button"
+                          href={`/signals/${encodeURIComponent(report.slug)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <ExternalLink size={14} />
+                          View
+                        </a>
+                      ) : null}
+                      {report.status === 'published' ? (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={publicReportBusy !== null}
+                          onClick={() => void unpublishReport(report)}
+                        >
+                          {publicReportBusy === report.id ? (
+                            <LoaderCircle className="spin" size={14} />
+                          ) : null}
+                          Unpublish
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
             {!pulse.canDraft && pulse.draftBlocker ? (
               <p className="research-pulse-blocker">{pulse.draftBlocker}</p>
             ) : null}

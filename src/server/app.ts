@@ -119,6 +119,12 @@ import { buildCompanyChangeOpportunities } from './content/opportunity-builder.j
 import { listContentOpportunities, setContentOpportunityStatus } from './content/opportunities.js';
 import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
 import { contentPerformanceReport } from './content/performance.js';
+import {
+  PublicReportError,
+  listPublicContentReports,
+  publishMarketPulseReport,
+  unpublishContentReport
+} from './content/public-reports.js';
 import { contentDraftStrategy } from './content/strategy.js';
 import { compileAccountMarketPulse, materializeAccountMarketPulse } from './content/pulse.js';
 import { listMarketPulseSchedules, upsertMarketPulseSchedule } from './content/pulse-schedule.js';
@@ -2804,6 +2810,63 @@ export function createApp(db: Db) {
       );
       res.setHeader('Cache-Control', 'no-store');
       res.json({ schedule });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/content/public-reports', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ reports: await listPublicContentReports(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/content/public-reports/market-pulse', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          days: z
+            .number()
+            .int()
+            .refine((value) => value === 7 || value === 30)
+            .optional(),
+          tag: z.string().trim().min(1).max(120).nullable().optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const report = await publishMarketPulseReport(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          days: (input.days ?? 7) as 7 | 30,
+          tag: input.tag ?? null,
+          actorUserId: req.auth!.userId
+        },
+        new Date()
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(201).json({ report });
+    } catch (error) {
+      if (error instanceof PublicReportError)
+        return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  app.post('/api/content/public-reports/:id/unpublish', async (req: AuthedRequest, res, next) => {
+    try {
+      const report = await unpublishContentReport(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.id),
+        new Date()
+      );
+      if (!report) return res.status(404).json({ error: 'Public report not found' });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ report });
     } catch (error) {
       next(error);
     }

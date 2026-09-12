@@ -1,0 +1,145 @@
+:root {
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  color: #141414;
+  background: #f7f7f5;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+.signal-report {
+  width: min(960px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 64px;
+}
+.signal-report nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 8px 0 28px;
+  border-bottom: 1px solid #ddd;
+}
+.signal-report nav a {
+  color: inherit;
+  font-weight: 700;
+  text-decoration: none;
+}
+.signal-report nav span,
+.signal-meta,
+.signal-kicker {
+  color: #686868;
+  font-size: 14px;
+}
+.signal-report header {
+  padding: 54px 0 40px;
+}
+.signal-report h1 {
+  font-size: clamp(36px, 6vw, 66px);
+  line-height: 1;
+  letter-spacing: -0.045em;
+  max-width: 850px;
+  margin: 8px 0 18px;
+}
+.signal-deck {
+  font-size: 20px;
+  line-height: 1.5;
+  max-width: 760px;
+  color: #424242;
+}
+.signal-pattern,
+.signal-method,
+.signal-cta {
+  border-top: 1px solid #d9d9d6;
+  padding: 30px 0;
+}
+.signal-pattern-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: baseline;
+}
+.signal-pattern-head h2,
+.signal-method h2 {
+  margin: 0;
+  font-size: 26px;
+  letter-spacing: -0.025em;
+}
+.signal-pattern-head p {
+  color: #686868;
+}
+.signal-evidence {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+.signal-evidence article {
+  background: white;
+  border: 1px solid #dededb;
+  border-radius: 4px;
+  padding: 18px;
+}
+.signal-evidence h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+.signal-evidence p {
+  line-height: 1.45;
+}
+.signal-evidence a {
+  color: inherit;
+}
+.signal-method ul {
+  padding-left: 20px;
+  line-height: 1.6;
+}
+.signal-cta {
+  display: flex;
+  justify-content: space-between;
+  gap: 30px;
+  align-items: center;
+  margin-top: 18px;
+}
+.signal-cta p {
+  max-width: 680px;
+  line-height: 1.55;
+}
+.signal-cta a {
+  display: inline-flex;
+  white-space: nowrap;
+  background: #151515;
+  color: white;
+  text-decoration: none;
+  padding: 11px 15px;
+  border-radius: 3px;
+  font-weight: 650;
+}
+@media (max-width: 700px) {
+  .signal-report {
+    width: min(100% - 22px, 960px);
+  }
+  .signal-report header {
+    padding: 38px 0 30px;
+  }
+  .signal-evidence {
+    grid-template-columns: 1fr;
+  }
+  .signal-pattern-head,
+  .signal-cta {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .signal-report h1 {
+    font-size: 42px;
+  }
+}

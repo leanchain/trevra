@@ -13482,6 +13482,62 @@ button:disabled {
   justify-content: space-between;
   gap: 10px;
 }
+.research-pulse-action-buttons,
+.research-public-report-row > div:last-child {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.research-public-reports {
+  display: grid;
+  gap: 7px;
+  padding-top: 10px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.research-public-reports > strong {
+  font-size: var(--t-text-xs);
+}
+.research-public-report-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+}
+.research-public-report-row > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.research-public-report-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-text-xs);
+}
+.research-public-report-row small {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+}
+.research-public-report-row a.secondary-button {
+  text-decoration: none;
+}
+@media (max-width: 700px) {
+  .research-pulse-actions,
+  .research-public-report-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .research-pulse-action-buttons,
+  .research-public-report-row > div:last-child {
+    width: 100%;
+  }
+  .research-pulse-action-buttons > *,
+  .research-public-report-row > div:last-child > * {
+    flex: 1;
+    justify-content: center;
+  }
+}
 .research-pulse-blocker {
   margin: -4px 0 0;
 }
