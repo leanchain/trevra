@@ -173,6 +173,46 @@ describe('prepareStoryLinkedInDraft', () => {
     expect(counts).toEqual({ assets: 1, posts: 1 });
   });
 
+  it('creates a new draft revision when the source evidence changes in place', async () => {
+    const opportunity = await story();
+    const first = await prepareStoryLinkedInDraft(
+      db,
+      { workspaceId: WORKSPACE, opportunityId: opportunity.id },
+      NOW
+    );
+    const refreshedEvidence = opportunity.evidence.map((item) =>
+      item.sourceId === 'sig_hiring'
+        ? {
+            ...item,
+            detail: 'Acme added six platform roles.',
+            observedAt: '2026-09-12T12:10:00.000Z'
+          }
+        : item
+    );
+    await db
+      .prepare(
+        'UPDATE content_opportunities SET evidence_json=?::jsonb,updated_at=? WHERE workspace_id=? AND id=?'
+      )
+      .run(
+        JSON.stringify(refreshedEvidence),
+        '2026-09-12T12:11:00.000Z',
+        WORKSPACE,
+        opportunity.id
+      );
+
+    const second = await prepareStoryLinkedInDraft(
+      db,
+      { workspaceId: WORKSPACE, opportunityId: opportunity.id },
+      new Date('2026-09-12T12:12:00.000Z')
+    );
+    expect(second.reused).toBe(false);
+    expect(second.post.id).not.toBe(first.post.id);
+    expect(second.asset.id).not.toBe(first.asset.id);
+    expect(second.asset.generation.storyRevision).not.toBe(first.asset.generation.storyRevision);
+    expect(renderPostBody(first.post.blocks)).toContain('Acme added five platform roles.');
+    expect(renderPostBody(second.post.blocks)).toContain('Acme added six platform roles.');
+  });
+
   it('creates a distinct draft for a distinct LinkedIn seat without mixing provenance', async () => {
     const opportunity = await story();
     const owner = await prepareStoryLinkedInDraft(

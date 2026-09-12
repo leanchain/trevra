@@ -13591,6 +13591,38 @@ button:disabled {
   display: grid;
   gap: 10px;
 }
+.research-proven-format {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--t-surface-2);
+}
+.research-proven-format > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+.research-proven-format > div:first-child span,
+.research-proven-format small {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+}
+.research-proven-format-proof {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.research-proven-format-proof span {
+  padding: 3px 6px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--panel);
+  font-size: var(--t-text-chip);
+}
 .research-story-card {
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: start;
@@ -13687,7 +13719,11 @@ button:disabled {
   .research-story-actions {
     grid-column: 1 / -1;
     flex-direction: row;
+    flex-wrap: wrap;
     justify-content: flex-end;
+  }
+  .research-story-actions button {
+    flex: 1 1 150px;
   }
   .research-story-evidence > a {
     grid-template-columns: 1fr;

@@ -14,17 +14,20 @@ import type { ConnectionSummary, SkillRun } from '../../shared/types';
 import type { ContentOpportunity } from '../../server/content/types';
 import type { ContentPerformanceReport } from '../../server/content/performance';
 import type { ContentDraftStrategy } from '../../server/content/strategy';
+import type { ContentFormatTemplate } from '../../server/content/format-templates';
 import type { MarketPulse, MarketPulseDays } from '../../server/content/pulse';
 import type { AccountMomentumIndex } from '../../server/content/index';
 import type { MarketPulseSchedule } from '../../server/content/pulse-schedule';
 import type { PublicContentReport } from '../../server/content/public-reports';
 import {
+  cloneContentOpportunityFormat,
   createWatch,
   draftContentOpportunityEvidenceCard,
   draftContentOpportunityLinkedIn,
   draftMarketPulse,
   draftMentionReply,
   getContentDraftStrategies,
+  getContentFormatTemplates,
   getContentOpportunities,
   getContentPerformance,
   getMarketIndex,
@@ -528,6 +531,7 @@ export function ResearchView({
   const [storiesError, setStoriesError] = useState('');
   const [performance, setPerformance] = useState<ContentPerformanceReport | null>(null);
   const [draftStrategies, setDraftStrategies] = useState<Record<string, ContentDraftStrategy>>({});
+  const [formatTemplates, setFormatTemplates] = useState<ContentFormatTemplate[]>([]);
   const [performanceLoaded, setPerformanceLoaded] = useState(false);
   const [performanceError, setPerformanceError] = useState('');
   const [storyBusy, setStoryBusy] = useState<string | null>(null);
@@ -586,12 +590,14 @@ export function ResearchView({
     let cancelled = false;
     Promise.all([
       getContentOpportunities({ status: 'ready', limit: 20 }),
-      getContentDraftStrategies(20)
+      getContentDraftStrategies(20),
+      getContentFormatTemplates()
     ])
-      .then(([rows, strategies]) => {
+      .then(([rows, strategies, templates]) => {
         if (cancelled) return;
         setStories(rows);
         setDraftStrategies(strategies);
+        setFormatTemplates(templates);
         setStoriesError('');
         setStoriesLoaded(true);
       })
@@ -599,6 +605,7 @@ export function ResearchView({
         if (cancelled) return;
         setStories([]);
         setDraftStrategies({});
+        setFormatTemplates([]);
         setStoriesError(error instanceof Error ? error.message : 'Could not load market stories.');
         setStoriesLoaded(true);
       });
@@ -932,7 +939,12 @@ export function ResearchView({
     try {
       const rows = await refreshContentOpportunities();
       setStories(rows);
-      setDraftStrategies(await getContentDraftStrategies(20));
+      const [strategies, templates] = await Promise.all([
+        getContentDraftStrategies(20),
+        getContentFormatTemplates()
+      ]);
+      setDraftStrategies(strategies);
+      setFormatTemplates(templates);
     } catch (error) {
       setStoriesError(error instanceof Error ? error.message : 'Could not refresh market stories.');
     } finally {
@@ -1050,6 +1062,33 @@ export function ResearchView({
     }
   }
 
+  async function cloneStoryWithFormat(
+    story: ContentOpportunity,
+    template: ContentFormatTemplate
+  ): Promise<void> {
+    setStoryBusy(story.id);
+    setStoriesError('');
+    try {
+      const result = await cloneContentOpportunityFormat(
+        story.id,
+        template.id,
+        seatKey || undefined
+      );
+      setToast(
+        result.reused
+          ? 'Opened the existing proven-format draft.'
+          : 'New draft created from your proven structure and current evidence.'
+      );
+      onNavigate(`/outreach/posts?draft=${encodeURIComponent(result.post.id)}`);
+    } catch (error) {
+      setStoriesError(
+        error instanceof Error ? error.message : 'Could not apply this proven format.'
+      );
+    } finally {
+      setStoryBusy(null);
+    }
+  }
+
   async function draftStoryWithCard(story: ContentOpportunity): Promise<void> {
     setStoryBusy(story.id);
     setStoriesError('');
@@ -1098,6 +1137,7 @@ export function ResearchView({
       (entry): entry is { run: SkillRun; brief: ResearchBriefOutput } => entry.brief !== null
     );
 
+  const recommendedFormat = formatTemplates.find((template) => template.recommended) ?? null;
   const showBriefs = platform === 'all' || platform === 'linkedin';
   const showRedditCorpus = platform === 'all' || platform === 'reddit';
   const selectedWatchRow = watches.find((watch) => watch.id === selectedWatch) ?? null;
@@ -1373,6 +1413,28 @@ export function ResearchView({
           </button>
         </div>
         {storiesError && <div className="error-banner">{storiesError}</div>}
+        {recommendedFormat ? (
+          <div className="research-proven-format">
+            <div>
+              <strong>Proven format</strong>
+              <span>{recommendedFormat.name}</span>
+            </div>
+            <div className="research-proven-format-proof">
+              <span>n={recommendedFormat.performance.sampleSize} published</span>
+              <span>{recommendedFormat.performance.qualifiedDemand} qualified</span>
+              <span>{recommendedFormat.performance.verifiedReplies} replies</span>
+              <span>{recommendedFormat.performance.opportunities} opportunities</span>
+              <span>{recommendedFormat.performance.won} won</span>
+              {recommendedFormat.performance.medianImpressions !== null ? (
+                <span>{recommendedFormat.performance.medianImpressions} median impressions</span>
+              ) : null}
+            </div>
+            <small>
+              Structure only. Trevra regenerates every claim and any evidence card from the current
+              story; reference wording is never reused.
+            </small>
+          </div>
+        ) : null}
         {!storiesLoaded ? (
           <div className="empty-state">
             <LoaderCircle className="spin" size={24} />
@@ -1434,6 +1496,16 @@ export function ResearchView({
                     >
                       Dismiss
                     </button>
+                    {recommendedFormat ? (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={storyBusy === story.id}
+                        onClick={() => void cloneStoryWithFormat(story, recommendedFormat)}
+                      >
+                        Use proven format
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="secondary-button"

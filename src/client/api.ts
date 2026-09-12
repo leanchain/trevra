@@ -54,6 +54,7 @@ import type { ContentOpportunity } from '../server/content/types';
 import type { ContentDraftStrategy } from '../server/content/strategy';
 import type { MarketPulse, MarketPulseDays } from '../server/content/pulse';
 import type { AccountMomentumIndex } from '../server/content/index';
+import type { ContentFormatTemplate } from '../server/content/format-templates';
 import type { MarketPulseCadence, MarketPulseSchedule } from '../server/content/pulse-schedule';
 import type { ContentPerformanceReport } from '../server/content/performance';
 import type { PublicContentReport } from '../server/content/public-reports';
@@ -305,6 +306,29 @@ export async function updateContentOpportunityStatus(
     { method: 'PATCH', body: JSON.stringify({ status }) }
   );
   return result.opportunity;
+}
+
+export async function getContentFormatTemplates(): Promise<ContentFormatTemplate[]> {
+  const result = await request<{ templates: ContentFormatTemplate[] }>(
+    '/api/content/format-templates'
+  );
+  return result.templates;
+}
+
+export async function cloneContentOpportunityFormat(
+  opportunityId: string,
+  templateId: string,
+  seatKey?: string
+): Promise<{
+  template: ContentFormatTemplate;
+  asset: import('../server/content/types').ContentAsset;
+  post: LinkedInPost;
+  reused: boolean;
+}> {
+  return request(`/api/content/opportunities/${encodeURIComponent(opportunityId)}/clone-format`, {
+    method: 'POST',
+    body: JSON.stringify({ templateId, seatKey })
+  });
 }
 
 export async function draftContentOpportunityEvidenceCard(

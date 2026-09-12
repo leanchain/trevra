@@ -857,25 +857,25 @@ Index components must be explicit and sourceable. If the score cannot be explain
 
 Build this after Trevra has its own performance data.
 
-Input can be pasted text / screenshot metadata / manually supplied example structure, subject to source constraints.
+**Shipped for the founder's own published LinkedIn history:** Trevra now groups published posts by reusable structure, requires at least 3 examples before calling a recipe recommended, ranks recipes by commercial outcomes before reach, and exposes the sample size and outcome trail before the founder applies one. The reusable template stores structure + provenance only; reference wording is never persisted in the recipe.
 
 Extract **structure**, not copied wording:
 
 - hook type;
 - sentence rhythm;
-- section ordering;
-- information density;
-- number of examples;
+- section/paragraph density;
+- bullet / numbered / narrative shape;
+- number of evidence examples;
 - CTA type;
-- visual card layout.
+- visual evidence-card layout.
 
-Save as a `content_format_template` with source/provenance.
+`content_format_templates` stores the recipe, source-post provenance and measured performance. A cloned draft gets a distinct idempotency key, regenerates every claim from the current story evidence, and recreates a fresh evidence card when the learned visual structure used one. Story/card idempotency is revision-aware, so refreshed evidence creates new auditable proof instead of reopening stale copy or imagery.
 
-A template may influence the renderer/drafter but never import unsupported claims from the reference post.
+Manual external inputs (pasted text, screenshot metadata or manually supplied example structure) remain future work and must obey the same structure-only/source constraints before being enabled.
+
+**Gate:** the founder can apply a sufficiently-sampled proven structure to a new evidence-backed story without copying the reference wording or reusing its factual claims. **Met for own published LinkedIn history.**
 
 This gives Trevra the useful part of DistribBuddy's "clone a winner" without becoming a plagiarism machine.
-
----
 
 # Phase 13 — additional channels
 

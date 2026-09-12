@@ -4,7 +4,13 @@ import { createPost, type LinkedInPost } from '../linkedin/posts.js';
 import { createContentAsset, getContentAsset } from './assets.js';
 import { getContentOpportunity } from './opportunities.js';
 import { contentPerformanceReport } from './performance.js';
+import { contentOpportunityRevision } from './revision.js';
 import { contentDraftStrategy, type ContentDraftStrategy } from './strategy.js';
+import {
+  getContentFormatTemplate,
+  type ContentFormatStructure,
+  type ContentFormatTemplate
+} from './format-templates.js';
 import type {
   ClaimMapEntry,
   ContentAngle,
@@ -14,7 +20,6 @@ import type {
 } from './types.js';
 
 const RENDERER_VERSION = 'linkedin-evidence-v2';
-
 export class StoryDraftError extends Error {
   constructor(
     message: string,
@@ -24,10 +29,15 @@ export class StoryDraftError extends Error {
   }
 }
 
-function generationKey(opportunityId: string, seatKey: string): string {
-  return `story:${opportunityId}:linkedin:${seatKey}:${RENDERER_VERSION}`;
+function generationKey(
+  opportunityId: string,
+  seatKey: string,
+  revision: string,
+  formatTemplateId?: string | null
+): string {
+  const format = formatTemplateId ? `:format:${formatTemplateId}` : '';
+  return `story:${opportunityId}:linkedin:${seatKey}:${RENDERER_VERSION}:rev:${revision}${format}`;
 }
-
 function textBlocks(body: string): PostBlock[] {
   return body.split(/\n\n+/).map((paragraph) => ({
     runs: [{ type: 'text' as const, text: paragraph }]
@@ -47,10 +57,50 @@ function hookFamily(angle: ContentAngle): string {
   }
 }
 
+function clonedFormatCopy(
+  input: ContentOpportunity,
+  structure: ContentFormatStructure
+): { body: string; claimMap: ClaimMapEntry[] } {
+  const evidence = input.evidence.slice(0, Math.max(1, structure.evidenceSlots));
+  if (evidence.length === 0) throw new StoryDraftError('This story has no source evidence.');
+  const hook =
+    structure.hookType === 'question'
+      ? 'What do these changes add up to?'
+      : structure.hookType === 'numbered'
+        ? `${evidence.length} changes worth watching`
+        : input.title;
+  const facts = evidence.map((item, index) =>
+    structure.listStyle === 'numbered'
+      ? `${index + 1}. ${item.detail}`
+      : structure.listStyle === 'bullet'
+        ? `• ${item.detail}`
+        : item.detail
+  );
+  const closing =
+    structure.ctaType === 'question'
+      ? 'What are you seeing in this market?'
+      : structure.ctaType === 'action'
+        ? 'Check the underlying evidence while the changes are still current.'
+        : null;
+  const bodyParts =
+    structure.paragraphCountBand === 'compact'
+      ? [hook, ...facts, closing]
+      : [hook, input.thesis, ...facts, closing];
+  const body = bodyParts.filter((part): part is string => Boolean(part)).join('\n\n');
+  const claimMap: ClaimMapEntry[] = [
+    ...(hook === input.title ? [{ claim: input.title, evidence }] : []),
+    ...(body.includes(input.thesis) ? [{ claim: input.thesis, evidence }] : []),
+    ...evidence.map((item) => ({ claim: item.detail, evidence: [item] }))
+  ];
+  return { body, claimMap };
+}
+
 function deterministicCopy(
   input: ContentOpportunity,
-  strategy: ContentDraftStrategy
+  strategy: ContentDraftStrategy,
+  formatTemplate: ContentFormatTemplate | null = null
 ): { body: string; claimMap: ClaimMapEntry[] } {
+  if (formatTemplate) return clonedFormatCopy(input, formatTemplate.structure);
   const evidence = input.evidence.slice(0, 4);
   if (evidence.length === 0) throw new StoryDraftError('This story has no source evidence.');
   let body: string;
@@ -116,12 +166,19 @@ export async function prepareStoryLinkedInDraft(
     opportunityId: string;
     seatKey?: string;
     actorUserId?: string | null;
+    formatTemplateId?: string | null;
   },
   now: Date = new Date()
 ): Promise<PreparedStoryLinkedInDraft> {
   const seatKey = input.seatKey?.trim() || 'owner';
-  const key = generationKey(input.opportunityId, seatKey);
   return db.transaction(async (tx) => {
+    const opportunity = await getContentOpportunity(tx, input.workspaceId, input.opportunityId);
+    if (!opportunity) throw new StoryDraftError('Content opportunity not found.', 404);
+    if (opportunity.status === 'dismissed' || opportunity.status === 'expired')
+      throw new StoryDraftError('This story is no longer available for drafting.', 409);
+
+    const revision = contentOpportunityRevision(opportunity);
+    const key = generationKey(input.opportunityId, seatKey, revision, input.formatTemplateId);
     await tx
       .prepare('SELECT pg_advisory_xact_lock(hashtextextended(?,0)) AS locked')
       .get(`${input.workspaceId}\u001f${key}`);
@@ -150,14 +207,14 @@ export async function prepareStoryLinkedInDraft(
       return { asset, post, reused: true };
     }
 
-    const opportunity = await getContentOpportunity(tx, input.workspaceId, input.opportunityId);
-    if (!opportunity) throw new StoryDraftError('Content opportunity not found.', 404);
-    if (opportunity.status === 'dismissed' || opportunity.status === 'expired')
-      throw new StoryDraftError('This story is no longer available for drafting.', 409);
-
     const performance = await contentPerformanceReport(tx, input.workspaceId, 200);
     const strategy = contentDraftStrategy(opportunity, performance);
-    const rendered = deterministicCopy(opportunity, strategy);
+    const formatTemplate = input.formatTemplateId
+      ? await getContentFormatTemplate(tx, input.workspaceId, input.formatTemplateId)
+      : null;
+    if (input.formatTemplateId && !formatTemplate)
+      throw new StoryDraftError('Content format template not found.', 404);
+    const rendered = deterministicCopy(opportunity, strategy, formatTemplate);
     const asset = await createContentAsset(
       tx,
       {
@@ -170,8 +227,17 @@ export async function prepareStoryLinkedInDraft(
         claimMap: rendered.claimMap,
         generation: {
           idempotencyKey: key,
+          storyRevision: revision,
           renderer: RENDERER_VERSION,
-          mode: 'deterministic-evidence',
+          mode: formatTemplate ? 'deterministic-format-clone' : 'deterministic-evidence',
+          formatTemplate: formatTemplate
+            ? {
+                id: formatTemplate.id,
+                fingerprint: formatTemplate.fingerprint,
+                structure: formatTemplate.structure,
+                sampleSize: formatTemplate.performance.sampleSize
+              }
+            : null,
           features: {
             opportunityKind: opportunity.kind,
             format: 'text_post',
@@ -210,9 +276,11 @@ export async function prepareStoryLinkedInDraft(
         contentAssetId: asset.id,
         publicationMeta: {
           contentOpportunityId: opportunity.id,
+          storyRevision: revision,
           renderer: RENDERER_VERSION,
           contentAngle: strategy.angle,
-          strategySource: strategy.source
+          strategySource: strategy.source,
+          formatTemplateId: formatTemplate?.id ?? null
         }
       },
       now

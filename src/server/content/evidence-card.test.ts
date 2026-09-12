@@ -110,6 +110,46 @@ describe('evidence cards', () => {
     expect(images[0]?.buffer.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
   });
 
+  it('creates a new card and draft revision when the evidence snapshot changes', async () => {
+    const opportunity = await story();
+    const first = await prepareStoryEvidenceCard(
+      db,
+      { workspaceId: WORKSPACE, opportunityId: opportunity.id, aspect: 'portrait' },
+      NOW
+    );
+    const refreshedEvidence = opportunity.evidence.map((item) =>
+      item.sourceId === 'card_hiring'
+        ? {
+            ...item,
+            detail: 'Acme added six platform engineering roles.',
+            observedAt: '2026-09-12T12:10:00.000Z'
+          }
+        : item
+    );
+    await db
+      .prepare(
+        'UPDATE content_opportunities SET evidence_json=?::jsonb,updated_at=? WHERE workspace_id=? AND id=?'
+      )
+      .run(
+        JSON.stringify(refreshedEvidence),
+        '2026-09-12T12:11:00.000Z',
+        WORKSPACE,
+        opportunity.id
+      );
+
+    const second = await prepareStoryEvidenceCard(
+      db,
+      { workspaceId: WORKSPACE, opportunityId: opportunity.id, aspect: 'portrait' },
+      new Date('2026-09-12T12:12:00.000Z')
+    );
+    expect(second.reused).toBe(false);
+    expect(second.post.id).not.toBe(first.post.id);
+    expect(second.asset.id).not.toBe(first.asset.id);
+    expect(second.asset.generation.storyRevision).not.toBe(first.asset.generation.storyRevision);
+    const assets = await listContentAssets(db, WORKSPACE, opportunity.id, 20);
+    expect(assets.filter((asset) => asset.format === 'evidence_card')).toHaveLength(2);
+  });
+
   it('uses a distinct card asset for a distinct aspect while keeping both attached to the same draft', async () => {
     const opportunity = await story();
     const portrait = await prepareStoryEvidenceCard(

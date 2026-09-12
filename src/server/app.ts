@@ -119,6 +119,8 @@ import { buildCompanyChangeOpportunities } from './content/opportunity-builder.j
 import { listContentOpportunities, setContentOpportunityStatus } from './content/opportunities.js';
 import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
 import { EvidenceCardError, prepareStoryEvidenceCard } from './content/evidence-card.js';
+import { prepareStoryFormatClone } from './content/format-clone.js';
+import { listContentFormatTemplates } from './content/format-templates.js';
 import { contentPerformanceReport } from './content/performance.js';
 import {
   PublicReportError,
@@ -2951,6 +2953,45 @@ export function createApp(db: Db) {
         }))
       });
     } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/content/format-templates', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ templates: await listContentFormatTemplates(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post('/api/content/opportunities/:id/clone-format', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          templateId: z.string().trim().min(1).max(200),
+          seatKey: z.string().trim().min(1).max(120).optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const result = await prepareStoryFormatClone(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          opportunityId: String(req.params.id),
+          templateId: input.templateId,
+          seatKey: input.seatKey,
+          actorUserId: req.auth!.userId
+        },
+        new Date()
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(result.reused ? 200 : 201).json(result);
+    } catch (error) {
+      if (error instanceof StoryDraftError)
+        return res.status(error.status).json({ error: error.message });
+      if (error instanceof EvidenceCardError)
+        return res.status(error.status).json({ error: error.message });
       next(error);
     }
   });

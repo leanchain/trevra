@@ -523,6 +523,81 @@ describe('content opportunity API', () => {
     expect(cardReplay.body.reused).toBe(true);
     expect(cardReplay.body.post.media).toHaveLength(1);
 
+    for (const [workspaceId, templateId] of [
+      [WORKSPACE, 'fmt_api_own'],
+      [OTHER, 'fmt_api_foreign']
+    ] as const) {
+      await db
+        .prepare(
+          `INSERT INTO content_format_templates
+           (id,workspace_id,status,name,source_kind,source_ref,structure_json,provenance_json,performance_json,fingerprint,created_at,updated_at)
+           VALUES (?,?,'active',?,'own_published_post',?,?::jsonb,?::jsonb,?::jsonb,?,?,?)`
+        )
+        .run(
+          templateId,
+          workspaceId,
+          'statement · bullet list · short',
+          `${templateId}_post`,
+          JSON.stringify({
+            version: 1,
+            hookType: 'statement',
+            listStyle: 'bullet',
+            rhythm: 'short',
+            ctaType: 'none',
+            paragraphCountBand: 'compact',
+            evidenceSlots: 1,
+            visualLayout: 'none'
+          }),
+          JSON.stringify({
+            sourcePostIds: [`${templateId}_post_a`, `${templateId}_post_b`, `${templateId}_post_c`],
+            extractedAt: NOW.toISOString()
+          }),
+          JSON.stringify({
+            sampleSize: 3,
+            metricSampleSize: 3,
+            medianImpressions: 400,
+            qualifiedDemand: 1,
+            verifiedReplies: 1,
+            opportunities: 0,
+            won: 0
+          }),
+          `format-api-${templateId}`,
+          NOW.toISOString(),
+          NOW.toISOString()
+        );
+    }
+
+    const templates = await authed('get', '/api/content/format-templates').expect(200);
+    expect(templates.body.templates).toEqual([
+      expect.objectContaining({ id: 'fmt_api_own', workspaceId: WORKSPACE, recommended: true })
+    ]);
+
+    const clone = await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(story.id)}/clone-format`
+    )
+      .send({ templateId: 'fmt_api_own', seatKey: 'owner' })
+      .expect(201);
+    expect(clone.body).toMatchObject({
+      reused: false,
+      template: { id: 'fmt_api_own', workspaceId: WORKSPACE },
+      post: { status: 'draft', scheduledAt: null }
+    });
+    expect(clone.body.post.id).not.toBe(first.body.post.id);
+
+    const cloneReplay = await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(story.id)}/clone-format`
+    )
+      .send({ templateId: 'fmt_api_own', seatKey: 'owner' })
+      .expect(200);
+    expect(cloneReplay.body.reused).toBe(true);
+    expect(cloneReplay.body.post.id).toBe(clone.body.post.id);
+
+    await authed('post', `/api/content/opportunities/${encodeURIComponent(story.id)}/clone-format`)
+      .send({ templateId: 'fmt_api_foreign' })
+      .expect(404);
+
     const foreign = await upsertContentOpportunity(
       db,
       {
@@ -558,6 +633,12 @@ describe('content opportunity API', () => {
       `/api/content/opportunities/${encodeURIComponent(foreign.id)}/evidence-card`
     )
       .send({})
+      .expect(404);
+    await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(foreign.id)}/clone-format`
+    )
+      .send({ templateId: 'fmt_api_own' })
       .expect(404);
   });
 });

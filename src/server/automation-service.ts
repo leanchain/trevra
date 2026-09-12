@@ -5,6 +5,7 @@ import { rejectedSignalShapes } from './accounts/store.js';
 import { runRecommendationEngine } from './recommendation-engine.js';
 import { promoteVerifiedDemandRepliesToOpportunities } from './demand/opportunities.js';
 import { buildCompanyChangeOpportunities } from './content/opportunity-builder.js';
+import { syncOwnPublishedFormatTemplates } from './content/format-templates.js';
 import { runDueMarketPulseSchedules } from './content/pulse-schedule.js';
 
 /**
@@ -94,6 +95,15 @@ export async function runAutomationCycle(db: Db, workspaceId: string): Promise<A
     result.failed += 1;
   }
 
+  // Proven formats are a network-free read model over this workspace's own
+  // published history. Refresh them here so merely opening Research never
+  // mutates state and a format recommendation always carries a real sample size.
+  try {
+    await syncOwnPublishedFormatTemplates(db, workspaceId, new Date());
+  } catch {
+    result.failed += 1;
+  }
+
   // Opt-in Market Pulse schedules are DB-only preparation. They reuse this
   // workspace lease and create ordinary LinkedIn drafts; nothing is published
   // or externally executed from the automation cycle.
@@ -104,7 +114,6 @@ export async function runAutomationCycle(db: Db, workspaceId: string): Promise<A
   } catch {
     result.failed += 1;
   }
-
   return result;
 }
 

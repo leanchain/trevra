@@ -3,6 +3,7 @@ import type { Db } from '../db.js';
 import { ensurePostImage } from '../linkedin/posts.js';
 import { createContentAsset, getContentAsset } from './assets.js';
 import { getContentOpportunity } from './opportunities.js';
+import { contentOpportunityRevision } from './revision.js';
 import { prepareStoryLinkedInDraft } from './story-draft.js';
 import type { ClaimMapEntry, ContentAsset, ContentOpportunity } from './types.js';
 
@@ -105,8 +106,8 @@ export async function renderEvidenceCardPng(
     .toBuffer();
 }
 
-function cardKey(opportunityId: string, aspect: EvidenceCardAspect): string {
-  return `evidence-card:${opportunityId}:${aspect}:${CARD_RENDERER_VERSION}`;
+function cardKey(opportunity: ContentOpportunity, aspect: EvidenceCardAspect): string {
+  return `evidence-card:${opportunity.id}:${aspect}:${CARD_RENDERER_VERSION}:rev:${contentOpportunityRevision(opportunity)}`;
 }
 
 async function ensureCardAsset(
@@ -116,7 +117,8 @@ async function ensureCardAsset(
   actorUserId: string | null,
   now: Date
 ): Promise<ContentAsset> {
-  const key = cardKey(opportunity.id, aspect);
+  const revision = contentOpportunityRevision(opportunity);
+  const key = cardKey(opportunity, aspect);
   return db.transaction(async (tx) => {
     await tx
       .prepare('SELECT pg_advisory_xact_lock(hashtextextended(?,0)) AS locked')
@@ -147,6 +149,7 @@ async function ensureCardAsset(
         claimMap,
         generation: {
           idempotencyKey: key,
+          storyRevision: revision,
           renderer: CARD_RENDERER_VERSION,
           aspect,
           dimensions: DIMENSIONS[aspect]
@@ -157,7 +160,6 @@ async function ensureCardAsset(
     );
   });
 }
-
 export async function prepareStoryEvidenceCard(
   db: Db,
   input: {
@@ -166,6 +168,7 @@ export async function prepareStoryEvidenceCard(
     seatKey?: string;
     aspect?: EvidenceCardAspect;
     actorUserId?: string | null;
+    formatTemplateId?: string | null;
   },
   now: Date = new Date()
 ): Promise<{
@@ -184,7 +187,8 @@ export async function prepareStoryEvidenceCard(
       workspaceId: input.workspaceId,
       opportunityId: opportunity.id,
       seatKey: input.seatKey,
-      actorUserId: input.actorUserId
+      actorUserId: input.actorUserId,
+      formatTemplateId: input.formatTemplateId
     },
     now
   );
