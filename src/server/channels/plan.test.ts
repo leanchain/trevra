@@ -46,6 +46,7 @@ describe('gtm.channel-plan', () => {
       'hashnode',
       'lobsters',
       'mastodon',
+      'medium',
       'reddit',
       'producthunt',
       'x',
@@ -64,7 +65,7 @@ describe('gtm.channel-plan', () => {
     expect(reasons).toContain(`devto: +${PLAN_WEIGHTS.readyToPost} draft is ready as written`);
     expect(reasons).toContain('github: +0.4 audience 2/3 (developers, open-source)');
     expect(reasons.at(-1)).toBe(
-      'order: devto > bluesky > github > hackernews > hashnode > lobsters > mastodon > reddit > producthunt > x > indiehackers > linkedin (fit desc, then key asc)'
+      'order: devto > bluesky > github > hackernews > hashnode > lobsters > mastodon > medium > reddit > producthunt > x > indiehackers > linkedin (fit desc, then key asc)'
     );
   });
 
@@ -88,7 +89,9 @@ describe('gtm.channel-plan', () => {
   });
 
   it('plans across enabled channels only, unless a channel is named', () => {
-    expect(planChannels(draft, AUDIENCE).ranked.map((entry) => entry.key)).not.toContain('instagram');
+    expect(planChannels(draft, AUDIENCE).ranked.map((entry) => entry.key)).not.toContain(
+      'instagram'
+    );
     const named = planChannels(draft, AUDIENCE, ['instagram', 'devto']);
     expect(named.ranked.map((entry) => entry.key).sort()).toEqual(['devto', 'instagram']);
   });
@@ -98,7 +101,9 @@ describe('gtm.channel-plan', () => {
     expect(plan.audience).toEqual([]);
     expect(plan.reasons[0]).toBe('audience: none given, so no channel earns an audience score');
     for (const entry of plan.ranked) expect(entry.matchedAudience).toEqual([]);
-    expect(plan.ranked.every((entry) => entry.fit <= PLAN_WEIGHTS.apiPublish + PLAN_WEIGHTS.readyToPost)).toBe(true);
+    expect(
+      plan.ranked.every((entry) => entry.fit <= PLAN_WEIGHTS.apiPublish + PLAN_WEIGHTS.readyToPost)
+    ).toBe(true);
   });
 
   it('normalises and de-duplicates audience tags before matching', () => {

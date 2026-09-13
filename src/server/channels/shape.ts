@@ -26,7 +26,8 @@ const URL_RE = /\bhttps?:\/\/[^\s<>()[\]]+/gi;
  */
 export function capChars(text: string, maxChars: number): { text: string; truncated: boolean } {
   if (text.length <= maxChars) return { text, truncated: false };
-  if (maxChars <= ELLIPSIS.length) return { text: ELLIPSIS.slice(0, Math.max(0, maxChars)), truncated: true };
+  if (maxChars <= ELLIPSIS.length)
+    return { text: ELLIPSIS.slice(0, Math.max(0, maxChars)), truncated: true };
 
   const budget = maxChars - ELLIPSIS.length;
   let kept = '';
@@ -62,7 +63,10 @@ export function containsUrl(text: string, url: string): boolean {
  * them at the platform's limit. `maxTags` undefined means the platform sets no
  * cap, so nothing is dropped.
  */
-export function capTags(tags: readonly string[], maxTags?: number): { tags: string[]; dropped: string[] } {
+export function capTags(
+  tags: readonly string[],
+  maxTags?: number
+): { tags: string[]; dropped: string[] } {
   const seen = new Set<string>();
   const clean: string[] = [];
   for (const raw of tags) {
@@ -113,8 +117,13 @@ export function shapePost(options: ShapeOptions): ChannelPost {
       );
     }
     title = capped.text;
+  } else if (constraints.titleAllowed) {
+    const uncapped = (options.title ?? draft.title).trim();
+    if (uncapped) title = uncapped;
   } else if (draft.title.trim()) {
-    warnings.push(`${channelKey} posts have no title field; the draft title was dropped from the post.`);
+    warnings.push(
+      `${channelKey} posts have no title field; the draft title was dropped from the post.`
+    );
   }
 
   let body = draft.body;
@@ -130,18 +139,27 @@ export function shapePost(options: ShapeOptions): ChannelPost {
       );
     }
     if (draft.url) {
-      warnings.push(`${channelKey} does not render clickable links; ${draft.url} was left out of the post.`);
+      warnings.push(
+        `${channelKey} does not render clickable links; ${draft.url} was left out of the post.`
+      );
     }
   } else if (draft.url && !containsUrl(body, draft.url)) {
     suffix = `\n\n${draft.url}`;
     if (suffix.length >= constraints.maxChars) {
-      warnings.push(`${draft.url} does not fit inside the ${constraints.maxChars}-character ${channelKey} limit; it was left out.`);
+      warnings.push(
+        `${draft.url} does not fit inside the ${constraints.maxChars}-character ${channelKey} limit; it was left out.`
+      );
       suffix = '';
     }
   }
 
-  if (constraints.linkPenalty && (suffix !== '' || (constraints.linksAllowed && URL_RE.test(body)))) {
-    warnings.push(`${channelKey} suppresses reach on posts carrying an outbound link; consider moving the link to a follow-up comment.`);
+  if (
+    constraints.linkPenalty &&
+    (suffix !== '' || (constraints.linksAllowed && URL_RE.test(body)))
+  ) {
+    warnings.push(
+      `${channelKey} suppresses reach on posts carrying an outbound link; consider moving the link to a follow-up comment.`
+    );
   }
   URL_RE.lastIndex = 0;
 
@@ -154,7 +172,9 @@ export function shapePost(options: ShapeOptions): ChannelPost {
   }
 
   if (constraints.mediaRequired) {
-    warnings.push(`${channelKey} rejects a post with no image or video; attach media before posting.`);
+    warnings.push(
+      `${channelKey} rejects a post with no image or video; attach media before posting.`
+    );
   }
 
   return {

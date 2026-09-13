@@ -70,7 +70,10 @@ describe('capTags', () => {
   });
 
   it('caps at the platform limit and reports what it dropped', () => {
-    expect(capTags(['one', 'two', 'three', 'four'], 2)).toEqual({ tags: ['one', 'two'], dropped: ['three', 'four'] });
+    expect(capTags(['one', 'two', 'three', 'four'], 2)).toEqual({
+      tags: ['one', 'two'],
+      dropped: ['three', 'four']
+    });
   });
 });
 
@@ -94,7 +97,11 @@ describe('shapePost', () => {
     const post = shapePost({
       channelKey: 'test',
       constraints,
-      draft: { title: 'Trevra', body: 'Out now at https://trevra.dev today.', url: 'https://trevra.dev' }
+      draft: {
+        title: 'Trevra',
+        body: 'Out now at https://trevra.dev today.',
+        url: 'https://trevra.dev'
+      }
     });
     expect(post.body.match(/https:\/\/trevra\.dev/g)).toHaveLength(1);
   });
@@ -107,6 +114,16 @@ describe('shapePost', () => {
     });
     expect(post.title).toBeUndefined();
     expect(post.warnings.some((warning) => warning.includes('no title field'))).toBe(true);
+  });
+
+  it('preserves an uncapped title when the channel has a title field with no documented ceiling', () => {
+    const post = shapePost({
+      channelKey: 'test',
+      constraints: { maxChars: 100, linksAllowed: true, titleAllowed: true },
+      draft: { title: 'A source-backed market story', body: 'Out now.' }
+    });
+    expect(post.title).toBe('A source-backed market story');
+    expect(post.warnings.some((warning) => warning.includes('no title field'))).toBe(false);
   });
 
   it('warns about the reach penalty only when a link is actually present', () => {
@@ -122,11 +139,18 @@ describe('shapePost', () => {
       draft: { title: '', body: 'Out now.' }
     });
     expect(withLink.warnings.some((warning) => warning.includes('suppresses reach'))).toBe(true);
-    expect(withoutLink.warnings.some((warning) => warning.includes('suppresses reach'))).toBe(false);
+    expect(withoutLink.warnings.some((warning) => warning.includes('suppresses reach'))).toBe(
+      false
+    );
   });
 
   it('is pure: the same draft always shapes to the same post', () => {
-    const draft = { title: 'Trevra 0.4 ships channel adapters', body: 'word '.repeat(40).trim(), url: 'https://trevra.dev', tags: ['a', 'b', 'c'] };
+    const draft = {
+      title: 'Trevra 0.4 ships channel adapters',
+      body: 'word '.repeat(40).trim(),
+      url: 'https://trevra.dev',
+      tags: ['a', 'b', 'c']
+    };
     const once = shapePost({ channelKey: 'test', constraints, draft });
     const twice = shapePost({ channelKey: 'test', constraints, draft });
     expect(twice).toEqual(once);

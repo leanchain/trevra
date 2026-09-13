@@ -892,20 +892,16 @@ For a provenance-linked saved story draft, Trevra:
 - exposes warnings, revision instructions and the platform submit URL when one exists;
 - never publishes from this reuse surface, even when the registry says the underlying platform has an API.
 
-This immediately makes the existing adapters useful to the new distribution loop without spreading channel `switch` statements through content code.
+**First genuinely new destination shipped:** Medium. The adapter preserves a real article title, supports long-form links, points the founder to Medium's web editor, and stays `prepare-only` because Medium no longer issues new API integration tokens or allows new API integrations.
 
 Still open as genuinely new destination work:
 
 - company LinkedIn pages;
 - newsletter-provider handoff/draft;
-- first-class blog/report publisher beyond the existing public Trevra report and dev.to/Hashnode shaping;
 - short-form carousel export;
 - external scheduler integrations;
 - provider-specific publish + metric collection, which must use the normal approval/external-write boundary rather than this copy-only surface.
 
-**Gate:** one evidence-backed Trevra story can be safely reshaped for the existing channel registry from the editor without losing provenance or creating an external write. **Met.**
-
-````text
 **Gate:** one evidence-backed Trevra story can be safely reshaped for the existing channel registry from the editor without losing provenance or creating an external write. **Met.**
 
 ---
@@ -915,6 +911,7 @@ Still open as genuinely new destination work:
 Suggested endpoints, exact naming can follow current route conventions:
 
 ```text
+GET    /api/content/opportunities
 POST   /api/content/opportunities/discover
 POST   /api/content/opportunities/:id/dismiss
 POST   /api/content/opportunities/:id/drafts
@@ -929,7 +926,11 @@ GET    /api/content/assets/:id/performance
 
 POST   /api/content/pulses
 POST   /api/content/reports/:id/publish      # later phase
-````
+```
+
+`render/linkedin` creates an ordinary `linkedin_posts` draft. It must not publish.
+
+---
 
 `render/linkedin` creates an ordinary `linkedin_posts` draft. It must not publish.
 

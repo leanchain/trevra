@@ -13,6 +13,7 @@ import { producthuntChannel } from './adapters/producthunt.js';
 import { indiehackersChannel } from './adapters/indiehackers.js';
 import { lobstersChannel } from './adapters/lobsters.js';
 import { instagramChannel } from './adapters/instagram.js';
+import { mediumChannel } from './adapters/medium.js';
 
 /**
  * Distribution-channel registry.
@@ -94,7 +95,8 @@ for (const channel of [
   producthuntChannel,
   indiehackersChannel,
   lobstersChannel,
-  instagramChannel
+  instagramChannel,
+  mediumChannel
 ]) {
   registerChannel(channel);
 }
@@ -111,21 +113,25 @@ for (const channel of [
 export async function seedChannels(db: Db, now: Date = new Date()): Promise<void> {
   const timestamp = now.toISOString();
   for (const channel of listChannels()) {
-    await db.prepare(`
+    await db
+      .prepare(
+        `
       INSERT INTO channels (key, name, enabled, automation_mode, config_json, created_at, updated_at)
       VALUES (?,?,?,?,?::jsonb,?,?)
       ON CONFLICT(key) DO UPDATE SET
         name=excluded.name,
         automation_mode=excluded.automation_mode,
         updated_at=excluded.updated_at
-    `).run(
-      channel.key,
-      channel.name,
-      channel.enabledByDefault,
-      channel.automation.mode,
-      JSON.stringify(channel.defaultConfig ?? {}),
-      timestamp,
-      timestamp
-    );
+    `
+      )
+      .run(
+        channel.key,
+        channel.name,
+        channel.enabledByDefault,
+        channel.automation.mode,
+        JSON.stringify(channel.defaultConfig ?? {}),
+        timestamp,
+        timestamp
+      );
   }
 }

@@ -4,6 +4,7 @@ import { instagramChannel } from './adapters/instagram.js';
 import { hackernewsChannel, SHOW_HN_PREFIX } from './adapters/hackernews.js';
 import { REDDIT_SUBREDDITS, redditChannel } from './adapters/reddit.js';
 import { linkedinChannel } from './adapters/linkedin.js';
+import { mediumChannel } from './adapters/medium.js';
 import type { ChannelAdapter } from './types.js';
 
 const ALL = listChannels();
@@ -11,10 +12,16 @@ const ALL = listChannels();
 /** A body of exactly `chars` characters made of real words, so word-boundary cutting has something to cut on. */
 function filler(chars: number): string {
   const word = 'distribution ';
-  return word.repeat(Math.ceil(chars / word.length)).slice(0, chars).trim();
+  return word
+    .repeat(Math.ceil(chars / word.length))
+    .slice(0, chars)
+    .trim();
 }
 
-const baseDraft = { title: 'Trevra 0.4 ships distribution channels', body: 'Trevra 0.4 ships distribution channels.' };
+const baseDraft = {
+  title: 'Trevra 0.4 ships distribution channels',
+  body: 'Trevra 0.4 ships distribution channels.'
+};
 
 describe('the registry is populated', () => {
   it('registers every curated channel', () => {
@@ -29,6 +36,7 @@ describe('the registry is populated', () => {
       'linkedin',
       'lobsters',
       'mastodon',
+      'medium',
       'producthunt',
       'reddit',
       'x'
@@ -68,7 +76,9 @@ describe('automation policy invariants', () => {
   }
 
   it('never claims api-publish without a docsUrl', () => {
-    const unproven = ALL.filter((channel) => channel.automation.mode === 'api-publish' && !channel.automation.docsUrl);
+    const unproven = ALL.filter(
+      (channel) => channel.automation.mode === 'api-publish' && !channel.automation.docsUrl
+    );
     expect(unproven.map((channel) => channel.key)).toEqual([]);
   });
 
@@ -83,9 +93,11 @@ describe('automation policy invariants', () => {
   // Hashnode was drafted here and removed: gql.hashnode.com now says free API
   // access is retired and publishing needs a paid Pro plan.
   it('biases hard toward prepare-only', () => {
-    const apiPublish = ALL.filter((channel) => channel.automation.mode === 'api-publish').map((c) => c.key);
+    const apiPublish = ALL.filter((channel) => channel.automation.mode === 'api-publish').map(
+      (c) => c.key
+    );
     expect(apiPublish).toEqual(['bluesky', 'devto', 'github', 'mastodon']);
-    expect(ALL.filter((channel) => channel.automation.mode === 'prepare-only')).toHaveLength(9);
+    expect(ALL.filter((channel) => channel.automation.mode === 'prepare-only')).toHaveLength(10);
   });
 
   it('keeps hashnode prepare-only while its write API is behind a paid plan', () => {
@@ -107,7 +119,11 @@ describe('every adapter respects its own constraints', () => {
     it(`${channel.key} truncates to ${maxChars} chars and warns`, () => {
       const post = channel.adapt({ ...baseDraft, body: filler(maxChars + 500) });
       expect(post.body.length).toBeLessThanOrEqual(maxChars);
-      expect(post.warnings.some((warning) => warning.includes(`${maxChars}-character ${channel.key} limit`))).toBe(true);
+      expect(
+        post.warnings.some((warning) =>
+          warning.includes(`${maxChars}-character ${channel.key} limit`)
+        )
+      ).toBe(true);
     });
 
     it(`${channel.key} leaves a body that already fits alone`, () => {
@@ -131,7 +147,9 @@ describe('every adapter respects its own constraints', () => {
         const post = channel.adapt({ ...baseDraft, tags });
         expect(post.tags).toHaveLength(maxTags);
         expect(post.tags).toEqual(tags.slice(0, maxTags));
-        expect(post.warnings.some((warning) => warning.includes(`at most ${maxTags} tag(s)`))).toBe(true);
+        expect(post.warnings.some((warning) => warning.includes(`at most ${maxTags} tag(s)`))).toBe(
+          true
+        );
       });
     } else {
       it(`${channel.key} keeps every tag because the platform caps none`, () => {
@@ -163,12 +181,16 @@ describe('instagram', () => {
     const post = instagramChannel.adapt(draft);
     expect(post.body).not.toContain('http');
     expect(post.body).toBe('Trevra 0.4 is out. Read the notes at before you upgrade.');
-    expect(post.warnings.some((warning) => warning.includes('https://trevra.dev/releases'))).toBe(true);
+    expect(post.warnings.some((warning) => warning.includes('https://trevra.dev/releases'))).toBe(
+      true
+    );
   });
 
   it('refuses to append the draft URL and says so', () => {
     const post = instagramChannel.adapt(draft);
-    expect(post.warnings.some((warning) => warning.includes('https://trevra.dev was left out'))).toBe(true);
+    expect(
+      post.warnings.some((warning) => warning.includes('https://trevra.dev was left out'))
+    ).toBe(true);
   });
 
   it('declares links unusable rather than merely penalised', () => {
@@ -190,7 +212,10 @@ describe('hacker news', () => {
   });
 
   it('leaves an existing Show HN prefix alone', () => {
-    const post = hackernewsChannel.adapt({ ...baseDraft, title: 'Show HN: Trevra, a revenue chief of staff' });
+    const post = hackernewsChannel.adapt({
+      ...baseDraft,
+      title: 'Show HN: Trevra, a revenue chief of staff'
+    });
     expect(post.title).toBe('Show HN: Trevra, a revenue chief of staff');
     expect(post.warnings.some((warning) => warning.includes('Prefixed'))).toBe(false);
   });
@@ -198,7 +223,14 @@ describe('hacker news', () => {
 
 describe('reddit', () => {
   it('seeds the subreddit config a human has to choose from', () => {
-    expect(REDDIT_SUBREDDITS).toEqual(['r/SaaS', 'r/Entrepreneur', 'r/ecommerce', 'r/shopify', 'r/selfhosted', 'r/opensource']);
+    expect(REDDIT_SUBREDDITS).toEqual([
+      'r/SaaS',
+      'r/Entrepreneur',
+      'r/ecommerce',
+      'r/shopify',
+      'r/selfhosted',
+      'r/opensource'
+    ]);
     expect(redditChannel.defaultConfig).toEqual({ subreddits: [...REDDIT_SUBREDDITS] });
   });
 
@@ -213,6 +245,18 @@ describe('linkedin', () => {
     expect(linkedinChannel.constraints.linkPenalty).toBe(true);
     const post = linkedinChannel.adapt({ ...baseDraft, url: 'https://trevra.dev' });
     expect(post.warnings.some((warning) => warning.includes('suppresses reach'))).toBe(true);
+  });
+});
+
+describe('medium', () => {
+  it('keeps a real article title and stays prepare-only', () => {
+    const post = mediumChannel.adapt(baseDraft);
+    expect(post.title).toBe(baseDraft.title);
+    expect(post.submitUrl).toBe('https://medium.com/new-story');
+    expect(mediumChannel.automation.mode).toBe('prepare-only');
+    expect(mediumChannel.automation.reason).toContain(
+      'no longer issues new API integration tokens'
+    );
   });
 });
 

@@ -37,8 +37,10 @@ export type AutomationMode = 'api-publish' | 'prepare-only' | 'disabled';
 export interface ChannelConstraints {
   /** Hard ceiling on the post body, in characters. */
   maxChars: number;
-  /** Present only when the channel has a title/headline field at all. */
+  /** Present when the channel has a documented hard title/headline ceiling. */
   maxTitleChars?: number;
+  /** True when the channel has a title/headline field but no documented hard ceiling. */
+  titleAllowed?: boolean;
   /** False when a URL in the body is dead text (or forbidden) rather than a link. */
   linksAllowed: boolean;
   /** Permitted, but the platform suppresses reach for posts carrying an outbound link. */
