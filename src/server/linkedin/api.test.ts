@@ -1602,6 +1602,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
   });
 
   it('reports the funnel by campaign with a filled 30-day series', async () => {
+    const analyticsNow = new Date();
     const campaignId = await seedApprovedCampaign(WORKSPACE_A, 'Platform leads');
     await recordAction(
       db,
@@ -1613,7 +1614,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
         status: 'sent',
         source: 'manual'
       },
-      NOW
+      analyticsNow
     );
     await recordAction(
       db,
@@ -1625,7 +1626,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
         status: 'accepted',
         source: 'manual'
       },
-      NOW
+      analyticsNow
     );
     await recordAction(
       db,
@@ -1637,7 +1638,7 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
         status: 'declined',
         source: 'manual'
       },
-      NOW
+      analyticsNow
     );
 
     const body = (await as(sessionA).get('/api/linkedin/analytics').expect(200)).body as {
@@ -1764,6 +1765,7 @@ describe('account (seat) scoping', () => {
   });
 
   it('counts analytics for one account only, and says which account it counted', async () => {
+    const analyticsNow = new Date();
     await twoAccounts(WORKSPACE_A);
     await createCampaign(
       db,
@@ -1796,7 +1798,7 @@ describe('account (seat) scoping', () => {
         status: 'sent',
         source: 'manual'
       },
-      NOW
+      analyticsNow
     );
     await recordAction(
       db,
@@ -1809,7 +1811,7 @@ describe('account (seat) scoping', () => {
         status: 'sent',
         source: 'manual'
       },
-      NOW
+      analyticsNow
     );
     await recordAction(
       db,
@@ -1822,7 +1824,7 @@ describe('account (seat) scoping', () => {
         status: 'accepted',
         source: 'manual'
       },
-      NOW
+      analyticsNow
     );
 
     type Funnel = {

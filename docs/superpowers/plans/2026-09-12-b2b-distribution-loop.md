@@ -508,7 +508,7 @@ Potential entry:
 
 # Phase 5 — Evidence-constrained drafting
 
-**Status: V1 shipped through the deterministic evidence renderer rather than a separate LLM skill.** Research can now compare every safe framing for a story before persistence, inspect each claim→source map, and choose the exact angle that opens in the ordinary LinkedIn composer. Preview is read-only; selected non-default angles get their own revision/idempotency key, while the recommended angle reuses the canonical draft. A deterministic content critic remains the next correctness layer; model-assisted drafting is optional rather than required for the founder loop.
+**Status: V1 shipped through the deterministic evidence renderer rather than a separate LLM skill.** Research can now compare every safe framing for a story before persistence, inspect each claim→source map, and choose the exact angle that opens in the ordinary LinkedIn composer. Preview is read-only; selected non-default angles get their own revision/idempotency key, while the recommended angle reuses the canonical draft. The deterministic proof critic now runs before both preview selection and persisted-draft reuse; model-assisted drafting is optional rather than required for the founder loop.
 
 ## 2.1 New skill: `gtm.content-draft`
 
@@ -759,7 +759,7 @@ The model remains free to produce content, but the evidence for the strategy rec
 
 # Phase 10 — Recurring Market Pulse
 
-**Shipped 2026-09-12 for Account scopes:** deterministic 7/30-day compiler over the existing active Account watchlist, optional existing Account-tag scope, cross-account pattern gate, source-backed examples, one-click pulse draft, and opt-in weekly/monthly draft preparation. Brand-watch and saved-filter scopes remain extensions of the same compiler contract; no new Market entity was introduced.
+**Shipped 2026-09-12 for Account + Brand-watch scopes:** deterministic 7/30-day compilation over the existing active Account watchlist, optional Account-tag scope, and exact Brand-watch mention evidence; cross-entity/source gates; source-backed examples; one-click pulse drafts; and independent opt-in weekly/monthly draft preparation. Generic saved-filter scope remains deliberately deferred until Trevra has a canonical saved-filter model; no new Market entity was introduced.
 
 Only build after the one-story loop and metrics are working.
 

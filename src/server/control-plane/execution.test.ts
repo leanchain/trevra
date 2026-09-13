@@ -4,7 +4,12 @@ import { EXECUTION_ACTION_TYPES, executePreparedPlaybookAction } from './executi
 
 describe('GTM prepared-action boundary', () => {
   it('exposes the named GTM execution actions', () => {
-    expect(EXECUTION_ACTION_TYPES).toEqual(['email.send', 'community.reply', 'crm.log-activity']);
+    expect(EXECUTION_ACTION_TYPES).toEqual([
+      'email.send',
+      'community.reply',
+      'crm.log-activity',
+      'buffer.create-draft'
+    ]);
   });
   it('validates the GTM email payload before touching a connection', async () => {
     await expect(
