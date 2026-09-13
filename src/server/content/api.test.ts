@@ -491,6 +491,24 @@ describe('content opportunity API', () => {
     });
     expect(first.body.post.contentAssetId).toBe(first.body.asset.id);
 
+    const variants = await authed(
+      'get',
+      `/api/content/posts/${encodeURIComponent(first.body.post.id)}/channel-variants?channels=linkedin,x`
+    ).expect(200);
+    expect(variants.body.variants).toEqual([
+      expect.objectContaining({
+        key: 'linkedin',
+        delivery: 'copy_only',
+        post: expect.objectContaining({ channelKey: 'linkedin' })
+      }),
+      expect.objectContaining({
+        key: 'x',
+        delivery: 'copy_only',
+        post: expect.objectContaining({ channelKey: 'x' })
+      })
+    ]);
+    expect(variants.body.variants[1].post.body.length).toBeLessThanOrEqual(280);
+
     const replay = await authed(
       'post',
       `/api/content/opportunities/${encodeURIComponent(story.id)}/draft-linkedin`

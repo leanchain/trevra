@@ -11460,6 +11460,89 @@ button:disabled {
 .li-posts-history-panel {
   min-width: 0;
 }
+.li-channel-variants {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.li-channel-variants > details > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: var(--t-w-strong);
+}
+.li-channel-variants > details > summary small {
+  flex: 1 1 260px;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  font-weight: 400;
+}
+.li-channel-variants-body {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+.li-channel-variants-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.5;
+}
+.li-channel-variant {
+  display: grid;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--t-surface-2);
+}
+.li-channel-variant header,
+.li-channel-variant footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.li-channel-variant header > div {
+  display: grid;
+  gap: 2px;
+}
+.li-channel-variant header small,
+.li-channel-variant li {
+  color: var(--muted);
+  font-size: var(--t-text-chip);
+}
+.li-channel-variant h4 {
+  margin: 0;
+  font-size: var(--t-text-sm);
+}
+.li-channel-variant pre {
+  max-height: 220px;
+  margin: 0;
+  padding: 9px;
+  overflow: auto;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--panel);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: var(--t-text-xs);
+  line-height: 1.5;
+}
+.li-channel-variant ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.li-channel-variant footer {
+  justify-content: flex-end;
+}
+.li-chip-warn {
+  background: var(--amber-bg);
+  color: var(--amber);
+}
 @media (max-width: 1180px) {
   .li-posts-screen {
     grid-template-columns: 1fr;
@@ -11562,6 +11645,15 @@ button:disabled {
   margin: 0;
 }
 @media (max-width: 640px) {
+  .li-channel-variant header,
+  .li-channel-variant footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .li-channel-variant footer > * {
+    width: 100%;
+    justify-content: center;
+  }
   .li-post-now-row {
     justify-content: stretch;
   }

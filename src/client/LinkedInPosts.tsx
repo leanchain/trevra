@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Bold, ImagePlus, Images, Italic, List, ListOrdered, Underline, X } from 'lucide-react';
+import {
+  Bold,
+  Copy,
+  ImagePlus,
+  Images,
+  Italic,
+  List,
+  ListOrdered,
+  Underline,
+  X
+} from 'lucide-react';
 import {
   applyStyleToSelection,
   plainTextLength,
@@ -13,6 +23,7 @@ import {
   addLinkedInPostImage,
   cancelLinkedInPost,
   createLinkedInPost,
+  getContentChannelVariants,
   listLinkedInPosts,
   publishLinkedInPostNow,
   updateLinkedInPost,
@@ -21,6 +32,7 @@ import {
 } from './api';
 import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { replaceNavigate } from './ui/route';
+import type { ContentChannelVariant } from '../server/content/channel-variants';
 
 const MAX_CHARS = 3000;
 const MAX_IMAGES = 9;
@@ -631,6 +643,114 @@ function PostRow({ post, onChanged }: { post: LinkedInPost; onChanged: () => voi
   );
 }
 
+function ChannelVariantsPanel({
+  post,
+  setToast
+}: {
+  post: LinkedInPost;
+  setToast: (message: string) => void;
+}) {
+  const [variants, setVariants] = useState<ContentChannelVariant[] | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!post.contentAssetId) return;
+    let cancelled = false;
+    setVariants(null);
+    setError('');
+    getContentChannelVariants(post.id)
+      .then((rows) => {
+        if (!cancelled) setVariants(rows);
+      })
+      .catch((cause) => {
+        if (!cancelled)
+          setError(cause instanceof Error ? cause.message : 'Could not prepare channel variants.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [post.id, post.updatedAt, post.contentAssetId]);
+
+  if (!post.contentAssetId) return null;
+
+  async function copyVariant(variant: ContentChannelVariant): Promise<void> {
+    const text = variant.post.title
+      ? `${variant.post.title}\n\n${variant.post.body}`
+      : variant.post.body;
+    try {
+      await navigator.clipboard.writeText(text);
+      setToast(`${variant.name} variant copied.`);
+    } catch {
+      setToast('Could not copy this variant.');
+    }
+  }
+
+  return (
+    <section className="li-channel-variants" aria-label="Reuse this story elsewhere">
+      <details>
+        <summary>
+          <span>Reuse elsewhere</span>
+          <small>Copy-only variants · existing channel policies still apply</small>
+          {variants ? <span className="li-chip">{variants.length}</span> : null}
+        </summary>
+        <div className="li-channel-variants-body">
+          <p className="li-channel-variants-note">
+            Trevra reshapes the saved evidence-backed draft for each destination and runs the copy
+            critic. This panel never publishes, even when a platform has a write API.
+          </p>
+          {error ? <p className="li-post-error">{error}</p> : null}
+          {variants === null && !error ? <p className="empty-copy">Preparing variants…</p> : null}
+          {variants?.map((variant) => (
+            <article className="li-channel-variant" key={variant.key}>
+              <header>
+                <div>
+                  <strong>{variant.name}</strong>
+                  <small>Copy only · adapter policy: {variant.mode.replace('-', ' ')}</small>
+                </div>
+                <span className={variant.critique.passed ? 'li-chip' : 'li-chip li-chip-warn'}>
+                  {variant.critique.passed ? 'Copy ready' : 'Needs revision'}
+                </span>
+              </header>
+              {variant.post.title ? <h4>{variant.post.title}</h4> : null}
+              <pre>{variant.post.body}</pre>
+              {variant.post.warnings.length > 0 || !variant.critique.passed ? (
+                <ul>
+                  {variant.post.warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                  {!variant.critique.passed && variant.instructions ? (
+                    <li>{variant.instructions}</li>
+                  ) : null}
+                </ul>
+              ) : null}
+              <footer>
+                {variant.post.submitUrl ? (
+                  <a
+                    className="ghost-button"
+                    href={variant.post.submitUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open {variant.name}
+                  </a>
+                ) : null}
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void copyVariant(variant)}
+                >
+                  <Copy size={14} />
+                  Copy text
+                </button>
+              </footer>
+            </article>
+          ))}
+        </div>
+      </details>
+    </section>
+  );
+}
+
 export function LinkedInPosts({ setToast }: { setToast: (message: string) => void }) {
   const [posts, setPosts] = useState<LinkedInPost[] | null>(null);
   const [error, setError] = useState('');
@@ -667,6 +787,7 @@ export function LinkedInPosts({ setToast }: { setToast: (message: string) => voi
           initialPost={selectedDraft}
           onFinished={draftId ? () => replaceNavigate('/outreach/posts') : undefined}
         />
+        {selectedDraft ? <ChannelVariantsPanel post={selectedDraft} setToast={setToast} /> : null}
       </section>
 
       <section className="page-panel li-posts-history-panel">

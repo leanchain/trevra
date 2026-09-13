@@ -881,26 +881,32 @@ This gives Trevra the useful part of DistribBuddy's "clone a winner" without bec
 
 Only after the channel-neutral content model and LinkedIn loop prove themselves.
 
-Possible adapters:
+**First bridge shipped:** Trevra already had a policy-aware `ChannelAdapter` registry for X, dev.to, Hashnode, Hacker News, Reddit, Bluesky, Mastodon, GitHub, Product Hunt, Indie Hackers, Lobsters, Instagram and LinkedIn. Do not create a second `ContentPublisherAdapter` abstraction. Evidence-backed content now feeds that existing registry through a copy-only preparation surface in the Posts editor.
 
-- X;
+For a provenance-linked saved story draft, Trevra:
+
+- reads the current edited/saved post body;
+- retains the ContentAsset / ContentOpportunity evidence as the critic anchor;
+- applies each destination's existing length/link/tag/media policy;
+- runs the existing copy critic on the adapted text;
+- exposes warnings, revision instructions and the platform submit URL when one exists;
+- never publishes from this reuse surface, even when the registry says the underlying platform has an API.
+
+This immediately makes the existing adapters useful to the new distribution loop without spreading channel `switch` statements through content code.
+
+Still open as genuinely new destination work:
+
 - company LinkedIn pages;
-- newsletter draft;
-- blog/report;
+- newsletter-provider handoff/draft;
+- first-class blog/report publisher beyond the existing public Trevra report and dev.to/Hashnode shaping;
 - short-form carousel export;
-- external schedulers.
+- external scheduler integrations;
+- provider-specific publish + metric collection, which must use the normal approval/external-write boundary rather than this copy-only surface.
 
-Each adapter implements:
+**Gate:** one evidence-backed Trevra story can be safely reshaped for the existing channel registry from the editor without losing provenance or creating an external write. **Met.**
 
-```ts
-interface ContentPublisherAdapter {
-  render(asset: ContentAsset): ChannelDraft;
-  publish?(draft: ChannelDraft): Promise<PublicationResult>;
-  collectMetrics?(publication: PublicationRef): Promise<MetricSnapshot>;
-}
-```
-
-Do not make channel support a switch statement distributed through the content core.
+````text
+**Gate:** one evidence-backed Trevra story can be safely reshaped for the existing channel registry from the editor without losing provenance or creating an external write. **Met.**
 
 ---
 
@@ -909,7 +915,6 @@ Do not make channel support a switch statement distributed through the content c
 Suggested endpoints, exact naming can follow current route conventions:
 
 ```text
-GET    /api/content/opportunities
 POST   /api/content/opportunities/discover
 POST   /api/content/opportunities/:id/dismiss
 POST   /api/content/opportunities/:id/drafts
@@ -924,7 +929,7 @@ GET    /api/content/assets/:id/performance
 
 POST   /api/content/pulses
 POST   /api/content/reports/:id/publish      # later phase
-```
+````
 
 `render/linkedin` creates an ordinary `linkedin_posts` draft. It must not publish.
 

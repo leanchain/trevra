@@ -122,6 +122,7 @@ import { EvidenceCardError, prepareStoryEvidenceCard } from './content/evidence-
 import { prepareStoryFormatClone } from './content/format-clone.js';
 import { listContentFormatTemplates } from './content/format-templates.js';
 import { contentPerformanceReport } from './content/performance.js';
+import { ContentChannelVariantError, contentChannelVariants } from './content/channel-variants.js';
 import {
   PublicReportError,
   listPublicContentReports,
@@ -3027,6 +3028,31 @@ export function createApp(db: Db) {
       if (!opportunity) return res.status(404).json({ error: 'Content opportunity not found' });
       res.json({ opportunity });
     } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/content/posts/:id/channel-variants', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({ channels: z.string().trim().min(1).max(500).optional() })
+        .parse(req.query);
+      const channelKeys = input.channels
+        ? input.channels
+            .split(',')
+            .map((key) => key.trim())
+            .filter(Boolean)
+        : undefined;
+      const variants = await contentChannelVariants(db, {
+        workspaceId: req.auth!.workspaceId,
+        postId: String(req.params.id),
+        channelKeys
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ variants });
+    } catch (error) {
+      if (error instanceof ContentChannelVariantError)
+        return res.status(error.status).json({ error: error.message });
       next(error);
     }
   });

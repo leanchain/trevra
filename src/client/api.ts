@@ -57,6 +57,7 @@ import type { AccountMomentumIndex } from '../server/content/index';
 import type { ContentFormatTemplate } from '../server/content/format-templates';
 import type { MarketPulseCadence, MarketPulseSchedule } from '../server/content/pulse-schedule';
 import type { ContentPerformanceReport } from '../server/content/performance';
+import type { ContentChannelVariant } from '../server/content/channel-variants';
 import type { PublicContentReport } from '../server/content/public-reports';
 import type { PreparedOutreachResult } from '../server/outreach/prepare';
 import type { GtmIntent, GtmPlan, PreparedGtmPlanResult } from '../server/gtm/intent';
@@ -200,6 +201,18 @@ export async function getContentOpportunities(
     `/api/content/opportunities${query.size ? `?${query}` : ''}`
   );
   return result.opportunities;
+}
+
+export async function getContentChannelVariants(
+  postId: string,
+  channelKeys?: string[]
+): Promise<ContentChannelVariant[]> {
+  const query = new URLSearchParams();
+  if (channelKeys?.length) query.set('channels', channelKeys.join(','));
+  const result = await request<{ variants: ContentChannelVariant[] }>(
+    `/api/content/posts/${encodeURIComponent(postId)}/channel-variants${query.size ? `?${query}` : ''}`
+  );
+  return result.variants;
 }
 
 export async function getContentPerformance(limit = 100): Promise<ContentPerformanceReport> {
