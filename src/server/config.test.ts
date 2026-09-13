@@ -273,4 +273,100 @@ describe('single-operator production on loopback', () => {
       validateEnvironment({ ...production, NANGO_WEBHOOK_SIGNING_KEY: 'configured' })
     ).toThrow(/NANGO_API_KEY/);
   });
+
+  it('validates deployment-owned Instagram observation credentials before production boots', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_GRAPH_ACCESS_TOKEN: 'token-only'
+      })
+    ).toThrow(/TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_GRAPH_ACCESS_TOKEN: 'token',
+        TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID: '17841400000000000',
+        TREVRA_META_GRAPH_VERSION: '26'
+      })
+    ).toThrow(/TREVRA_META_GRAPH_VERSION/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_GRAPH_ACCESS_TOKEN: 'token',
+        TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID: '17841400000000000',
+        TREVRA_META_GRAPH_VERSION: 'v26.0'
+      })
+    ).not.toThrow();
+  });
+
+  it('validates Meta Ad Library credentials and explicit EU/UK reached-country scope', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_AD_LIBRARY_ACCESS_TOKEN: 'token-only'
+      })
+    ).toThrow(/TREVRA_META_AD_LIBRARY_COUNTRIES_JSON/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_AD_LIBRARY_ACCESS_TOKEN: 'token',
+        TREVRA_META_AD_LIBRARY_COUNTRIES_JSON: JSON.stringify(['US'])
+      })
+    ).toThrow(/EU member states and GB/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_META_AD_LIBRARY_ACCESS_TOKEN: 'token',
+        TREVRA_META_AD_LIBRARY_COUNTRIES_JSON: JSON.stringify(['DE', 'GB'])
+      })
+    ).not.toThrow();
+  });
+
+  it('accepts independent Facebook Page public-data and YouTube API credentials', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN: 'facebook-system-user-token'
+      })
+    ).not.toThrow();
+    expect(() =>
+      validateEnvironment({ ...production, TREVRA_YOUTUBE_API_KEY: 'youtube-api-key' })
+    ).not.toThrow();
+  });
+
+  it('validates deployment-owned ecommerce observation adapters before production boots', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON: JSON.stringify([
+          {
+            key: 'unsafe',
+            name: 'Unsafe observer',
+            endpoint: 'http://observer.example/observe',
+            tokenEnv: 'OBSERVER_TOKEN',
+            surfaces: ['meta_ads']
+          }
+        ])
+      })
+    ).toThrow(/TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON is invalid/);
+
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON: JSON.stringify([
+          {
+            key: 'commerce-observer',
+            name: 'Commerce observer',
+            endpoint: 'https://observer.example/observe',
+            tokenEnv: 'OBSERVER_TOKEN',
+            surfaces: ['meta_ads', 'newsletter', 'social']
+          }
+        ])
+      })
+    ).not.toThrow();
+  });
 });

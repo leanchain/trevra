@@ -6,6 +6,7 @@ import { closeAuthDatabase, migrateAuthDatabase } from '../auth-service.js';
 import { openDatabase, type Db } from '../db.js';
 import { createApp } from '../app.js';
 import { registerProvider } from '../research/registry.js';
+import { recordObservationProviderSuccess } from '../observations/health.js';
 import type { ResearchProvider } from '../research/types.js';
 
 let db: Db;
@@ -104,6 +105,46 @@ describe('generic account sourcing API', () => {
       retention: 'none',
       availability: { mode: 'ready' }
     });
+  });
+
+  it('lists observation-provider health for this workspace without exposing credential values', async () => {
+    const now = new Date();
+    await recordObservationProviderSuccess(
+      db,
+      WORKSPACE_ID,
+      'substack-public-feed',
+      now,
+      'One publication feed was incomplete.'
+    );
+    const previous = {
+      meta: process.env.TREVRA_META_GRAPH_ACCESS_TOKEN,
+      instagram: process.env.TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID,
+      youtube: process.env.TREVRA_YOUTUBE_API_KEY
+    };
+    process.env.TREVRA_META_GRAPH_ACCESS_TOKEN = 'canary-meta-secret';
+    process.env.TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID = '17841400000000000';
+    process.env.TREVRA_YOUTUBE_API_KEY = 'canary-youtube-secret';
+    try {
+      const response = await asSession().get('/api/accounts/observation-providers').expect(200);
+      const providers = response.body.providers as Array<Record<string, unknown>>;
+      const substack = providers.find((provider) => provider.key === 'substack-public-feed') as
+        Record<string, unknown> | undefined;
+      expect(substack).toMatchObject({
+        key: 'substack-public-feed',
+        operationalStatus: 'warning',
+        lastSuccessAt: now.toISOString(),
+        lastWarning: 'One publication feed was incomplete.'
+      });
+      expect(JSON.stringify(response.body)).not.toContain('canary-meta-secret');
+      expect(JSON.stringify(response.body)).not.toContain('canary-youtube-secret');
+    } finally {
+      if (previous.meta === undefined) delete process.env.TREVRA_META_GRAPH_ACCESS_TOKEN;
+      else process.env.TREVRA_META_GRAPH_ACCESS_TOKEN = previous.meta;
+      if (previous.instagram === undefined) delete process.env.TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID;
+      else process.env.TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID = previous.instagram;
+      if (previous.youtube === undefined) delete process.env.TREVRA_YOUTUBE_API_KEY;
+      else process.env.TREVRA_YOUTUBE_API_KEY = previous.youtube;
+    }
   });
 
   it('runs a storable provider through the skill ledger and converges into accounts', async () => {

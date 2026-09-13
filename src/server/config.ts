@@ -1,5 +1,16 @@
 import { z } from 'zod';
 import { browserProviderSettings } from './browser/provider.js';
+import { configuredHttpObservationProviders } from './observations/providers/http.js';
+import {
+  INSTAGRAM_BUSINESS_ACCOUNT_ENV,
+  META_GRAPH_TOKEN_ENV,
+  META_GRAPH_VERSION_ENV
+} from './observations/providers/instagram.js';
+import {
+  META_AD_LIBRARY_COUNTRIES_ENV,
+  META_AD_LIBRARY_TOKEN_ENV,
+  parseMetaAdLibraryCountries
+} from './observations/providers/meta-ads.js';
 import { smtpConfig } from './email.js';
 import { companionBrowserConfigured } from './linkedin/companion.js';
 const booleanString = z.enum(['true', 'false']);
@@ -176,6 +187,14 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       TREVRA_SANDBOX_GATEWAY_URL: optionalUrl,
       TREVRA_SANDBOX_GATEWAY_TOKEN: z.string().optional(),
       TREVRA_REMOTE_ACTION_ADAPTERS_JSON: z.string().optional(),
+      TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON: z.string().optional(),
+      TREVRA_META_GRAPH_ACCESS_TOKEN: z.string().optional(),
+      TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID: z.string().optional(),
+      TREVRA_FACEBOOK_PAGE_ACCESS_TOKEN: z.string().min(1).optional(),
+      TREVRA_META_GRAPH_VERSION: z.string().optional(),
+      TREVRA_META_AD_LIBRARY_ACCESS_TOKEN: z.string().optional(),
+      TREVRA_META_AD_LIBRARY_COUNTRIES_JSON: z.string().optional(),
+      TREVRA_YOUTUBE_API_KEY: z.string().min(1).optional(),
       COOKIE_SECURE: booleanString.default(production ? 'true' : 'false'),
       ALLOW_DEMO_AUTH: booleanString.optional(),
       ALLOW_SIMULATED_EXECUTION: booleanString.optional(),
@@ -438,6 +457,42 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
           }
       } catch {
         problems.push('TREVRA_REMOTE_ACTION_ADAPTERS_JSON must contain valid JSON');
+      }
+    }
+    if (base.TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON) {
+      try {
+        configuredHttpObservationProviders(base.TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON);
+      } catch (error) {
+        problems.push(
+          `TREVRA_OBSERVATION_HTTP_PROVIDERS_JSON is invalid: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    const instagramToken = base.TREVRA_META_GRAPH_ACCESS_TOKEN;
+    const instagramAccount = base.TREVRA_INSTAGRAM_BUSINESS_ACCOUNT_ID;
+    if (Boolean(instagramToken) !== Boolean(instagramAccount)) {
+      problems.push(
+        `${META_GRAPH_TOKEN_ENV} and ${INSTAGRAM_BUSINESS_ACCOUNT_ENV} must be configured together`
+      );
+    }
+    if (
+      base.TREVRA_META_GRAPH_VERSION &&
+      !/^v\d+\.\d+$/.test(base.TREVRA_META_GRAPH_VERSION.trim())
+    ) {
+      problems.push(`${META_GRAPH_VERSION_ENV} must look like v26.0`);
+    }
+    const adLibraryToken = base.TREVRA_META_AD_LIBRARY_ACCESS_TOKEN;
+    const adLibraryCountries = base.TREVRA_META_AD_LIBRARY_COUNTRIES_JSON;
+    if (Boolean(adLibraryToken) !== Boolean(adLibraryCountries)) {
+      problems.push(
+        `${META_AD_LIBRARY_TOKEN_ENV} and ${META_AD_LIBRARY_COUNTRIES_ENV} must be configured together`
+      );
+    }
+    if (adLibraryCountries) {
+      try {
+        parseMetaAdLibraryCountries(adLibraryCountries);
+      } catch (error) {
+        problems.push(error instanceof Error ? error.message : String(error));
       }
     }
     if (problems.length > 0)

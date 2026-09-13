@@ -3283,6 +3283,31 @@ export async function getAccountSourceProviders(): Promise<AccountSourceProvider
   return Array.isArray(result.providers) ? result.providers : [];
 }
 
+export interface ObservationProviderHealth {
+  key: string;
+  name: string;
+  surfaces: string[];
+  docsUrl: string | null;
+  availability: {
+    mode: 'ready' | 'needs-credential' | 'disabled';
+    reason: string;
+    docsUrl?: string;
+  };
+  operationalStatus: 'ready' | 'healthy' | 'warning' | 'error' | 'stale';
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastWarning: string | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+}
+
+export async function getObservationProviderHealth(): Promise<ObservationProviderHealth[]> {
+  const result = await request<{ providers?: ObservationProviderHealth[] }>(
+    '/api/accounts/observation-providers'
+  );
+  return Array.isArray(result.providers) ? result.providers : [];
+}
+
 export async function sourceAccounts(input: {
   provider: string;
   keywords?: string[];
@@ -3503,6 +3528,16 @@ export async function materializeAccountContentOpportunity(
     { method: 'POST', body: '{}' }
   );
   return result.opportunity;
+}
+
+export async function setAccountMetaPageId(
+  id: string,
+  metaPageId: string | null
+): Promise<RankedAccount> {
+  return request(`/api/accounts/${encodeURIComponent(id)}/observation-identity`, {
+    method: 'PATCH',
+    body: JSON.stringify({ metaPageId })
+  });
 }
 
 /** The verdict is training data about the SHAPE of the signals, not just this one company. */

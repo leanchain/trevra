@@ -77,7 +77,9 @@ const CROSS_ORIGIN_STRIPPED_HEADERS: ReadonlySet<string> = new Set(['authorizati
 function withoutCredentialHeaders(headers: HeadersInit | undefined): HeadersInit | undefined {
   if (!headers) return headers;
   if (Array.isArray(headers)) {
-    return headers.filter(([name]) => !CROSS_ORIGIN_STRIPPED_HEADERS.has(String(name).toLowerCase()));
+    return headers.filter(
+      ([name]) => !CROSS_ORIGIN_STRIPPED_HEADERS.has(String(name).toLowerCase())
+    );
   }
   if (typeof (headers as Headers).forEach === 'function') {
     const copy = new Headers(headers as HeadersInit);
@@ -173,14 +175,19 @@ function isBlockedIpv4(address: Uint8Array): boolean {
 function isBlockedIpv6(address: Uint8Array): boolean {
   // IPv4-mapped (::ffff:0:0/96) and NAT64 (64:ff9b::/96) smuggle an IPv4
   // address inside a v6 one -- judge the embedded address, not the wrapper.
-  if (inCidr6(address, '::ffff:0:0', 96) || inCidr6(address, '64:ff9b::', 96)) return isBlockedIpv4(address.slice(12));
+  if (inCidr6(address, '::ffff:0:0', 96) || inCidr6(address, '64:ff9b::', 96))
+    return isBlockedIpv4(address.slice(12));
   // Only global unicast (2000::/3) is publicly routable. Everything else is
   // unspecified, loopback, unique-local, link-local, multicast, or reserved.
   if (!inCidr6(address, '2000::', 3)) return true;
   // Carve-outs that sit inside 2000::/3 but are still not public:
   // 2001::/23 IETF protocol assignments (Teredo), 2001:db8::/32 documentation,
   // and 2002::/16 6to4, which encapsulates an arbitrary IPv4 destination.
-  return inCidr6(address, '2001::', 23) || inCidr6(address, '2001:db8::', 32) || inCidr6(address, '2002::', 16);
+  return (
+    inCidr6(address, '2001::', 23) ||
+    inCidr6(address, '2001:db8::', 32) ||
+    inCidr6(address, '2002::', 16)
+  );
 }
 
 /** True when `address` is private, loopback, link-local, reserved, multicast, or unspecified. */
@@ -210,7 +217,10 @@ export function isBlockedAddress(address: string): boolean {
  * public -- one public A record does not excuse an AAAA record pointing at
  * link-local space.
  */
-export async function validatePublicHost(host: string, options: { resolve?: boolean } = {}): Promise<void> {
+export async function validatePublicHost(
+  host: string,
+  options: { resolve?: boolean } = {}
+): Promise<void> {
   const shouldResolve = options.resolve ?? true;
   if (!host || !host.trim()) throw new SsrfError('empty host');
   const cleaned = host.trim().toLowerCase().replace(/\.+$/, '');
@@ -222,10 +232,12 @@ export async function validatePublicHost(host: string, options: { resolve?: bool
   if (lastColon >= 0) {
     const head = cleaned.slice(0, lastColon);
     const tail = cleaned.slice(lastColon + 1);
-    if (tail.length > 0 && /^\d+$/.test(tail) && !head.includes(':')) throw new SsrfError(`explicit port not allowed: '${host}'`);
+    if (tail.length > 0 && /^\d+$/.test(tail) && !head.includes(':'))
+      throw new SsrfError(`explicit port not allowed: '${host}'`);
   }
   if (isIP(cleaned) !== 0) throw new SsrfError(`raw IP address not allowed: '${host}'`);
-  if (cleaned === 'localhost' || cleaned.endsWith('.localhost')) throw new SsrfError(`localhost not allowed: '${host}'`);
+  if (cleaned === 'localhost' || cleaned.endsWith('.localhost'))
+    throw new SsrfError(`localhost not allowed: '${host}'`);
   if (cleaned.endsWith('.local')) throw new SsrfError(`mDNS .local host not allowed: '${host}'`);
   if (!cleaned.includes('.')) throw new SsrfError(`single-label host not allowed: '${host}'`);
   if (!shouldResolve) return;
@@ -234,12 +246,15 @@ export async function validatePublicHost(host: string, options: { resolve?: bool
   try {
     resolved = await lookup(cleaned, { all: true, verbatim: true });
   } catch (cause) {
-    throw new SsrfError(`could not resolve host '${host}': ${cause instanceof Error ? cause.message : String(cause)}`);
+    throw new SsrfError(
+      `could not resolve host '${host}': ${cause instanceof Error ? cause.message : String(cause)}`
+    );
   }
   const addresses = [...new Set(resolved.map((entry) => entry.address))];
   if (addresses.length === 0) throw new SsrfError(`host '${host}' did not resolve to any address`);
   for (const address of addresses) {
-    if (isBlockedAddress(address)) throw new SsrfError(`host '${host}' resolves to non-public address ${address}`);
+    if (isBlockedAddress(address))
+      throw new SsrfError(`host '${host}' resolves to non-public address ${address}`);
   }
 }
 
@@ -248,6 +263,14 @@ export interface SsrfFetchOptions {
   resolve?: boolean;
   maxRedirects?: number;
   fetchImpl?: FetchLike;
+  /** Called immediately before every real outbound request, including redirect hops. */
+  beforeRequest?: (url: URL, hop: number) => void | Promise<void>;
+  /**
+   * Optional redirect scope guard. The SSRF checks below still run regardless;
+   * this is for callers such as the crawler that also need to keep navigation
+   * inside a product-defined host boundary.
+   */
+  allowRedirect?: (from: URL, to: URL) => boolean;
   /**
    * Turn the host allow-list OFF for this wrapper. **Defaults to false and must
    * stay that way** -- this is not a tuning knob, it is a deliberate escape
@@ -267,7 +290,6 @@ export interface SsrfFetchOptions {
    */
   allowPrivateHosts?: boolean;
 }
-
 /**
  * Build a `fetch` wrapper that validates every request host, redirect hops
  * included. Resolutions are cached per wrapper (i.e. per audit run), mirroring
@@ -280,7 +302,10 @@ export function createSsrfFetch(options: SsrfFetchOptions = {}): FetchLike {
   const shouldResolve = options.resolve ?? true;
   const maxRedirects = options.maxRedirects ?? 5;
   const allowPrivateHosts = options.allowPrivateHosts ?? false;
-  const fetchImpl = options.fetchImpl ?? ((input: string, init?: RequestInit) => fetch(input, init));
+  const beforeRequest = options.beforeRequest;
+  const allowRedirect = options.allowRedirect;
+  const fetchImpl =
+    options.fetchImpl ?? ((input: string, init?: RequestInit) => fetch(input, init));
   const checked = new Set<string>();
 
   return async function ssrfFetch(input: string, init?: RequestInit): Promise<Response> {
@@ -292,24 +317,19 @@ export function createSsrfFetch(options: SsrfFetchOptions = {}): FetchLike {
     let credentialOrigin = url.origin;
     let hopInit = init;
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new SsrfError(`unsupported scheme: ${url.protocol}`);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:')
+        throw new SsrfError(`unsupported scheme: ${url.protocol}`);
       // The private-host waiver applies to the ORIGIN THE OPERATOR NAMED, and
       // nowhere else. Waiving it for every hop turned the self-host flag into an
       // SSRF primitive: the configured endpoint could answer 302 to
       // http://169.254.169.254/ and the guard followed it into the cloud
       // metadata service.
-      //
-      // Scoped to the origin rather than to hop 0 alone so that a local proxy
-      // redirecting within itself still works -- that is an ordinary thing for a
-      // LiteLLM or vLLM front end to do, and the redirect ceiling still bounds
-      // it. What the endpoint cannot do is send the request somewhere else
-      // private: the operator chose one private destination, not a tour of the
-      // network.
       const waived = allowPrivateHosts && url.origin === originalOrigin;
       if (!waived && !checked.has(url.hostname)) {
         await validatePublicHost(url.hostname, { resolve: shouldResolve });
         checked.add(url.hostname);
       }
+      await beforeRequest?.(url, hop);
       // `manual` hands each hop back to us so the guard runs again before the
       // next request leaves the process.
       const response = await fetchImpl(url.toString(), { ...hopInit, redirect: 'manual' });
@@ -318,6 +338,9 @@ export function createSsrfFetch(options: SsrfFetchOptions = {}): FetchLike {
       if (!location) return response;
       if (response.body) await response.body.cancel().catch(() => undefined);
       const next = new URL(location, url);
+      if (allowRedirect && !allowRedirect(url, next)) {
+        throw new SsrfError(`redirect outside caller scope: ${next.toString()}`);
+      }
       // Origin is scheme + host + port, so a bare port or scheme change counts.
       if (next.origin !== credentialOrigin) {
         hopInit = { ...hopInit, headers: withoutCredentialHeaders(hopInit?.headers) };
@@ -328,13 +351,11 @@ export function createSsrfFetch(options: SsrfFetchOptions = {}): FetchLike {
     throw new SsrfError(`too many redirects (>${maxRedirects})`);
   };
 }
-
 const inputSchema = z.object({
   host: z.string(),
   /** Skip DNS and run structural checks only. */
   structuralOnly: z.boolean().optional()
 });
-
 const outputSchema = z.object({
   host: z.string(),
   allowed: z.boolean(),
@@ -360,7 +381,8 @@ export const validateHostSkill: Skill<GuardInput, GuardOutput> = {
       await validatePublicHost(input.host, { resolve: !input.structuralOnly });
       return { host: input.host, allowed: true, reason: null };
     } catch (cause) {
-      if (cause instanceof SsrfError) return { host: input.host, allowed: false, reason: cause.message };
+      if (cause instanceof SsrfError)
+        return { host: input.host, allowed: false, reason: cause.message };
       throw cause;
     }
   }

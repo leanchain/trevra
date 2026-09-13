@@ -81,6 +81,18 @@ interface TechRule {
  * `gtm.score-lead` wedges on and the commerce platform -- not the rendering
  * framework -- is what determines whether the offer applies.
  */
+export const ECOMMERCE_APP_KEYS = [
+  'klaviyo',
+  'mailchimp',
+  'omnisend',
+  'brevo',
+  'attentive',
+  'recharge',
+  'gorgias',
+  'yotpo',
+  'judge-me'
+] as const;
+
 export const TECH_RULES: readonly TechRule[] = [
   {
     key: 'shopify',
@@ -90,17 +102,39 @@ export const TECH_RULES: readonly TechRule[] = [
     headers: ['x-shopid', 'x-shopify-stage']
   },
   {
+    key: 'woocommerce',
+    label: 'WooCommerce',
+    platform: true,
+    html: [
+      /wp-content\/plugins\/woocommerce/i,
+      /woocommerce_params/i,
+      /wc_single_product_params/i,
+      /wc-ajax/i,
+      /woocommerce-product-gallery/i
+    ],
+    generator: /woocommerce/i
+  },
+  {
     key: 'webflow',
     label: 'Webflow',
     platform: true,
-    html: [/data-wf-page/i, /assets\.website-files\.com/i, /uploads-ssl\.webflow\.com/i, /cdn\.prod\.website-files\.com/i],
+    html: [
+      /data-wf-page/i,
+      /assets\.website-files\.com/i,
+      /uploads-ssl\.webflow\.com/i,
+      /cdn\.prod\.website-files\.com/i
+    ],
     generator: /webflow/i
   },
   {
     key: 'squarespace',
     label: 'Squarespace',
     platform: true,
-    html: [/static1\.squarespace\.com/i, /Static\.SQUARESPACE_CONTEXT/i, /squarespace\.com\/universal/i],
+    html: [
+      /static1\.squarespace\.com/i,
+      /Static\.SQUARESPACE_CONTEXT/i,
+      /squarespace\.com\/universal/i
+    ],
     generator: /squarespace/i
   },
   {
@@ -122,13 +156,72 @@ export const TECH_RULES: readonly TechRule[] = [
     key: 'hubspot',
     label: 'HubSpot',
     platform: false,
-    html: [/js\.hs-scripts\.com/i, /js\.hsforms\.net/i, /js\.hs-analytics\.net/i, /js\.hs-banner\.com/i]
+    html: [
+      /js\.hs-scripts\.com/i,
+      /js\.hsforms\.net/i,
+      /js\.hs-analytics\.net/i,
+      /js\.hs-banner\.com/i
+    ]
   },
   {
     key: 'segment',
     label: 'Segment',
     platform: false,
     html: [/cdn\.segment\.com/i, /analytics\.segment\.io/i]
+  },
+  {
+    key: 'klaviyo',
+    label: 'Klaviyo',
+    platform: false,
+    html: [/static\.klaviyo\.com/i, /a\.klaviyo\.com/i, /_learnq/i]
+  },
+  {
+    key: 'mailchimp',
+    label: 'Mailchimp',
+    platform: false,
+    html: [/chimpstatic\.com/i, /list-manage\.com/i]
+  },
+  {
+    key: 'omnisend',
+    label: 'Omnisend',
+    platform: false,
+    html: [/omnisnippet/i, /omnisend\.com/i]
+  },
+  {
+    key: 'brevo',
+    label: 'Brevo',
+    platform: false,
+    html: [/sibforms\.com/i, /sendinblue\.com/i, /brevo\.com/i]
+  },
+  {
+    key: 'attentive',
+    label: 'Attentive',
+    platform: false,
+    html: [/cdn\.attn\.tv/i, /attn\.tv/i]
+  },
+  {
+    key: 'recharge',
+    label: 'Recharge',
+    platform: false,
+    html: [/rechargepayments\.com/i, /rechargecdn\.com/i]
+  },
+  {
+    key: 'gorgias',
+    label: 'Gorgias',
+    platform: false,
+    html: [/gorgias\.chat/i, /gorgias\.io/i]
+  },
+  {
+    key: 'yotpo',
+    label: 'Yotpo',
+    platform: false,
+    html: [/staticw2\.yotpo\.com/i, /yotpo\.com/i]
+  },
+  {
+    key: 'judge-me',
+    label: 'Judge.me',
+    platform: false,
+    html: [/judge\.me/i]
   }
 ];
 
@@ -222,7 +315,7 @@ function readAddress(value: unknown): PostalAddress | null {
   const source = Array.isArray(value) ? value[0] : value;
   if (!isRecord(source)) return null;
   const country = isRecord(source.addressCountry)
-    ? text(source.addressCountry.name) ?? text(source.addressCountry.alternateName)
+    ? (text(source.addressCountry.name) ?? text(source.addressCountry.alternateName))
     : text(source.addressCountry);
   const address: PostalAddress = {
     streetAddress: text(source.streetAddress),
@@ -236,7 +329,13 @@ function readAddress(value: unknown): PostalAddress | null {
 }
 
 function formatAddress(address: PostalAddress): string {
-  return [address.streetAddress, address.postalCode, address.addressLocality, address.addressRegion, address.addressCountry]
+  return [
+    address.streetAddress,
+    address.postalCode,
+    address.addressLocality,
+    address.addressRegion,
+    address.addressCountry
+  ]
     .filter((part): part is string => Boolean(part))
     .join(', ');
 }
@@ -248,7 +347,11 @@ function formatAddress(address: PostalAddress): string {
  * declarations by the stack itself; a CDN hostname in the HTML can be a
  * leftover asset reference from a migration.
  */
-export function detectTech(html: string, headers: Headers | null, hasProductFeed = false): TechFinding[] {
+export function detectTech(
+  html: string,
+  headers: Headers | null,
+  hasProductFeed = false
+): TechFinding[] {
   const generator = html ? metaContent(html, 'name', 'generator') : null;
   const poweredBy = headers?.get('x-powered-by') ?? headers?.get('powered-by') ?? null;
   const found: TechFinding[] = [];
@@ -310,7 +413,10 @@ export interface EnrichOptions {
   pageBudget?: number;
 }
 
-export async function enrichCompany(domain: string, options: EnrichOptions = {}): Promise<CompanyProfile> {
+export async function enrichCompany(
+  domain: string,
+  options: EnrichOptions = {}
+): Promise<CompanyProfile> {
   const clean = normalizeDomain(domain) || domain.trim().toLowerCase();
   const resolve = options.fetchImpl === undefined;
   await validatePublicHost(clean, { resolve });
@@ -341,12 +447,21 @@ export async function enrichCompany(domain: string, options: EnrichOptions = {})
       : ogTitle
         ? 'og:title'
         : '<title>';
-  if (name) evidence.push({ label: 'Company name', detail: `"${name}" from ${nameSource}.`, sourceUrl: base });
+  if (name)
+    evidence.push({
+      label: 'Company name',
+      detail: `"${name}" from ${nameSource}.`,
+      sourceUrl: base
+    });
 
   const jsonLdDescription = organization ? text(organization.description) : null;
   const description = jsonLdDescription ?? text(ogDescription) ?? text(metaDescription);
   if (description) {
-    const source = jsonLdDescription ? 'JSON-LD Organization.description' : ogDescription ? 'og:description' : 'meta description';
+    const source = jsonLdDescription
+      ? 'JSON-LD Organization.description'
+      : ogDescription
+        ? 'og:description'
+        : 'meta description';
     evidence.push({ label: 'Description', detail: `${source}: "${description}"`, sourceUrl: base });
   }
 
@@ -354,19 +469,37 @@ export async function enrichCompany(domain: string, options: EnrichOptions = {})
   const logoUrl = organization ? urlValue(organization.logo) : null;
   const declaredUrl = organization ? urlValue(organization.url) : null;
   const telephone = organization ? text(organization.telephone) : null;
-  if (telephone) evidence.push({ label: 'Phone', detail: `JSON-LD Organization.telephone: ${telephone}`, sourceUrl: base });
+  if (telephone)
+    evidence.push({
+      label: 'Phone',
+      detail: `JSON-LD Organization.telephone: ${telephone}`,
+      sourceUrl: base
+    });
 
   const address = organization ? readAddress(organization.address) : null;
   const country = address?.addressCountry ?? null;
   if (address) {
-    evidence.push({ label: 'Postal address', detail: `JSON-LD PostalAddress: ${formatAddress(address)}`, sourceUrl: base });
+    evidence.push({
+      label: 'Postal address',
+      detail: `JSON-LD PostalAddress: ${formatAddress(address)}`,
+      sourceUrl: base
+    });
   }
 
   const emails = [
-    ...new Set([...(organization && text(organization.email) ? [String(organization.email).trim().toLowerCase()] : []), ...extractMailtos(html)])
+    ...new Set([
+      ...(organization && text(organization.email)
+        ? [String(organization.email).trim().toLowerCase()]
+        : []),
+      ...extractMailtos(html)
+    ])
   ].sort();
   if (emails.length > 0) {
-    evidence.push({ label: 'Published email', detail: `${emails.length} address(es) published on the homepage: ${emails.join(', ')}.`, sourceUrl: base });
+    evidence.push({
+      label: 'Published email',
+      detail: `${emails.length} address(es) published on the homepage: ${emails.join(', ')}.`,
+      sourceUrl: base
+    });
   }
 
   // `sameAs` is the declared answer; homepage links are the observed one. Both
@@ -382,7 +515,11 @@ export async function enrichCompany(domain: string, options: EnrichOptions = {})
   }
   const sameAs = [...profiles.values()].sort();
   if (sameAs.length > 0) {
-    evidence.push({ label: 'Social profiles', detail: `${sameAs.length} published profile(s): ${sameAs.join(', ')}.`, sourceUrl: base });
+    evidence.push({
+      label: 'Social profiles',
+      detail: `${sameAs.length} published profile(s): ${sameAs.join(', ')}.`,
+      sourceUrl: base
+    });
   }
 
   // --- catalog -------------------------------------------------------------
@@ -436,7 +573,11 @@ export async function enrichCompany(domain: string, options: EnrichOptions = {})
     }
     pages.push(found);
     if (found.present && found.url) {
-      evidence.push({ label: candidate.label, detail: `${found.url} responds 200.`, sourceUrl: found.url });
+      evidence.push({
+        label: candidate.label,
+        detail: `${found.url} responds 200.`,
+        sourceUrl: found.url
+      });
     }
   }
   if (fetcher.exhausted()) degraded.push('page-budget-exhausted');
@@ -474,9 +615,18 @@ export async function enrichCompany(domain: string, options: EnrichOptions = {})
  * reported as `null`, never as a best guess -- the scorer treats an absent
  * vertical as a missed rule, which is the honest outcome.
  */
-export function toLeadFields(profile: CompanyProfile, verticals: readonly string[] = DEFAULT_SCORE_CONFIG.verticals): LeadFields {
-  const haystack = [profile.name, profile.legalName, profile.description].filter((part): part is string => Boolean(part)).join(' ').toLowerCase();
-  const vertical = verticals.find((term) => new RegExp(`\\b${escapeRegExp(term.toLowerCase())}\\b`).test(haystack)) ?? null;
+export function toLeadFields(
+  profile: CompanyProfile,
+  verticals: readonly string[] = DEFAULT_SCORE_CONFIG.verticals
+): LeadFields {
+  const haystack = [profile.name, profile.legalName, profile.description]
+    .filter((part): part is string => Boolean(part))
+    .join(' ')
+    .toLowerCase();
+  const vertical =
+    verticals.find((term) =>
+      new RegExp(`\\b${escapeRegExp(term.toLowerCase())}\\b`).test(haystack)
+    ) ?? null;
   return {
     platform: profile.platform,
     vertical,
@@ -512,13 +662,23 @@ const outputSchema = z.object({
   address: addressSchema.nullable(),
   country: z.string().nullable(),
   platform: z.string().nullable(),
-  tech: z.array(z.object({ key: z.string(), label: z.string(), platform: z.boolean(), marker: z.string() })),
+  tech: z.array(
+    z.object({ key: z.string(), label: z.string(), platform: z.boolean(), marker: z.string() })
+  ),
   catalogSize: z.number().nullable(),
   catalogCapped: z.boolean(),
-  pages: z.array(z.object({ kind: z.enum(['careers', 'pricing', 'blog']), url: z.string().nullable(), present: z.boolean() })),
+  pages: z.array(
+    z.object({
+      kind: z.enum(['careers', 'pricing', 'blog']),
+      url: z.string().nullable(),
+      present: z.boolean()
+    })
+  ),
   degraded: z.array(z.string()),
   generatedAt: z.string(),
-  evidence: z.array(z.object({ label: z.string(), detail: z.string(), sourceUrl: z.string().nullable().optional() }))
+  evidence: z.array(
+    z.object({ label: z.string(), detail: z.string(), sourceUrl: z.string().nullable().optional() })
+  )
 });
 
 type EnrichInput = z.infer<typeof inputSchema>;

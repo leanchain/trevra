@@ -13,17 +13,20 @@ import {
 import {
   draftContentOpportunityLinkedIn,
   getAccountSourceProviders,
+  getObservationProviderHealth,
   getRankedAccounts,
   importAccounts,
   materializeAccountContentOpportunity,
   rescoreAccounts,
   sendAccountFeedback,
+  setAccountMetaPageId,
   sourceAccounts,
   type AccountImportResult,
   type AccountScore,
   type AccountSource,
   type AccountSourceProvider,
   type AccountSourceRunResult,
+  type ObservationProviderHealth,
   type RankedAccount
 } from './api';
 import './account-import-workbench.css';
@@ -92,10 +95,29 @@ const TIER_LABELS: Record<AccountScore['tier'], string> = {
  */
 const KIND_LABELS: Record<string, string> = {
   'first-capture': 'First read of the site',
+  'meta-ads-started': 'Meta ads switched on',
+  'meta-ads-rising': 'Meta ad volume is rising',
+  'product-launch': 'New products appeared',
+  'release-notes-changed': 'Release notes changed',
+  'integration-added': 'A product integration appeared',
+  'integration-removed': 'A product integration disappeared',
+  'customer-proof-added': 'A customer story appeared',
+  'customer-proof-removed': 'A customer story disappeared',
   'hiring-up': 'More roles on the careers page',
   'hiring-down': 'Fewer roles on the careers page',
   'pricing-changed': 'The pricing page changed',
+  'storefront-rebuild': 'The storefront was rebuilt',
   'headline-changed': 'The homepage pitch changed',
+  'commerce-app-added': 'An ecommerce app appeared',
+  'commerce-app-removed': 'An ecommerce app disappeared',
+  'newsletter-signup-added': 'A newsletter signup appeared',
+  'newsletter-signup-removed': 'A newsletter signup disappeared',
+  'social-profile-added': 'A social profile was published',
+  'social-profile-removed': 'A social profile link disappeared',
+  'newsletter-started': 'Newsletter activity started',
+  'newsletter-silent': 'Newsletter activity went quiet',
+  'social-growth': 'Social audience growth',
+  'social-cadence-up': 'Social posting accelerated',
   'tech-added': 'A technology appeared on the site',
   'tech-removed': 'A technology went off the site',
   'thread-mention': 'Mentioned in a public thread'
@@ -123,6 +145,9 @@ const ageCopy = (ageDays: number) => (ageDays === 0 ? 'today' : `${plural(ageDay
 
 /** `https://kestrel.dev` for a stored `kestrel.dev`. The domain IS the identity of the row. */
 const siteUrl = (domain: string) => `https://${domain}`;
+const META_PAGE_ID_TAG_RE = /^meta-page-id:(\d{5,30})$/i;
+const metaPageIdFromTags = (tags: readonly string[]): string =>
+  tags.map((tag) => META_PAGE_ID_TAG_RE.exec(tag.trim())?.[1] ?? '').find(Boolean) ?? '';
 
 export function AccountsScreen({
   setToast,
@@ -148,6 +173,7 @@ export function AccountsScreen({
   const [sourceUrls, setSourceUrls] = useState('');
   const [sourcing, setSourcing] = useState(false);
   const [sourceRun, setSourceRun] = useState<AccountSourceRunResult | null>(null);
+  const [observationProviders, setObservationProviders] = useState<ObservationProviderHealth[]>([]);
 
   /** The row whose reasoning is open. One at a time; the panel is long. */
   const [openId, setOpenId] = useState<string | null>(null);
@@ -164,7 +190,12 @@ export function AccountsScreen({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setAccounts(await getRankedAccounts({ limit: 200 }));
+      const [ranked, providerHealth] = await Promise.all([
+        getRankedAccounts({ limit: 200 }),
+        getObservationProviderHealth().catch(() => [] as ObservationProviderHealth[])
+      ]);
+      setAccounts(ranked);
+      setObservationProviders(providerHealth);
       setError('');
     } catch (err) {
       setError(errorMessage(err, 'Unable to load accounts. Try again.'));
@@ -314,6 +345,24 @@ export function AccountsScreen({
     }
   };
 
+  const saveMetaPageId = async (row: RankedAccount, metaPageId: string | null) => {
+    setBusyId(row.account.id);
+    try {
+      const updated = await setAccountMetaPageId(row.account.id, metaPageId);
+      setAccounts((current) =>
+        current.map((entry) => (entry.account.id === row.account.id ? updated : entry))
+      );
+      setToast(
+        metaPageId ? 'Meta Page ID saved. A fresh sweep is due now.' : 'Meta Page ID cleared.'
+      );
+      setError('');
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to save that Meta Page ID'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   const markNotAFit = async (row: RankedAccount) => {
     setBusyId(row.account.id);
     try {
@@ -405,12 +454,66 @@ export function AccountsScreen({
                 busy={busyId === row.account.id}
                 storyBusy={storyBusyId === row.account.id}
                 onToggle={() => setOpenId(openId === row.account.id ? null : row.account.id)}
+                onMetaPageId={(value) => void saveMetaPageId(row, value)}
                 onNotAFit={() => void markNotAFit(row)}
                 onTurnIntoPost={() => void turnIntoPost(row)}
               />
             ))}
           </div>
         </section>
+      )}
+
+      {observationProviders.length > 0 && (
+        <details className="mgr-inputs acc-observation-health">
+          <summary>Signal sources</summary>
+          <div className="mgr-inputs-body">
+            <section className="page-panel">
+              <div className="section-heading">
+                <div>
+                  <h3 aria-level={2}>Observation sources</h3>
+                  <p>
+                    Configuration and the last real collector run. Account-specific warnings stay
+                    attached to their source.
+                  </p>
+                </div>
+              </div>
+              <div className="acc-provider-health-list">
+                {observationProviders.map((provider) => {
+                  const unavailable = provider.availability.mode !== 'ready';
+                  const status = unavailable
+                    ? provider.availability.mode
+                    : provider.operationalStatus;
+                  const detail = unavailable
+                    ? provider.availability.reason
+                    : (provider.lastError ??
+                      provider.lastWarning ??
+                      'No collector warning recorded.');
+                  return (
+                    <div className="acc-provider-health-row" key={provider.key}>
+                      <div>
+                        <strong>{provider.name}</strong>
+                        <span className="li-hint">{provider.surfaces.join(' · ')}</span>
+                      </div>
+                      <div className="acc-provider-health-state">
+                        <span className={`acc-provider-health-chip is-${status}`}>
+                          {status.replace('-', ' ')}
+                        </span>
+                        <span className="li-hint">
+                          {provider.lastSuccessAt
+                            ? `Last success ${relativeTime(provider.lastSuccessAt)}`
+                            : detail}
+                        </span>
+                        {provider.lastSuccessAt && (provider.lastError || provider.lastWarning) && (
+                          <span className="li-hint">{detail}</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          </div>
+        </details>
       )}
 
       {accounts.length > 0 ? (
@@ -1156,6 +1259,7 @@ function AccountRow({
   busy,
   storyBusy,
   onToggle,
+  onMetaPageId,
   onNotAFit,
   onTurnIntoPost
 }: {
@@ -1164,15 +1268,12 @@ function AccountRow({
   busy: boolean;
   storyBusy: boolean;
   onToggle: () => void;
+  onMetaPageId: (value: string | null) => void;
   onNotAFit: () => void;
   onTurnIntoPost: () => void;
 }) {
   const { account, score, signals } = row;
   const rejected = account.status === 'not_a_fit';
-  // The expansion is the evidence, and there are two kinds of it: a score's
-  // reasoning, or -- before the scorer has run -- the raw signals the sweep
-  // has stored so far. With neither, there is nothing to expand into.
-  const expandable = Boolean(score) || signals.length > 0;
 
   return (
     <article className={`acc-row${rejected ? ' is-rejected' : ''}`}>
@@ -1194,12 +1295,10 @@ function AccountRow({
       </p>
 
       <div className="acc-row-actions">
-        {expandable && (
-          <button className="ghost-button" type="button" onClick={onToggle} aria-expanded={open}>
-            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            {score ? 'Why this score' : 'What has been read'}
-          </button>
-        )}
+        <button className="ghost-button" type="button" onClick={onToggle} aria-expanded={open}>
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {score ? 'Why this score' : signals.length > 0 ? 'What has been read' : 'Account details'}
+        </button>
         <a
           className="li-link acc-site"
           href={siteUrl(account.domain)}
@@ -1237,8 +1336,83 @@ function AccountRow({
         </button>
       </div>
 
-      {open && (score ? <ScorePanel score={score} /> : <SignalPanel row={row} />)}
+      {open && (
+        <div className="acc-expanded-stack">
+          {score ? (
+            <ScorePanel score={score} />
+          ) : signals.length > 0 ? (
+            <SignalPanel row={row} />
+          ) : null}
+          <ObservationIdentityPanel account={account} busy={busy} onMetaPageId={onMetaPageId} />
+        </div>
+      )}
     </article>
+  );
+}
+
+function ObservationIdentityPanel({
+  account,
+  busy,
+  onMetaPageId
+}: {
+  account: RankedAccount['account'];
+  busy: boolean;
+  onMetaPageId: (value: string | null) => void;
+}) {
+  const current = metaPageIdFromTags(account.tags);
+  return (
+    <section className="acc-observation-identity" aria-label="Observation identity">
+      <div>
+        <strong>Verified Facebook Page ID</strong>
+        <p>
+          Exact numeric Page ID only. It can power Facebook public metrics and Meta Ad Library
+          counts; Trevra never matches by brand name or vanity URL.
+        </p>
+      </div>
+      <form
+        className="acc-observation-identity-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const value = String(new FormData(event.currentTarget).get('metaPageId') ?? '').trim();
+          onMetaPageId(value || null);
+        }}
+      >
+        <label>
+          Facebook Page ID
+          <input
+            key={current || 'empty'}
+            name="metaPageId"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]{5,30}"
+            defaultValue={current}
+            placeholder="123456789012345"
+            disabled={busy}
+            aria-describedby={`meta-page-help-${account.id}`}
+          />
+        </label>
+        <div className="acc-observation-identity-actions">
+          <button className="secondary-button" type="submit" disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={14} /> : null}
+            {current ? 'Update ID' : 'Save ID'}
+          </button>
+          {current && (
+            <button
+              className="ghost-button"
+              type="button"
+              disabled={busy}
+              onClick={() => onMetaPageId(null)}
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </form>
+      <small id={`meta-page-help-${account.id}`} className="li-hint">
+        Saving makes this active account due for a fresh sweep so Facebook/Meta measurements can
+        baseline immediately.
+      </small>
+    </section>
   );
 }
 

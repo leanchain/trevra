@@ -464,11 +464,13 @@ import {
   listRankedAccounts,
   recordAccountFeedback,
   rejectedSignalShapes,
+  setAccountMetaPageId,
   setAccountStatus
 } from './accounts/store.js';
 import { rescoreAccounts, rescoreWorkspace } from './accounts/score.js';
 import type { Account, AccountScore, AccountSignal, RankedAccount } from './accounts/types.js';
 import { listProviders as listLeadSourceProviders } from './research/registry.js';
+import { listObservationProviderHealth } from './observations/health.js';
 import {
   envCredentials as leadSourceCredentials,
   type ProviderAvailabilityMode
@@ -7346,6 +7348,16 @@ export function createApp(db: Db) {
     }
   });
 
+  app.get('/api/accounts/observation-providers', async (req: AuthedRequest, res, next) => {
+    try {
+      res.json({
+        providers: await listObservationProviderHealth(db, req.auth!.workspaceId)
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.post('/api/accounts/source', async (req: AuthedRequest, res, next) => {
     try {
       const input = accountSourceSchema.parse(req.body ?? {});
@@ -7488,6 +7500,21 @@ export function createApp(db: Db) {
       }
       res.setHeader('Cache-Control', 'no-store');
       res.json({ opportunity });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch('/api/accounts/:id/observation-identity', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = accountObservationIdentitySchema.parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const accountId = String(req.params.id);
+      const account = await setAccountMetaPageId(db, workspaceId, accountId, input.metaPageId);
+      if (!account) return res.status(404).json({ error: 'Account not found' });
+      const detail = await accountDetail(db, workspaceId, accountId);
+      if (!detail) return res.status(404).json({ error: 'Account not found' });
+      res.json(detail);
     } catch (error) {
       next(error);
     }
@@ -9696,6 +9723,16 @@ const accountFeedbackSchema = z
   .object({
     verdict: z.enum(['not_a_fit', 'good_fit']),
     reason: z.string().trim().max(500).optional()
+  })
+  .strict();
+
+const accountObservationIdentitySchema = z
+  .object({
+    metaPageId: z
+      .string()
+      .trim()
+      .regex(/^\d{5,30}$/)
+      .nullable()
   })
   .strict();
 

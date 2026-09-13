@@ -11,6 +11,7 @@ import {
   parseAccountImport,
   recordAccountFeedback,
   rejectedSignalShapes,
+  setAccountMetaPageId,
   setAccountStatus
 } from './store.js';
 
@@ -557,6 +558,55 @@ describe('feedback', () => {
     await expect(
       recordAccountFeedback(db, WORKSPACE_ID, 'acc_missing', { verdict: 'good_fit' }, NOW)
     ).rejects.toThrow();
+  });
+});
+
+describe('observation identities', () => {
+  it('sets, replaces and clears the verified Meta Page ID without touching operator tags', async () => {
+    const account = await createAccount(
+      db,
+      WORKSPACE_ID,
+      {
+        domain: 'identity.example',
+        source: 'manual',
+        tags: ['dach', 'meta-page-id:11111', 'priority']
+      },
+      NOW
+    );
+    const changedAt = new Date(NOW.getTime() + 60_000);
+    const updated = await setAccountMetaPageId(
+      db,
+      WORKSPACE_ID,
+      account.id,
+      '222222222222222',
+      changedAt
+    );
+    expect(updated?.tags).toEqual(['dach', 'priority', 'meta-page-id:222222222222222']);
+    expect(updated?.nextSweepAt).toBe(changedAt.toISOString());
+
+    expect(
+      await setAccountMetaPageId(db, 'ws_someone_else', account.id, '33333', changedAt)
+    ).toBeNull();
+    expect((await getAccount(db, WORKSPACE_ID, account.id))?.tags).toEqual([
+      'dach',
+      'priority',
+      'meta-page-id:222222222222222'
+    ]);
+
+    await setAccountStatus(db, WORKSPACE_ID, account.id, 'archived', changedAt);
+    const cleared = await setAccountMetaPageId(
+      db,
+      WORKSPACE_ID,
+      account.id,
+      null,
+      new Date(changedAt.getTime() + 60_000)
+    );
+    expect(cleared?.tags).toEqual(['dach', 'priority']);
+    expect(cleared?.nextSweepAt).toBeNull();
+
+    await expect(
+      setAccountMetaPageId(db, WORKSPACE_ID, account.id, 'not-a-page-id', changedAt)
+    ).rejects.toThrow(/5 to 30 digits/);
   });
 });
 

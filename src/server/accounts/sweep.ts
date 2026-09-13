@@ -1,8 +1,12 @@
 import { createHash } from 'node:crypto';
 import { id, type Db } from '../db.js';
+import type { CrawlTelemetry } from '../crawl/public-web.js';
+import { collectExternalObservations } from '../observations/collect.js';
+import type { ObservationProvider } from '../observations/types.js';
 import type { FetchLike } from '../skills/guard.js';
 import { watchSignals, type ResearchSnapshot } from '../skills/signal.js';
 import type { SkillContext } from '../skills/types.js';
+import { META_PAGE_ID_RE, metaPageIdsFromTags } from './identities.js';
 import type { Account, AccountSignal, AccountSource, AccountStatus } from './types.js';
 
 /**
@@ -11,8 +15,8 @@ import type { Account, AccountSignal, AccountSource, AccountStatus } from './typ
  * An imported CSV of 500 companies is a snapshot of somebody's guess. What
  * makes it worth opening next Tuesday is that something on it MOVED -- a role
  * opened, a pricing page changed, a headline was rewritten -- and that the move
- * is recent enough to be worth a sentence. This module is the loop that goes
- * and looks, every day, without ever becoming a crawler.
+ * is recent enough to be worth a sentence. This module schedules those looks;
+ * crawl policy itself lives in the reusable public-web crawler.
  *
  * FOUR RULES, and every part of this file exists because of one of them:
  *
@@ -157,8 +161,15 @@ function toSignal(row: SignalRow): AccountSignal {
  * because "the headline was removed" (`current: null`) and "the headline is now
  * blank" (`current: ''`) are different observations and must not share a row.
  */
-export function signalFingerprint(kind: string, previous: string | null, current: string | null): string {
-  return createHash('sha256').update(JSON.stringify([kind, previous, current])).digest('hex').slice(0, 32);
+export function signalFingerprint(
+  kind: string,
+  previous: string | null,
+  current: string | null
+): string {
+  return createHash('sha256')
+    .update(JSON.stringify([kind, previous, current]))
+    .digest('hex')
+    .slice(0, 32);
 }
 
 /* ---------------------------------------------------------------------------
@@ -251,7 +262,10 @@ export function sweepGapSeconds(seed: string): number {
  * account nobody has managed to read all week is not the one to hammer first
  * when the worker comes back.
  */
-export function sweepBackoffHours(account: Pick<Account, 'sweepError' | 'lastSweptAt'>, now: Date): number {
+export function sweepBackoffHours(
+  account: Pick<Account, 'sweepError' | 'lastSweptAt'>,
+  now: Date
+): number {
   if (!account.sweepError) return SWEEP_BACKOFF_HOURS[0];
   const last = account.lastSweptAt === null ? null : Date.parse(account.lastSweptAt);
   // A failing account with no readable last attempt starts on the MIDDLE rung,
@@ -271,7 +285,11 @@ export function sweepBackoffHours(account: Pick<Account, 'sweepError' | 'lastSwe
  * minute every night. A failure takes its rung off the ladder, unjittered:
  * backoff is a decision about patience and blurring it buys nothing.
  */
-export function nextSweepAt(account: Pick<Account, 'id' | 'sweepError' | 'lastSweptAt'>, now: Date, error: string | null): Date {
+export function nextSweepAt(
+  account: Pick<Account, 'id' | 'sweepError' | 'lastSweptAt'>,
+  now: Date,
+  error: string | null
+): Date {
   if (error !== null) return new Date(now.getTime() + sweepBackoffHours(account, now) * HOUR_MS);
   const drift = (seededUnit(`${account.id}:${now.toISOString()}`) * 2 - 1) * SWEEP_JITTER_SECONDS;
   return new Date(now.getTime() + SWEEP_INTERVAL_HOURS * HOUR_MS + Math.round(drift) * 1_000);
@@ -342,7 +360,9 @@ export async function recordSignals(
   }
   if (keep.length === 0) return [];
 
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     INSERT INTO account_signals (${SIGNAL_COLUMNS})
     SELECT * FROM unnest(
       ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[], ?::text[],
@@ -350,19 +370,21 @@ export async function recordSignals(
     )
     ON CONFLICT (workspace_id, account_id, kind, fingerprint) DO NOTHING
     RETURNING ${SIGNAL_COLUMNS}
-  `).all<SignalRow>(
-    keep.map(() => id('asig')),
-    keep.map(() => workspaceId),
-    keep.map(() => accountId),
-    keep.map((signal) => signal.kind),
-    keep.map((signal) => signal.detail),
-    keep.map((signal) => signal.previous),
-    keep.map((signal) => signal.current),
-    keep.map((signal) => signal.evidenceUrl.trim()),
-    keep.map((signal) => (signal.observedAt ?? now).toISOString()),
-    keep.map((signal) => signal.fingerprint),
-    keep.map(() => iso)
-  );
+  `
+    )
+    .all<SignalRow>(
+      keep.map(() => id('asig')),
+      keep.map(() => workspaceId),
+      keep.map(() => accountId),
+      keep.map((signal) => signal.kind),
+      keep.map((signal) => signal.detail),
+      keep.map((signal) => signal.previous),
+      keep.map((signal) => signal.current),
+      keep.map((signal) => signal.evidenceUrl.trim()),
+      keep.map((signal) => (signal.observedAt ?? now).toISOString()),
+      keep.map((signal) => signal.fingerprint),
+      keep.map(() => iso)
+    );
   return rows.map(toSignal);
 }
 
@@ -390,11 +412,18 @@ export async function recordSignals(
  * ONLY 'active'. A `not_a_fit` account is kept but never swept -- the operator
  * has said no, and continuing to fetch their site is both rude and pointless.
  */
-export async function claimDueAccounts(db: Db, workspaceId: string, now: Date, limit: number): Promise<Account[]> {
+export async function claimDueAccounts(
+  db: Db,
+  workspaceId: string,
+  now: Date,
+  limit: number
+): Promise<Account[]> {
   const take = Math.max(1, Math.min(HARD_MAX_SWEEP_ACCOUNTS, Math.trunc(limit)));
   const iso = now.toISOString();
   const lease = new Date(now.getTime() + SWEEP_BACKOFF_HOURS[0] * HOUR_MS).toISOString();
-  const rows = await db.prepare(`
+  const rows = await db
+    .prepare(
+      `
     UPDATE accounts SET next_sweep_at=?, updated_at=?
     WHERE id IN (
       SELECT id FROM accounts
@@ -404,7 +433,9 @@ export async function claimDueAccounts(db: Db, workspaceId: string, now: Date, l
       LIMIT ?
     )
     RETURNING ${ACCOUNT_COLUMNS}
-  `).all<AccountRow>(lease, iso, workspaceId, iso, take);
+  `
+    )
+    .all<AccountRow>(lease, iso, workspaceId, iso, take);
   // Ordered again in memory: `UPDATE ... RETURNING` makes no promise about row
   // order, and the pacing seed and the caller's rescore list both read better
   // in the order the queue actually meant.
@@ -421,6 +452,8 @@ export interface SweepDeps {
   now?: () => Date;
   /** Injection seam for tests; supplying it also disables DNS in the SSRF guard. */
   fetchImpl?: FetchLike;
+  /** External observation sources such as Beseam, Meta, social, or newsletter collectors. */
+  observationProviders?: readonly ObservationProvider[];
   log?: (message: string) => void;
 }
 
@@ -442,7 +475,13 @@ export interface SweepAccountResult {
  * whole distinction `signal.ts` is built on.
  */
 function capturedNothing(snapshot: ResearchSnapshot): boolean {
-  return snapshot.headline === null && snapshot.tech === null && snapshot.jobCount === null && snapshot.pricingHash === null;
+  return (
+    snapshot.headline === null &&
+    snapshot.tech === null &&
+    snapshot.jobCount === null &&
+    snapshot.pricingHash === null &&
+    snapshot.productCount === null
+  );
 }
 
 /** One sentence an operator can act on, bounded so a stack trace cannot fill the column. */
@@ -468,49 +507,122 @@ function describeFailure(cause: unknown): string {
  * spine -- turning those signals into deduped, evidence-bearing rows, and
  * deciding when to look again.
  */
-export async function sweepAccount(db: Db, account: Account, deps: SweepDeps = {}): Promise<SweepAccountResult> {
+export async function sweepAccount(
+  db: Db,
+  account: Account,
+  deps: SweepDeps = {}
+): Promise<SweepAccountResult> {
   const clock = deps.now ?? (() => new Date());
   const startedAt = clock();
   let signals: AccountSignal[] = [];
   let error: string | null = null;
+  let crawlTelemetry: CrawlTelemetry | null = null;
 
   try {
     const ctx: SkillContext = { db, workspaceId: account.workspaceId, now: clock };
-    const watched = await watchSignals(account.domain, ctx, { fetchImpl: deps.fetchImpl, now: startedAt });
+    const platformHint = account.tags.includes('platform:shopify')
+      ? 'shopify'
+      : account.tags.includes('platform:woocommerce')
+        ? 'woocommerce'
+        : null;
+    const watched = await watchSignals(account.domain, ctx, {
+      fetchImpl: deps.fetchImpl,
+      now: startedAt,
+      platformHint,
+      onCrawlTelemetry: (telemetry) => {
+        crawlTelemetry = telemetry;
+      }
+    });
+    const incoming: IncomingSignal[] = [];
+
     if (capturedNothing(watched.snapshot)) {
-      error = `Nothing could be read from https://${watched.domain}: the homepage returned no usable page.`;
+      // Native site evidence degraded, but external observation providers may
+      // still know something useful about this account. Keep the failure
+      // visible while accepting independently evidenced observations below.
+      const telemetry = crawlTelemetry as CrawlTelemetry | null;
+      error =
+        telemetry?.robots === 'unavailable'
+          ? `Nothing could be read from https://${watched.domain}: robots.txt could not be evaluated safely.`
+          : `Nothing could be read from https://${watched.domain}: the homepage returned no usable page.`;
     } else {
       const observedAt = new Date(watched.snapshot.capturedAt);
-      signals = await recordSignals(
-        db,
-        account.workspaceId,
-        account.id,
-        watched.signals.map((signal, index) => ({
+      incoming.push(
+        ...watched.signals.map((signal, index) => ({
           kind: signal.kind,
           detail: signal.detail,
           previous: signal.previous,
           current: signal.current,
           // The skill already worked out which page each signal came off --
-          // careers for hiring, the pricing page for pricing, the homepage for
-          // the rest -- and it emits them index-aligned with the signals. A
-          // null here means it could not name a page, and rule 3 applies.
+          // careers for hiring, pricing for pricing, the public product endpoint
+          // for launches, and the homepage for the rest.
           evidenceUrl: watched.evidence[index]?.sourceUrl ?? '',
           observedAt: Number.isNaN(observedAt.getTime()) ? startedAt : observedAt
-        })),
-        startedAt
+        }))
       );
     }
+
+    const publishedMetaPageIds = (watched.snapshot.socialProfiles ?? [])
+      .filter(
+        (profile) => profile.platform === 'facebook' && META_PAGE_ID_RE.test(profile.handle.trim())
+      )
+      .map((profile) => profile.handle.trim());
+    const metaPageIds = [
+      ...new Set([...metaPageIdsFromTags(account.tags), ...publishedMetaPageIds])
+    ].slice(0, 10);
+    const external = await collectExternalObservations(account.domain, {
+      providers: deps.observationProviders,
+      fetchImpl: deps.fetchImpl,
+      now: startedAt,
+      db,
+      workspaceId: account.workspaceId,
+      context: {
+        socialProfiles: watched.snapshot.socialProfiles ?? [],
+        metaPageIds,
+        newsletterSignups: watched.snapshot.newsletterSignups ?? [],
+        newsletterPublications: watched.snapshot.newsletterPublications ?? []
+      }
+    });
+    incoming.push(
+      ...external.observations.map((observation) => ({
+        kind: observation.kind,
+        detail: observation.detail,
+        previous: observation.previous,
+        current: observation.current,
+        evidenceUrl: observation.evidenceUrl,
+        observedAt: new Date(observation.observedAt)
+      }))
+    );
+    for (const warning of external.warnings) deps.log?.(`Observation provider: ${warning}`);
+
+    signals = await recordSignals(db, account.workspaceId, account.id, incoming, startedAt);
   } catch (cause) {
     error = describeFailure(cause);
   }
 
   const finishedAt = clock();
   const next = nextSweepAt(account, finishedAt, error);
-  await db.prepare(`
+  await db
+    .prepare(
+      `
     UPDATE accounts SET last_swept_at=?, next_sweep_at=?, sweep_error=?, updated_at=?
     WHERE workspace_id=? AND id=?
-  `).run(finishedAt.toISOString(), next.toISOString(), error, finishedAt.toISOString(), account.workspaceId, account.id);
+  `
+    )
+    .run(
+      finishedAt.toISOString(),
+      next.toISOString(),
+      error,
+      finishedAt.toISOString(),
+      account.workspaceId,
+      account.id
+    );
 
+  const telemetry = crawlTelemetry as CrawlTelemetry | null;
+  if (telemetry) {
+    deps.log?.(
+      `Crawl ${account.domain}: ${telemetry.requestsUsed}/${telemetry.requestsUsed + telemetry.requestsRemaining} requests, ${telemetry.bytesRead} bytes, ${telemetry.retries} retries, robots=${telemetry.robots}, delay=${telemetry.crawlDelayMs}ms.`
+    );
+  }
   deps.log?.(
     error === null
       ? `Swept ${account.domain}: ${signals.length} new signal(s), next look ${next.toISOString()}.`
@@ -550,11 +662,10 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTim
  * paced network reads and "sweep everything" is a request for a worker that
  * never returns. Whatever is left stays due and is claimed on the next tick.
  *
- * PACED BETWEEN ACCOUNTS, NOT WITHIN ONE. `signal.ts` already bounds a single
- * account to a handful of pages against one host; the burst worth avoiding is
- * the one visible from outside -- twenty different companies read from the same
- * address inside a second, which is a crawler's traffic shape whatever the
- * intent behind it.
+ * PACED AT BOTH LEVELS. The public-web crawler enforces per-domain request
+ * budgets, robots Crawl-delay and a minimum courtesy delay inside one account;
+ * this loop adds a deterministic gap between accounts so one worker does not
+ * fan out across dozens of companies in a burst.
  */
 export async function runAccountSweep(
   db: Db,
@@ -564,7 +675,10 @@ export async function runAccountSweep(
 ): Promise<AccountSweepResult> {
   const clock = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? defaultSleep;
-  const limit = Math.max(1, Math.min(HARD_MAX_SWEEP_ACCOUNTS, Math.trunc(opts.maxAccounts ?? DEFAULT_SWEEP_ACCOUNTS)));
+  const limit = Math.max(
+    1,
+    Math.min(HARD_MAX_SWEEP_ACCOUNTS, Math.trunc(opts.maxAccounts ?? DEFAULT_SWEEP_ACCOUNTS))
+  );
 
   const due = await claimDueAccounts(db, workspaceId, clock(), limit);
   const result: AccountSweepResult = { swept: 0, signalsStored: 0, failed: 0, accountIds: [] };
@@ -575,7 +689,12 @@ export async function runAccountSweep(
     // delay the caller. Seeded on the account so the same queue paces the same
     // way twice, which is what makes the pacing assertable.
     if (index > 0) await sleep(Math.round(sweepGapSeconds(account.id) * 1_000));
-    const outcome = await sweepAccount(db, account, { now: clock, fetchImpl: deps.fetchImpl, log: deps.log });
+    const outcome = await sweepAccount(db, account, {
+      now: clock,
+      fetchImpl: deps.fetchImpl,
+      observationProviders: deps.observationProviders,
+      log: deps.log
+    });
     result.swept += 1;
     result.signalsStored += outcome.signals.length;
     if (outcome.error !== null) result.failed += 1;

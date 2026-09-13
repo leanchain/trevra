@@ -60,11 +60,16 @@ function sig(kind: string, ageDays: number, detail?: string): AccountSignal {
   };
 }
 
-function score(signals: AccountSignal[], rejectedShapes: readonly string[] = [], windowDays?: number) {
+function score(
+  signals: AccountSignal[],
+  rejectedShapes: readonly string[] = [],
+  windowDays?: number
+) {
   return scoreAccount(signals, { now: NOW, rejectedShapes, windowDays });
 }
 
-const HIRING = 'Open roles on https://acme.example/careers went from 3 to 7 (new: Platform Engineer)';
+const HIRING =
+  'Open roles on https://acme.example/careers went from 3 to 7 (new: Platform Engineer)';
 const PRICING = 'Pricing page content changed on acme.example';
 
 describe('the weight table', () => {
@@ -92,15 +97,45 @@ describe('the weight table', () => {
   it('ranks public intent highest, then hiring and pricing, then positioning', () => {
     expect(SIGNAL_WEIGHTS['thread-mention']).toBeGreaterThan(SIGNAL_WEIGHTS['hiring-up']);
     expect(SIGNAL_WEIGHTS['hiring-up']).toBeGreaterThan(SIGNAL_WEIGHTS['pricing-changed']);
-    expect(SIGNAL_WEIGHTS['pricing-changed']).toBeGreaterThan(SIGNAL_WEIGHTS['headline-changed']);
+    expect(SIGNAL_WEIGHTS['pricing-changed']).toBeGreaterThan(
+      SIGNAL_WEIGHTS['release-notes-changed']
+    );
+    expect(SIGNAL_WEIGHTS['release-notes-changed']).toBeGreaterThan(
+      SIGNAL_WEIGHTS['integration-added']
+    );
+    expect(SIGNAL_WEIGHTS['integration-added']).toBeGreaterThan(
+      SIGNAL_WEIGHTS['customer-proof-added']
+    );
+    expect(SIGNAL_WEIGHTS['customer-proof-added']).toBeGreaterThan(
+      SIGNAL_WEIGHTS['headline-changed']
+    );
     expect(SIGNAL_WEIGHTS['headline-changed']).toBeGreaterThan(SIGNAL_WEIGHTS['tech-added']);
     expect(SIGNAL_WEIGHTS['tech-added']).toBeGreaterThan(SIGNAL_WEIGHTS['tech-removed']);
+  });
+
+  it('keeps first-party channel presence weaker than measured channel activity', () => {
+    expect(SIGNAL_WEIGHTS['newsletter-signup-added']).toBeLessThan(
+      SIGNAL_WEIGHTS['newsletter-started']
+    );
+    expect(SIGNAL_WEIGHTS['social-profile-added']).toBeLessThan(SIGNAL_WEIGHTS['social-growth']);
+    expect(SIGNAL_WEIGHTS['newsletter-signup-removed']).toBeLessThan(
+      SIGNAL_WEIGHTS['newsletter-signup-added']
+    );
+    expect(SIGNAL_WEIGHTS['social-profile-removed']).toBeLessThan(
+      SIGNAL_WEIGHTS['social-profile-added']
+    );
   });
 
   it('treats a contraction as a subtraction and a removal as a whisper', () => {
     expect(SIGNAL_WEIGHTS['hiring-down']).toBeLessThan(0);
     expect(SIGNAL_WEIGHTS['tech-removed']).toBeGreaterThan(0);
     expect(SIGNAL_WEIGHTS['tech-removed']).toBeLessThan(SIGNAL_WEIGHTS['headline-changed'] / 2);
+    expect(SIGNAL_WEIGHTS['integration-removed']).toBeGreaterThan(0);
+    expect(SIGNAL_WEIGHTS['integration-removed']).toBeLessThan(SIGNAL_WEIGHTS['integration-added']);
+    expect(SIGNAL_WEIGHTS['customer-proof-removed']).toBeGreaterThan(0);
+    expect(SIGNAL_WEIGHTS['customer-proof-removed']).toBeLessThan(
+      SIGNAL_WEIGHTS['customer-proof-added']
+    );
   });
 
   it('lets no single kind reach the hot threshold on its own weight', () => {
@@ -165,7 +200,9 @@ describe('one signal is never enough', () => {
     ]);
     expect(shouted.score).toBe(SINGLE_KIND_CAP);
     expect(shouted.tier).toBe('warm');
-    expect(shouted.rationale.penalties.some((penalty) => penalty.reason.includes('Only one kind'))).toBe(true);
+    expect(
+      shouted.rationale.penalties.some((penalty) => penalty.reason.includes('Only one kind'))
+    ).toBe(true);
   });
 
   it('tapers repeats of the same kind, because volume is not evidence', () => {
@@ -221,6 +258,33 @@ describe('layering', () => {
     expect(combination.bonus).toBeGreaterThan(GENERIC_PAIR_BONUS);
   });
 
+  it('makes release notes plus pricing a strong B2B buying window', () => {
+    const releaseOnly = score([sig('release-notes-changed', 0)]);
+    const releaseAndPricing = score([sig('release-notes-changed', 0), sig('pricing-changed', 0)]);
+    expect(releaseOnly.tier).toBe('cold');
+    expect(releaseAndPricing.tier).toBe('hot');
+    expect(releaseAndPricing.rationale.combinations[0]).toMatchObject({
+      kinds: ['release-notes-changed', 'pricing-changed'],
+      bonus: 20
+    });
+    expect(releaseAndPricing.rationale.combinations[0].why).toContain(
+      'product and its commercial packaging'
+    );
+  });
+
+  it('makes an ecommerce buying window hot only when independent store surfaces agree', () => {
+    const launchOnly = score([sig('product-launch', 0)]);
+    const launchAndAds = score([sig('product-launch', 0), sig('meta-ads-rising', 0)]);
+    expect(launchOnly.tier).toBe('warm');
+    expect(launchOnly.score).toBeLessThan(HOT_SCORE);
+    expect(launchAndAds.tier).toBe('hot');
+    expect(launchAndAds.rationale.combinations[0]).toMatchObject({
+      kinds: ['meta-ads-rising', 'product-launch'],
+      bonus: 24
+    });
+    expect(launchAndAds.rationale.combinations[0].why).toContain('budget and launch pressure');
+  });
+
   it('explains an unnamed pair too, rather than leaving a bare number', () => {
     const result = score([sig('headline-changed', 0), sig('tech-added', 0)]);
     const [combination] = result.rationale.combinations;
@@ -241,10 +305,16 @@ describe('layering', () => {
   });
 
   it('lets a genuinely loud account reach the top of the scale, and says that it clamped', () => {
-    const result = score([sig('thread-mention', 0), sig('hiring-up', 0), sig('pricing-changed', 0)]);
+    const result = score([
+      sig('thread-mention', 0),
+      sig('hiring-up', 0),
+      sig('pricing-changed', 0)
+    ]);
     expect(result.score).toBe(100);
     expect(result.tier).toBe('hot');
-    expect(result.rationale.penalties.some((penalty) => penalty.reason.includes('Capped at 100'))).toBe(true);
+    expect(
+      result.rationale.penalties.some((penalty) => penalty.reason.includes('Capped at 100'))
+    ).toBe(true);
   });
 });
 
@@ -255,7 +325,9 @@ describe('the window', () => {
     expect(result.distinctKinds).toBe(0);
     expect(result.newestSignalAt).toBeNull();
     expect(result.rationale.components).toHaveLength(0);
-    expect(result.rationale.summary).toBe('Nothing has been observed on this account in the last 60 days.');
+    expect(result.rationale.summary).toBe(
+      'Nothing has been observed on this account in the last 60 days.'
+    );
     expect(result.rationale.summary).not.toContain('90');
     expect(JSON.stringify(result.rationale)).not.toContain(HIRING);
   });
@@ -280,7 +352,9 @@ describe('the window', () => {
 
   it('charges an account whose freshest evidence is past the half-life', () => {
     const stale = score([sig('hiring-up', 40, HIRING), sig('pricing-changed', 40, PRICING)]);
-    expect(stale.rationale.penalties.some((penalty) => penalty.reason.includes('Nothing here is recent'))).toBe(true);
+    expect(
+      stale.rationale.penalties.some((penalty) => penalty.reason.includes('Nothing here is recent'))
+    ).toBe(true);
     // Two corroborating signals, and still cold -- because nobody has time to
     // open a conversation about something that happened six weeks ago.
     expect(stale.tier).toBe('cold');
@@ -309,15 +383,21 @@ describe('the operator rejections', () => {
   it('matches on the whole shape, so a different combination is untouched', () => {
     const signals = [sig('hiring-up', 2), sig('pricing-changed', 4), sig('tech-added', 5)];
     const result = score(signals, ['hiring-up,pricing-changed']);
-    expect(result.rationale.penalties.some((penalty) => penalty.reason.includes('not a fit'))).toBe(false);
+    expect(result.rationale.penalties.some((penalty) => penalty.reason.includes('not a fit'))).toBe(
+      false
+    );
     expect(result.tier).toBe('hot');
   });
 
   it('spells the shape the same way the feedback table stores it', () => {
-    expect(signalShape(['pricing-changed', 'hiring-up', 'hiring-up'])).toBe('hiring-up,pricing-changed');
+    expect(signalShape(['pricing-changed', 'hiring-up', 'hiring-up'])).toBe(
+      'hiring-up,pricing-changed'
+    );
     expect(signalShape([])).toBe('');
     // Canonical vocabulary order, not alphabetical, and unknown kinds last.
-    expect(signalShape(['thread-mention', 'zzz-unknown', 'first-capture'])).toBe('first-capture,thread-mention,zzz-unknown');
+    expect(signalShape(['thread-mention', 'zzz-unknown', 'first-capture'])).toBe(
+      'first-capture,thread-mention,zzz-unknown'
+    );
   });
 
   it('never matches an empty shape against an empty account', () => {
@@ -347,10 +427,22 @@ describe('the arithmetic', () => {
     ['nothing', [], []],
     ['one signal', [sig('hiring-up', 3, HIRING)], []],
     ['a layered pair', [sig('hiring-up', 2, HIRING), sig('pricing-changed', 4, PRICING)], []],
-    ['a clamped account', [sig('thread-mention', 0), sig('hiring-up', 0), sig('pricing-changed', 0)], []],
-    ['a capped single kind', [sig('thread-mention', 0), sig('thread-mention', 0), sig('thread-mention', 0)], []],
+    [
+      'a clamped account',
+      [sig('thread-mention', 0), sig('hiring-up', 0), sig('pricing-changed', 0)],
+      []
+    ],
+    [
+      'a capped single kind',
+      [sig('thread-mention', 0), sig('thread-mention', 0), sig('thread-mention', 0)],
+      []
+    ],
     ['a stale pair', [sig('hiring-up', 40), sig('pricing-changed', 45)], []],
-    ['a rejected shape', [sig('hiring-up', 2), sig('pricing-changed', 4)], ['hiring-up,pricing-changed']],
+    [
+      'a rejected shape',
+      [sig('hiring-up', 2), sig('pricing-changed', 4)],
+      ['hiring-up,pricing-changed']
+    ],
     ['a floored contraction', [sig('hiring-down', 1), sig('first-capture', 2)], []]
   ];
 
@@ -364,18 +456,21 @@ describe('the arithmetic', () => {
     expect(result.tier).toBe(tierFor(result.score, result.distinctKinds));
   });
 
-  it.each(cases)('renders components that can be recomputed from themselves: %s', (_label, signals, rejectedShapes) => {
-    for (const component of score(signals, rejectedShapes).rationale.components) {
-      expect(component.points).toBe(Math.round(component.base * component.decay * 10) / 10);
-      expect(component.decay).toBeGreaterThan(0);
-      expect(component.decay).toBeLessThanOrEqual(1);
-      expect(component.ageDays).toBeGreaterThanOrEqual(0);
-      expect(component.base).toBe(weightFor(component.kind));
-      // The first occurrence of a kind carries recency and nothing else, so an
-      // auditor with the row alone can rebuild the multiplier.
-      expect(component.decay).toBeLessThanOrEqual(decayFor(component.ageDays));
+  it.each(cases)(
+    'renders components that can be recomputed from themselves: %s',
+    (_label, signals, rejectedShapes) => {
+      for (const component of score(signals, rejectedShapes).rationale.components) {
+        expect(component.points).toBe(Math.round(component.base * component.decay * 10) / 10);
+        expect(component.decay).toBeGreaterThan(0);
+        expect(component.decay).toBeLessThanOrEqual(1);
+        expect(component.ageDays).toBeGreaterThanOrEqual(0);
+        expect(component.base).toBe(weightFor(component.kind));
+        // The first occurrence of a kind carries recency and nothing else, so an
+        // auditor with the row alone can rebuild the multiplier.
+        expect(component.decay).toBeLessThanOrEqual(decayFor(component.ageDays));
+      }
     }
-  });
+  );
 
   it('carries the evidence into every component, because a claim is not a signal', () => {
     const result = score([sig('hiring-up', 2, HIRING)]);
@@ -386,7 +481,11 @@ describe('the arithmetic', () => {
   });
 
   it('renders the strongest contribution first', () => {
-    const result = score([sig('tech-removed', 0), sig('thread-mention', 0), sig('headline-changed', 0)]);
+    const result = score([
+      sig('tech-removed', 0),
+      sig('thread-mention', 0),
+      sig('headline-changed', 0)
+    ]);
     expect(result.rationale.components.map((component) => component.kind)).toEqual([
       'thread-mention',
       'headline-changed',
@@ -439,8 +538,12 @@ describe('the sentence', () => {
   });
 
   it('says nothing has moved when nothing has, and why a baseline is not news', () => {
-    expect(score([]).rationale.summary).toBe('Nothing has been observed on this account in the last 60 days.');
-    const baseline = score([sig('first-capture', 2, 'First snapshot of acme.example: 3 open roles')]).rationale.summary;
+    expect(score([]).rationale.summary).toBe(
+      'Nothing has been observed on this account in the last 60 days.'
+    );
+    const baseline = score([
+      sig('first-capture', 2, 'First snapshot of acme.example: 3 open roles')
+    ]).rationale.summary;
     expect(baseline).toContain('First snapshot of acme.example');
     expect(baseline).toContain('nothing to act on yet');
   });
@@ -494,7 +597,9 @@ describe('storing a score', () => {
           };
         }
         const value = Reflect.get(target, property, receiver);
-        return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+        return typeof value === 'function'
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
       }
     });
     return { db: proxy as Db, statements };
@@ -507,7 +612,12 @@ describe('storing a score', () => {
     return accountId;
   }
 
-  async function signal(accountId: string, kind: string, ageDays: number, detail = `${kind} was observed`): Promise<void> {
+  async function signal(
+    accountId: string,
+    kind: string,
+    ageDays: number,
+    detail = `${kind} was observed`
+  ): Promise<void> {
     sequence += 1;
     await db
       .prepare(
@@ -528,7 +638,9 @@ describe('storing a score', () => {
 
   async function storedRow(accountId: string) {
     return db
-      .prepare('SELECT score, tier, distinct_kinds, newest_signal_at, rationale_json, computed_at FROM account_scores WHERE workspace_id=? AND account_id=?')
+      .prepare(
+        'SELECT score, tier, distinct_kinds, newest_signal_at, rationale_json, computed_at FROM account_scores WHERE workspace_id=? AND account_id=?'
+      )
       .get<{
         score: number;
         tier: string;
@@ -542,7 +654,9 @@ describe('storing a score', () => {
   beforeEach(async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     await db
-      .prepare('INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING')
+      .prepare(
+        'INSERT INTO workspaces (id,name,created_at) VALUES (?,?,?) ON CONFLICT (id) DO NOTHING'
+      )
       .run(WORKSPACE_ID, 'Accounts Score Test', NOW.toISOString());
     // `accounts` cascades to signals, scores and feedback.
     await db.prepare('DELETE FROM accounts WHERE workspace_id=?').run(WORKSPACE_ID);
@@ -652,7 +766,9 @@ describe('storing a score', () => {
     // multi-row upsert. Five accounts, three statements -- and it would still
     // be three for two hundred.
     expect(spy.statements).toHaveLength(3);
-    expect(spy.statements.filter((sql) => sql.includes('INSERT INTO account_scores'))).toHaveLength(1);
+    expect(spy.statements.filter((sql) => sql.includes('INSERT INTO account_scores'))).toHaveLength(
+      1
+    );
     for (const stored of scores) {
       expect(stored.tier).toBe('hot');
       expect((await storedRow(stored.accountId))?.score).toBe(stored.score);
@@ -662,7 +778,9 @@ describe('storing a score', () => {
   it('drops ids that are stale or rejected instead of throwing at the caller', async () => {
     await account('acc_live');
     await account('acc_dead', 'not_a_fit');
-    const scores = await rescoreAccounts(db, WORKSPACE_ID, ['acc_live', 'acc_dead', 'acc_ghost'], { now: NOW });
+    const scores = await rescoreAccounts(db, WORKSPACE_ID, ['acc_live', 'acc_dead', 'acc_ghost'], {
+      now: NOW
+    });
     expect(scores.map((stored) => stored.accountId)).toEqual(['acc_live']);
     expect(await rescoreAccounts(db, WORKSPACE_ID, [], { now: NOW })).toEqual([]);
   });
@@ -683,7 +801,9 @@ describe('storing a score', () => {
     expect(await storedRow('acc_out')).toBeUndefined();
 
     const rows = await db
-      .prepare('SELECT account_id, computed_at FROM account_scores WHERE workspace_id=? ORDER BY account_id')
+      .prepare(
+        'SELECT account_id, computed_at FROM account_scores WHERE workspace_id=? ORDER BY account_id'
+      )
       .all<{ account_id: string; computed_at: string }>(WORKSPACE_ID);
     expect(rows.map((row) => row.account_id)).toEqual(['acc_one', 'acc_three', 'acc_two']);
     // ONE clock for the pass: three accounts scored at the same instant, so the
