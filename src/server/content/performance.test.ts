@@ -309,6 +309,13 @@ describe('content commercial performance', () => {
     expect(report.publications[0]).toMatchObject({
       postId: publication.postId,
       latestMetrics: { impressions: 1500, reactions: 18, comments: 4 },
+      velocity: {
+        snapshotCount: 2,
+        impressionsDelta: 500,
+        reactionsDelta: 8,
+        commentsDelta: 2,
+        repostsDelta: null
+      },
       commercial: {
         engagers: 1,
         resolvedPeople: 1,
@@ -318,6 +325,8 @@ describe('content commercial performance', () => {
         won: 1
       }
     });
+    expect(report.publications[0]?.velocity.windowHours).toBeCloseTo(55 / 60, 5);
+    expect(report.publications[0]?.velocity.impressionsPerHour).toBeCloseTo(545.45, 1);
     expect(
       report.learning.find((row) => row.dimension === 'angle' && row.value === 'observation')
     ).toMatchObject({ sampleSize: 1, eligibleForComparison: false });
@@ -325,9 +334,15 @@ describe('content commercial performance', () => {
 
   it('uses medians and refuses comparison claims until three published samples exist', async () => {
     const workspaceId = await workspace('Learning sample');
-    await publishedStory(workspaceId, 'one', 100);
+    const one = await publishedStory(workspaceId, 'one', 100);
     await publishedStory(workspaceId, 'two', 300);
     let report = await contentPerformanceReport(db, workspaceId);
+    expect(report.publications.find((row) => row.postId === one.postId)?.velocity).toMatchObject({
+      snapshotCount: 1,
+      windowHours: null,
+      impressionsDelta: null,
+      impressionsPerHour: null
+    });
     let angle = report.learning.find(
       (row) => row.dimension === 'angle' && row.value === 'observation'
     );

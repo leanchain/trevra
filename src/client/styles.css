@@ -13972,9 +13972,13 @@ button:disabled {
   display: grid;
   gap: 2px;
 }
-.research-performance-publications > article > div:first-child span {
+.research-performance-publications > article > div:first-child span,
+.research-performance-velocity {
   color: var(--muted);
   font-size: var(--t-text-chip);
+}
+.research-performance-velocity {
+  line-height: 1.4;
 }
 .research-performance-chain {
   display: flex;

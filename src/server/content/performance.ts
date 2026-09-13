@@ -13,6 +13,18 @@ export interface ContentCommercialOutcomes {
   won: number;
 }
 
+export interface ContentPublicationVelocity {
+  snapshotCount: number;
+  firstObservedAt: string | null;
+  latestObservedAt: string | null;
+  windowHours: number | null;
+  impressionsDelta: number | null;
+  impressionsPerHour: number | null;
+  reactionsDelta: number | null;
+  commentsDelta: number | null;
+  repostsDelta: number | null;
+}
+
 export interface ContentPublicationPerformance {
   assetId: string;
   opportunityId: string | null;
@@ -23,6 +35,7 @@ export interface ContentPublicationPerformance {
   publishedAt: string;
   postedUrl: string | null;
   latestMetrics: ContentPublicationMetric | null;
+  velocity: ContentPublicationVelocity;
   commercial: ContentCommercialOutcomes;
 }
 
@@ -88,6 +101,50 @@ function commercialFromRow(row: Record<string, unknown>): ContentCommercialOutco
     verifiedReplies: count(row.verified_replies),
     opportunities: count(row.opportunities),
     won: count(row.won)
+  };
+}
+
+function metricDelta(first: unknown, latest: unknown): number | null {
+  const start = nullableMetric(first);
+  const end = nullableMetric(latest);
+  return start === null || end === null ? null : end - start;
+}
+
+function velocityFromRow(row: Record<string, unknown>): ContentPublicationVelocity {
+  const snapshotCount = count(row.metric_snapshot_count);
+  const firstObservedAt = row.first_metric_observed_at ? iso(row.first_metric_observed_at) : null;
+  const latestObservedAt = row.metric_observed_at ? iso(row.metric_observed_at) : null;
+  if (snapshotCount < 2 || !firstObservedAt || !latestObservedAt) {
+    return {
+      snapshotCount,
+      firstObservedAt,
+      latestObservedAt,
+      windowHours: null,
+      impressionsDelta: null,
+      impressionsPerHour: null,
+      reactionsDelta: null,
+      commentsDelta: null,
+      repostsDelta: null
+    };
+  }
+  const windowHours = Math.max(
+    0,
+    (Date.parse(latestObservedAt) - Date.parse(firstObservedAt)) / 3_600_000
+  );
+  const impressionsDelta = metricDelta(row.first_metric_impressions, row.metric_impressions);
+  return {
+    snapshotCount,
+    firstObservedAt,
+    latestObservedAt,
+    windowHours,
+    impressionsDelta,
+    impressionsPerHour:
+      impressionsDelta === null || windowHours <= 0
+        ? null
+        : Math.round((impressionsDelta / windowHours) * 100) / 100,
+    reactionsDelta: metricDelta(row.first_metric_reactions, row.metric_reactions),
+    commentsDelta: metricDelta(row.first_metric_comments, row.metric_comments),
+    repostsDelta: metricDelta(row.first_metric_reposts, row.metric_reposts)
   };
 }
 
@@ -166,6 +223,12 @@ export async function listContentPublicationPerformance(
         metric.comments AS metric_comments,metric.reposts AS metric_reposts,
         metric.clicks AS metric_clicks,metric.profile_views AS metric_profile_views,
         metric.follows AS metric_follows,metric.created_at AS metric_created_at,
+        first_metric.observed_at AS first_metric_observed_at,
+        first_metric.impressions AS first_metric_impressions,
+        first_metric.reactions AS first_metric_reactions,
+        first_metric.comments AS first_metric_comments,
+        first_metric.reposts AS first_metric_reposts,
+        COALESCE(history.snapshot_count,0)::int AS metric_snapshot_count,
         COALESCE(stats.engagers,0)::int AS engagers,
         COALESCE(stats.resolved_people,0)::int AS resolved_people,
         COALESCE(stats.qualified_demand,0)::int AS qualified_demand,
@@ -186,6 +249,22 @@ export async function listContentPublicationPerformance(
         ORDER BY m.observed_at DESC,m.id DESC
         LIMIT 1
       ) metric ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT m.*
+        FROM content_publication_metrics m
+        WHERE m.workspace_id=post.workspace_id
+          AND m.channel='linkedin'
+          AND m.publication_id=post.id
+        ORDER BY m.observed_at ASC,m.id ASC
+        LIMIT 1
+      ) first_metric ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS snapshot_count
+        FROM content_publication_metrics m
+        WHERE m.workspace_id=post.workspace_id
+          AND m.channel='linkedin'
+          AND m.publication_id=post.id
+      ) history ON TRUE
       LEFT JOIN LATERAL (
         WITH source_leads AS (
           SELECT lead.id,lead.profile_url
@@ -273,6 +352,7 @@ export async function listContentPublicationPerformance(
     publishedAt: iso(row.published_at),
     postedUrl: row.posted_url ? String(row.posted_url) : null,
     latestMetrics: latestMetricFromRow(row),
+    velocity: velocityFromRow(row),
     commercial: commercialFromRow(row)
   }));
 }

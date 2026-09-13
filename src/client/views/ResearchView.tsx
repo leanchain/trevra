@@ -141,6 +141,35 @@ function isValidOfferUrl(value: string): boolean {
   }
 }
 
+function performanceVelocityCopy(
+  publication: ContentPerformanceReport['publications'][number]
+): string {
+  const velocity = publication.velocity;
+  if (velocity.snapshotCount === 0) return 'No metric snapshots yet';
+  if (velocity.snapshotCount < 2)
+    return `${velocity.snapshotCount} snapshot · velocity needs another observation`;
+  const bits = [`${velocity.snapshotCount} snapshots`];
+  if (velocity.windowHours !== null) {
+    bits.push(
+      velocity.windowHours < 1
+        ? `${Math.max(1, Math.round(velocity.windowHours * 60))}m window`
+        : `${velocity.windowHours.toFixed(1)}h window`
+    );
+  }
+  const signed = (value: number) => `${value > 0 ? '+' : ''}${Math.round(value).toLocaleString()}`;
+  if (velocity.impressionsDelta !== null) {
+    bits.push(
+      `${signed(velocity.impressionsDelta)} impressions${
+        velocity.impressionsPerHour === null ? '' : ` (${signed(velocity.impressionsPerHour)}/h)`
+      }`
+    );
+  }
+  if (velocity.reactionsDelta !== null) bits.push(`${signed(velocity.reactionsDelta)} reactions`);
+  if (velocity.commentsDelta !== null) bits.push(`${signed(velocity.commentsDelta)} comments`);
+  if (velocity.repostsDelta !== null) bits.push(`${signed(velocity.repostsDelta)} reposts`);
+  return bits.join(' · ');
+}
+
 function offerIsSubmittable(offer: OutreachOffer): boolean {
   const name = offer.name.trim();
   const summary = offer.summary.trim();
@@ -1867,6 +1896,9 @@ export function ResearchView({
                             ? 'Reach not observed'
                             : `${publication.latestMetrics.impressions.toLocaleString()} impressions`}
                         </span>
+                        <small className="research-performance-velocity">
+                          {performanceVelocityCopy(publication)}
+                        </small>
                       </div>
                       <div className="research-performance-chain">
                         <span>{publication.commercial.engagers} engaged</span>

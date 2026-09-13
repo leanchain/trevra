@@ -673,7 +673,7 @@ A card must remain useful if the viewer has never heard of Trevra. Branding is p
 
 # Phase 8 — Feed-post analytics
 
-**Shipped 2026-09-12:** bounded own-post metric reader, real publish-permalink capture, append-only snapshots, tapered lifecycle scheduling, authenticated performance API, Research distribution outcomes, and explicit nulls for unreadable metrics. Post-history velocity and richer per-post UI remain follow-up polish.
+**Shipped 2026-09-12:** bounded own-post metric reader, real publish-permalink capture, append-only snapshots, tapered lifecycle scheduling, authenticated performance API, Research distribution outcomes, explicit nulls for unreadable metrics, and derived post-history velocity. Recent publications now show snapshot depth plus first→latest impression growth/hour and reaction/comment/repost deltas only when at least two observations exist; one snapshot explicitly yields no velocity instead of extrapolation. Richer charting remains optional follow-up polish.
 
 This closes the loop and is required before claiming Trevra learns distribution.
 
