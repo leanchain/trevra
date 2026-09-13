@@ -58,14 +58,13 @@ Current prepared execution action types are:
 - `email.send` — send through a connected Gmail or Microsoft 365 mailbox.
 - `community.reply` — publish a governed reply through a supported GTM community channel.
 - `crm.log-activity` — append a GTM activity to a connected CRM record.
+- `buffer.create-draft` — create an unscheduled Buffer draft only after exact-payload founder approval. The mutation always uses Buffer's draft mode and never supplies a publish time.
 
 There is no generic remote-action adapter and no arbitrary webhook action. A new external write requires a named GTM action, a bounded payload schema, policy/approval semantics, a dedicated adapter, and tests.
 
 ## Nango sync behavior
 
 A Nango sync is resolved from the registered provider configuration and external connection identity to exactly one Trevra workspace. Ambiguous connection ownership is refused.
-
-For each returned record Trevra:
 
 1. removes Nango transport metadata;
 2. maps only a supported GTM model alias;

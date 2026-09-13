@@ -59,6 +59,7 @@ import type { ContentFormatTemplate } from '../server/content/format-templates';
 import type { MarketPulseCadence, MarketPulseSchedule } from '../server/content/pulse-schedule';
 import type { ContentPerformanceReport } from '../server/content/performance';
 import type { ContentChannelVariant } from '../server/content/channel-variants';
+import type { BufferChannel, BufferConnectionState } from '../server/content/buffer';
 import type {
   PublicContentReport,
   PublicContentReportPerformance
@@ -217,6 +218,20 @@ export async function getContentChannelVariants(
     `/api/content/posts/${encodeURIComponent(postId)}/channel-variants${query.size ? `?${query}` : ''}`
   );
   return result.variants;
+}
+
+export async function getBufferChannels(): Promise<BufferConnectionState> {
+  return request('/api/content/buffer/channels');
+}
+
+export async function prepareBufferDraft(
+  postId: string,
+  channelId: string
+): Promise<{ run: PlaybookRun; channel: BufferChannel }> {
+  return request(`/api/content/posts/${encodeURIComponent(postId)}/buffer-draft`, {
+    method: 'POST',
+    body: JSON.stringify({ channelId })
+  });
 }
 
 export async function getContentPerformance(limit = 100): Promise<ContentPerformanceReport> {

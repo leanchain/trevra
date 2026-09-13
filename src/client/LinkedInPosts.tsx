@@ -23,8 +23,11 @@ import {
   addLinkedInPostImage,
   cancelLinkedInPost,
   createLinkedInPost,
+  decidePlaybookStep,
+  getBufferChannels,
   getContentChannelVariants,
   listLinkedInPosts,
+  prepareBufferDraft,
   publishLinkedInPostNow,
   updateLinkedInPost,
   type ApiError,
@@ -33,6 +36,8 @@ import {
 import { useActiveSeatKey } from './LinkedInActiveAccount';
 import { replaceNavigate } from './ui/route';
 import type { ContentChannelVariant } from '../server/content/channel-variants';
+import type { BufferChannel, BufferConnectionState } from '../server/content/buffer';
+import type { PlaybookRun } from '../shared/types';
 
 const MAX_CHARS = 3000;
 const MAX_IMAGES = 9;
@@ -643,6 +648,188 @@ function PostRow({ post, onChanged }: { post: LinkedInPost; onChanged: () => voi
   );
 }
 
+function BufferDraftHandoff({
+  post,
+  setToast
+}: {
+  post: LinkedInPost;
+  setToast: (message: string) => void;
+}) {
+  const [state, setState] = useState<BufferConnectionState | null>(null);
+  const [channelId, setChannelId] = useState('');
+  const [run, setRun] = useState<PlaybookRun | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!post.contentAssetId) return;
+    let cancelled = false;
+    setState(null);
+    setError('');
+    getBufferChannels()
+      .then((next) => {
+        if (cancelled) return;
+        setState(next);
+        setChannelId((current) =>
+          next.channels.some((channel) => channel.id === current)
+            ? current
+            : (next.channels.find((channel) => !channel.isQueuePaused)?.id ??
+              next.channels[0]?.id ??
+              '')
+        );
+      })
+      .catch((cause) => {
+        if (cancelled) return;
+        setState({ connected: false, channels: [] });
+        setError(cause instanceof Error ? cause.message : 'Could not load Buffer channels.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [post.id, post.updatedAt, post.contentAssetId]);
+
+  if (!post.contentAssetId) return null;
+
+  const waitingApproval = run?.steps.find(
+    (step) => step.stepId === 'approve-buffer-draft' && step.status === 'waiting_approval'
+  );
+  const selected = state?.channels.find((channel) => channel.id === channelId) ?? null;
+  const output =
+    run?.output && typeof run.output === 'object' && !Array.isArray(run.output)
+      ? (run.output as Record<string, unknown>)
+      : null;
+  const delivery =
+    output?.delivery && typeof output.delivery === 'object' && !Array.isArray(output.delivery)
+      ? (output.delivery as Record<string, unknown>)
+      : null;
+  const externalRef = typeof delivery?.externalRef === 'string' ? delivery.externalRef : null;
+
+  async function prepare(): Promise<void> {
+    if (!channelId) return;
+    setBusy(true);
+    setError('');
+    try {
+      const prepared = await prepareBufferDraft(post.id, channelId);
+      setRun(prepared.run);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not prepare the Buffer draft.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function decide(decision: 'approve' | 'reject'): Promise<void> {
+    if (!run || !waitingApproval) return;
+    setBusy(true);
+    setError('');
+    try {
+      const next = await decidePlaybookStep(run.id, waitingApproval.stepId, decision);
+      if (decision === 'reject') {
+        setRun(null);
+        setToast('Buffer draft discarded.');
+        return;
+      }
+      setRun(next);
+      if (next.status === 'completed') setToast('Draft created in Buffer.');
+      else if (next.status === 'failed') setError(next.error ?? 'Buffer draft creation failed.');
+      else setToast('Buffer draft approved; execution is queued.');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not decide this Buffer draft.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="li-channel-variant li-buffer-draft">
+      <header>
+        <div>
+          <strong>Buffer draft</strong>
+          <small>External draft only · exact founder approval required</small>
+        </div>
+        {run?.status === 'completed' ? <span className="li-chip">Created</span> : null}
+      </header>
+      <p className="li-channel-variants-note">
+        Uses the last saved version of this evidence-backed post. Save editor changes before
+        preparing the Buffer draft; Trevra never queues or publishes it from this handoff.
+      </p>
+      {state === null ? <p className="empty-copy">Checking Buffer…</p> : null}
+      {state && !state.connected ? (
+        <p className="empty-copy">
+          Connect Buffer in Setup → Integrations to enable draft handoff.
+        </p>
+      ) : null}
+      {state?.connected && state.channels.length === 0 ? (
+        <p className="empty-copy">Buffer is connected, but no channels are available.</p>
+      ) : null}
+      {state?.connected &&
+      state.channels.length > 0 &&
+      !waitingApproval &&
+      run?.status !== 'completed' ? (
+        <div className="li-post-schedule-row">
+          <label className="li-post-schedule">
+            Buffer channel
+            <select
+              value={channelId}
+              disabled={busy}
+              onChange={(event) => setChannelId(event.target.value)}
+            >
+              {state.channels.map((channel: BufferChannel) => (
+                <option value={channel.id} key={channel.id}>
+                  {channel.displayName} · {channel.service}
+                  {channel.isQueuePaused ? ' · queue paused' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busy || !selected}
+            onClick={() => void prepare()}
+          >
+            {busy ? 'Preparing…' : 'Prepare Buffer draft'}
+          </button>
+        </div>
+      ) : null}
+      {waitingApproval ? (
+        <div className="li-channel-variant">
+          <strong>Approve exact draft</strong>
+          <small>{selected ? `${selected.displayName} · ${selected.service}` : channelId}</small>
+          <pre>{renderPostBody(post.blocks)}</pre>
+          <footer>
+            <button
+              className="ghost-button"
+              type="button"
+              disabled={busy}
+              onClick={() => void decide('reject')}
+            >
+              Discard
+            </button>
+            <button
+              className="primary-button"
+              type="button"
+              disabled={busy}
+              onClick={() => void decide('approve')}
+            >
+              {busy ? 'Creating…' : 'Create draft in Buffer'}
+            </button>
+          </footer>
+        </div>
+      ) : null}
+      {run?.status === 'completed' ? (
+        <p className="li-channel-variants-note">
+          Buffer confirmed the draft{externalRef ? ` · ${externalRef}` : ''}. It is not scheduled.
+        </p>
+      ) : null}
+      {run?.status === 'failed' && !error ? (
+        <p className="li-post-error">{run.error ?? 'Buffer draft creation failed.'}</p>
+      ) : null}
+      {error ? <p className="li-post-error">{error}</p> : null}
+    </div>
+  );
+}
+
 function ChannelVariantsPanel({
   post,
   setToast
@@ -696,7 +883,8 @@ function ChannelVariantsPanel({
         <div className="li-channel-variants-body">
           <p className="li-channel-variants-note">
             Trevra reshapes the saved evidence-backed draft for each destination and runs the copy
-            critic. This panel never publishes, even when a platform has a write API.
+            critic. Copy variants never publish. Buffer is a separate exact-approval handoff that
+            creates an unscheduled draft only.
           </p>
           {error ? <p className="li-post-error">{error}</p> : null}
           {variants === null && !error ? <p className="empty-copy">Preparing variants…</p> : null}
@@ -745,6 +933,7 @@ function ChannelVariantsPanel({
               </footer>
             </article>
           ))}
+          <BufferDraftHandoff post={post} setToast={setToast} />
         </div>
       </details>
     </section>

@@ -897,13 +897,15 @@ For a provenance-linked saved story draft, Trevra:
 
 **Short-form carousel shipped:** Trevra can turn one source-backed story into a separate revision-aware LinkedIn carousel draft: cover, up to five evidence slides, and a sources slide. Every slide is a deterministic 1080×1350 PNG generated from current evidence, and carousel performance can feed the same proven-format learner so successful carousel structure is reusable without copying historical claims or images.
 
+**External scheduler draft handoff shipped:** Buffer is now a concrete connected integration. A provenance-linked saved story can target one workspace-owned Buffer channel, stop for exact-payload founder approval, and then create an unscheduled Buffer draft using `saveToDraft: true`. Trevra keeps a per-payload external-write ledger: confirmed replays are idempotent, while ambiguous transport outcomes are marked unknown and never blindly retried.
+
 Still open as genuinely new destination work after the proven copy-only/channel-neutral bridge:
 
 - company LinkedIn pages, once Trevra has an explicit company-page identity/configuration model;
-- external scheduler integrations;
 - provider-specific publish + metric collection, which must use the normal approval/external-write boundary rather than this copy-only surface.
 
 These are extension work, not blockers for the founder GTM/distribution loop.
+
 **Gate:** one evidence-backed Trevra story can be safely reshaped for the existing channel registry from the editor without losing provenance or creating an external write. **Met.**
 
 ---

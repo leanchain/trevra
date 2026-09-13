@@ -492,11 +492,63 @@ export const conversationEmailReplyPlaybook: PlaybookDefinition = {
   source: { type: 'builtin' }
 };
 
+export const bufferDraftPlaybook: PlaybookDefinition = {
+  id: 'gtm.buffer-draft',
+  version: '1.0.0',
+  name: 'Create Buffer draft',
+  description:
+    'Create one unscheduled Buffer draft after the founder approves the exact target channel and text.',
+  inputSchema: z
+    .object({
+      sourcePostId: z.string().trim().min(1).max(200),
+      contentAssetId: z.string().trim().max(200).nullable().optional(),
+      channelId: z.string().trim().min(1).max(300),
+      channelName: z.string().trim().min(1).max(300),
+      text: z.string().trim().min(1).max(20_000)
+    })
+    .strict(),
+  steps: [
+    {
+      id: 'approve-buffer-draft',
+      type: 'approval',
+      title: 'Create draft in Buffer',
+      payload: {
+        channelId: { $ref: '$.input.channelId' },
+        text: { $ref: '$.input.text' },
+        metadata: {
+          sourcePostId: { $ref: '$.input.sourcePostId' },
+          contentAssetId: { $ref: '$.input.contentAssetId' },
+          channelName: { $ref: '$.input.channelName' },
+          mode: 'draft_only'
+        }
+      }
+    },
+    {
+      id: 'create-buffer-draft',
+      type: 'action',
+      actionType: 'buffer.create-draft',
+      approvalStepId: 'approve-buffer-draft',
+      needs: ['approve-buffer-draft'],
+      payload: { $ref: '$.steps.approve-buffer-draft.input' },
+      // No automatic retry: a timeout after Buffer accepted a mutation has an
+      // ambiguous outcome, and the Buffer ledger forces a human reconciliation.
+      retry: { maxAttempts: 1, delaySeconds: 0 }
+    }
+  ],
+  output: {
+    approved: { $ref: '$.steps.approve-buffer-draft.output.approved' },
+    delivery: { $ref: '$.steps.create-buffer-draft.output' },
+    sourcePostId: { $ref: '$.input.sourcePostId' }
+  },
+  source: { type: 'builtin' }
+};
+
 registerPlaybook(auditLedOutreachPlaybook);
 registerPlaybook(communityOutreachPlaybook);
 registerPlaybook(threadReplyPlaybook);
 registerPlaybook(qualifiedDemandEmailPlaybook);
 registerPlaybook(conversationEmailReplyPlaybook);
+registerPlaybook(bufferDraftPlaybook);
 
 export function registerPlaybook(playbook: PlaybookDefinition): PlaybookDefinition {
   validatePlaybook(playbook);

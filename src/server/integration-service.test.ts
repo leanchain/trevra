@@ -60,8 +60,7 @@ const managedEnv = [
   'NANGO_ATTIO_INTEGRATION',
   'NANGO_EXA_INTEGRATION',
   'NANGO_REDDIT_INTEGRATION',
-  'NANGO_REDDIT_INTEGRATION',
-  'NANGO_REDDIT_INTEGRATION'
+  'NANGO_BUFFER_INTEGRATION'
 ];
 
 let live: LiveDb | undefined;
@@ -135,18 +134,11 @@ describe('integration catalog', () => {
       mode: 'oauth',
       connected: false
     });
-    expect(byProvider.get('reddit')).toMatchObject({
-      key: 'trevra-reddit',
-      name: 'Reddit',
-      category: 'data',
-      mode: 'oauth',
-      connected: false
-    });
-    expect(byProvider.get('reddit')).toMatchObject({
-      key: 'trevra-reddit',
-      name: 'Reddit',
-      category: 'data',
-      mode: 'oauth',
+    expect(byProvider.get('buffer')).toMatchObject({
+      key: 'trevra-buffer',
+      name: 'Buffer',
+      category: 'communication',
+      mode: 'apiKey',
       connected: false
     });
   });

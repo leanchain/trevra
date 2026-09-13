@@ -124,6 +124,7 @@ import { prepareStoryFormatClone } from './content/format-clone.js';
 import { listContentFormatTemplates } from './content/format-templates.js';
 import { contentPerformanceReport } from './content/performance.js';
 import { ContentChannelVariantError, contentChannelVariants } from './content/channel-variants.js';
+import { BufferDraftError, listBufferChannels } from './content/buffer.js';
 import {
   PublicReportError,
   listPublicContentReportPerformance,
@@ -326,7 +327,7 @@ import {
   updatePost,
   type LinkedInPostStatus
 } from './linkedin/posts.js';
-import { plainTextLength } from '../shared/linkedin-post-format.js';
+import { plainTextLength, renderPostBody } from '../shared/linkedin-post-format.js';
 import {
   INVITE_NOTE_MAX_CHARS,
   MAX_SEQUENCE_STEPS,
@@ -3141,7 +3142,6 @@ export function createApp(db: Db) {
       next(error);
     }
   });
-
   app.get('/api/content/posts/:id/channel-variants', async (req: AuthedRequest, res, next) => {
     try {
       const input = z
@@ -3175,6 +3175,67 @@ export function createApp(db: Db) {
       res.setHeader('Cache-Control', 'no-store');
       res.json(await contentPerformanceReport(db, req.auth!.workspaceId, input.limit ?? 100));
     } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/content/buffer/channels', async (req: AuthedRequest, res, next) => {
+    try {
+      const state = await listBufferChannels(db, req.auth!.workspaceId);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(state);
+    } catch (error) {
+      if (error instanceof BufferDraftError)
+        return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  app.post('/api/content/posts/:id/buffer-draft', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({ channelId: z.string().trim().min(1).max(300) })
+        .strict()
+        .parse(req.body ?? {});
+      const workspaceId = req.auth!.workspaceId;
+      const post = await getPost(db, workspaceId, String(req.params.id));
+      if (!post) return res.status(404).json({ error: 'Content post not found' });
+      if (!post.contentAssetId)
+        return res
+          .status(409)
+          .json({ error: 'Only provenance-linked content drafts can be sent to Buffer.' });
+      if (post.status === 'canceled')
+        return res.status(409).json({ error: 'A canceled post cannot be sent to Buffer.' });
+      const text = renderPostBody(post.blocks).trim();
+      if (!text)
+        return res
+          .status(409)
+          .json({ error: 'Save some post text before preparing a Buffer draft.' });
+
+      const buffer = await listBufferChannels(db, workspaceId);
+      if (!buffer.connected)
+        return res.status(409).json({ error: 'Connect Buffer before preparing a draft.' });
+      const channel = buffer.channels.find((item) => item.id === input.channelId);
+      if (!channel) return res.status(404).json({ error: 'Buffer channel not found.' });
+
+      const run = await startPlaybookRun(db, {
+        workspaceId,
+        playbookId: 'gtm.buffer-draft',
+        payload: {
+          sourcePostId: post.id,
+          contentAssetId: post.contentAssetId,
+          channelId: channel.id,
+          channelName: `${channel.displayName} · ${channel.service}`,
+          text
+        },
+        actorType: 'user',
+        actorId: req.auth!.userId
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(201).json({ run, channel });
+    } catch (error) {
+      if (error instanceof BufferDraftError)
+        return res.status(error.status).json({ error: error.message });
       next(error);
     }
   });

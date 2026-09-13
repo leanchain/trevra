@@ -166,6 +166,17 @@ const catalog = [
     mode: 'oauth',
     env: 'NANGO_REDDIT_INTEGRATION',
     fallback: 'trevra-reddit'
+  },
+  {
+    key: 'buffer',
+    provider: 'buffer',
+    name: 'Buffer',
+    category: 'communication',
+    description:
+      'Create founder-approved social drafts in connected Buffer channels. Trevra never queues or publishes them automatically.',
+    mode: 'apiKey',
+    env: 'NANGO_BUFFER_INTEGRATION',
+    fallback: 'trevra-buffer'
   }
 ] as const;
 

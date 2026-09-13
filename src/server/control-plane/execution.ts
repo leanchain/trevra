@@ -4,6 +4,7 @@ import { executeConnectedAction } from '../integration-service.js';
 import { projectPreparedConversationEmail } from '../conversations.js';
 import { communityReplyPayloadSchema, publishCommunityReply } from '../outreach/publish.js';
 import { crmActivityPayloadSchema, logCrmActivity } from '../crm/activity.js';
+import { bufferDraftPayloadSchema, createBufferDraft } from '../content/buffer.js';
 /**
  * External execution is intentionally a closed GTM action set.
  *
@@ -14,7 +15,8 @@ import { crmActivityPayloadSchema, logCrmActivity } from '../crm/activity.js';
 export const EXECUTION_ACTION_TYPES = [
   'email.send',
   'community.reply',
-  'crm.log-activity'
+  'crm.log-activity',
+  'buffer.create-draft'
 ] as const;
 export type ExecutionActionType = (typeof EXECUTION_ACTION_TYPES)[number];
 const actionTypeSchema = z.enum(EXECUTION_ACTION_TYPES);
@@ -113,6 +115,12 @@ export async function executePreparedPlaybookAction(
     // outage can never cause Trevra to retry an external write that already happened.
     await recordOutreachInCrm(db, input.workspaceId, payload, outcome, now);
     return { provider: outcome.provider, externalRef: outcome.externalRef, actionType };
+  }
+
+  if (actionType === 'buffer.create-draft') {
+    const payload = bufferDraftPayloadSchema.parse(input.payload);
+    const result = await createBufferDraft(db, input.workspaceId, payload, input.payloadHash);
+    return { provider: result.provider, externalRef: result.externalRef, actionType };
   }
 
   const payload = crmActivityPayloadSchema.parse(input.payload);
