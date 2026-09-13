@@ -6,13 +6,16 @@ import {
   ExternalLink,
   FileUp,
   LoaderCircle,
+  Newspaper,
   RefreshCw,
   ThumbsDown
 } from 'lucide-react';
 import {
+  draftContentOpportunityLinkedIn,
   getAccountSourceProviders,
   getRankedAccounts,
   importAccounts,
+  materializeAccountContentOpportunity,
   rescoreAccounts,
   sendAccountFeedback,
   sourceAccounts,
@@ -121,7 +124,13 @@ const ageCopy = (ageDays: number) => (ageDays === 0 ? 'today' : `${plural(ageDay
 /** `https://kestrel.dev` for a stored `kestrel.dev`. The domain IS the identity of the row. */
 const siteUrl = (domain: string) => `https://${domain}`;
 
-export function AccountsScreen({ setToast }: { setToast: (message: string) => void }) {
+export function AccountsScreen({
+  setToast,
+  onNavigate
+}: {
+  setToast: (message: string) => void;
+  onNavigate: (path: string) => void;
+}) {
   const [accounts, setAccounts] = useState<RankedAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -143,6 +152,7 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
   /** The row whose reasoning is open. One at a time; the panel is long. */
   const [openId, setOpenId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [storyBusyId, setStoryBusyId] = useState<string | null>(null);
   const [rescoring, setRescoring] = useState(false);
   // "Add more accounts" stays collapsed by default once there is already a
   // ranked list -- opened by the operator, or automatically by a just-run
@@ -320,6 +330,25 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
     }
   };
 
+  const turnIntoPost = async (row: RankedAccount) => {
+    setStoryBusyId(row.account.id);
+    setError('');
+    try {
+      const opportunity = await materializeAccountContentOpportunity(row.account.id);
+      const drafted = await draftContentOpportunityLinkedIn(opportunity.id);
+      setToast(
+        drafted.reused
+          ? 'Opened the existing evidence-backed post draft.'
+          : 'Evidence-backed post draft created.'
+      );
+      onNavigate(`/outreach/posts?draft=${encodeURIComponent(drafted.post.id)}`);
+    } catch (err) {
+      setError(errorMessage(err, 'Unable to turn this account into a post'));
+    } finally {
+      setStoryBusyId(null);
+    }
+  };
+
   const runRescore = async () => {
     setRescoring(true);
     try {
@@ -374,8 +403,10 @@ export function AccountsScreen({ setToast }: { setToast: (message: string) => vo
                 row={row}
                 open={openId === row.account.id}
                 busy={busyId === row.account.id}
+                storyBusy={storyBusyId === row.account.id}
                 onToggle={() => setOpenId(openId === row.account.id ? null : row.account.id)}
                 onNotAFit={() => void markNotAFit(row)}
+                onTurnIntoPost={() => void turnIntoPost(row)}
               />
             ))}
           </div>
@@ -1123,14 +1154,18 @@ function AccountRow({
   row,
   open,
   busy,
+  storyBusy,
   onToggle,
-  onNotAFit
+  onNotAFit,
+  onTurnIntoPost
 }: {
   row: RankedAccount;
   open: boolean;
   busy: boolean;
+  storyBusy: boolean;
   onToggle: () => void;
   onNotAFit: () => void;
+  onTurnIntoPost: () => void;
 }) {
   const { account, score, signals } = row;
   const rejected = account.status === 'not_a_fit';
@@ -1178,10 +1213,24 @@ function AccountRow({
             LinkedIn <ExternalLink size={11} />
           </a>
         )}
+        {score &&
+          !rejected &&
+          (score.tier === 'hot' || score.tier === 'warm') &&
+          score.distinctKinds >= 2 && (
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={storyBusy || busy}
+              onClick={onTurnIntoPost}
+            >
+              {storyBusy ? <LoaderCircle className="spin" size={14} /> : <Newspaper size={14} />}
+              Turn into post
+            </button>
+          )}
         <button
           className="ghost-button acc-reject"
           type="button"
-          disabled={busy || rejected}
+          disabled={busy || storyBusy || rejected}
           onClick={onNotAFit}
         >
           {busy ? <LoaderCircle className="spin" size={14} /> : <ThumbsDown size={14} />} Not a fit

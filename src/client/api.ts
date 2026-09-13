@@ -3487,6 +3487,16 @@ export async function getAccount(id: string): Promise<RankedAccount> {
   return request(`/api/accounts/${encodeURIComponent(id)}`);
 }
 
+export async function materializeAccountContentOpportunity(
+  id: string
+): Promise<ContentOpportunity> {
+  const result = await request<{ opportunity: ContentOpportunity }>(
+    `/api/accounts/${encodeURIComponent(id)}/content-opportunity`,
+    { method: 'POST', body: '{}' }
+  );
+  return result.opportunity;
+}
+
 /** The verdict is training data about the SHAPE of the signals, not just this one company. */
 export async function sendAccountFeedback(
   id: string,

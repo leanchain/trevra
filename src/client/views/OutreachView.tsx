@@ -307,7 +307,7 @@ export function OutreachView({
           >
             <summary>Target accounts</summary>
             <div className="mgr-inputs-body">
-              {openFolds.accounts && <AccountsScreen setToast={setToast} />}
+              {openFolds.accounts && <AccountsScreen setToast={setToast} onNavigate={onNavigate} />}
             </div>
           </details>
         </>

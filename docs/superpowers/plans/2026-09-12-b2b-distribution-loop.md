@@ -604,9 +604,7 @@ A story is useful without generating anything. Evidence is visible before the CT
 
 ## 3.2 Account-level entry point
 
-On a hot account / evidence inspector add `Turn into post` when enough evidence exists.
-
-This should create or reuse the deterministic opportunity and then open the same drafting flow. No second generation implementation.
+**Status: shipped.** Expanded hot/warm target-account rows now expose `Turn into post` when the score has at least two signal kinds. The server re-validates recency and source-backed independent evidence, materializes or reuses the ordinary deterministic `company_change` opportunity for that exact workspace Account, creates/reuses the same provenance-linked LinkedIn draft, and opens the existing Posts composer. There is no account-specific generator or second content model.
 
 ## 3.3 Draft UX
 

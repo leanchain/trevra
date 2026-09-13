@@ -24,12 +24,70 @@ function kindLabel(kind: string): string {
   return kind.replaceAll('-', ' ').replaceAll('_', ' ');
 }
 
+async function buildAccountOpportunity(
+  db: Db,
+  workspaceId: string,
+  account: Record<string, unknown>,
+  since: string,
+  now: Date
+): Promise<ContentOpportunity | null> {
+  const accountId = String(account.id);
+  const signals = await db
+    .prepare(
+      `SELECT id,kind,detail,evidence_url,observed_at
+       FROM account_signals
+       WHERE workspace_id=? AND account_id=? AND kind<>'first-capture'
+         AND evidence_url IS NOT NULL AND NULLIF(BTRIM(evidence_url),'') IS NOT NULL
+         AND observed_at>=?::timestamptz
+       ORDER BY observed_at DESC,id DESC LIMIT ?`
+    )
+    .all<Record<string, unknown>>(workspaceId, accountId, since, MAX_EVIDENCE);
+  const distinctKinds = new Set(signals.map((row) => String(row.kind)));
+  if (signals.length < 2 || distinctKinds.size < 2) return null;
+
+  const evidence: ContentEvidenceRef[] = signals.map((row) => ({
+    sourceType: 'account_signal',
+    sourceId: String(row.id),
+    label: kindLabel(String(row.kind)),
+    detail: String(row.detail),
+    sourceUrl: String(row.evidence_url),
+    observedAt: iso(row.observed_at)
+  }));
+  const accountName = String(account.name ?? account.domain ?? 'Account');
+  const labels = [...distinctKinds].slice(0, 3).map(kindLabel);
+  const newest = evidence
+    .map((item) => item.observedAt)
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0]!;
+  const score = Math.max(0, Math.min(100, Number(account.score ?? 0)));
+  return upsertContentOpportunity(
+    db,
+    {
+      workspaceId,
+      status: 'ready',
+      kind: 'company_change',
+      title: `${accountName}: ${labels.join(' + ')}`,
+      thesis: `${accountName} shows ${distinctKinds.size} independent, recent changes worth explaining together.`,
+      audience: null,
+      freshnessAt: newest,
+      score,
+      rationale: [
+        `${distinctKinds.size} independent account-signal kinds are present`,
+        `${evidence.length} source-backed facts are available`,
+        `existing account intent is ${String(account.tier)} at ${score}/100`
+      ],
+      evidence,
+      fingerprint: fingerprint(accountId, evidence)
+    },
+    now
+  );
+}
+
 /**
- * Turn source-backed account movement into a publishable story candidate.
+ * Turn source-backed account movement into publishable story candidates.
  *
  * No LLM and no network. A score may rank the story, but it may not become a
  * claim: every factual sentence available to downstream drafting is carried in
- * the immutable signal snapshots below with URL + observed timestamp.
+ * immutable signal snapshots with URL + observed timestamp.
  */
 export async function buildCompanyChangeOpportunities(
   db: Db,
@@ -51,57 +109,30 @@ export async function buildCompanyChangeOpportunities(
 
   const output: ContentOpportunity[] = [];
   for (const account of accounts) {
-    const accountId = String(account.id);
-    const signals = await db
-      .prepare(
-        `SELECT id,kind,detail,evidence_url,observed_at
-         FROM account_signals
-         WHERE workspace_id=? AND account_id=? AND kind<>'first-capture'
-           AND evidence_url IS NOT NULL AND NULLIF(BTRIM(evidence_url),'') IS NOT NULL
-           AND observed_at>=?::timestamptz
-         ORDER BY observed_at DESC,id DESC LIMIT ?`
-      )
-      .all<Record<string, unknown>>(workspaceId, accountId, since, MAX_EVIDENCE);
-    const distinctKinds = new Set(signals.map((row) => String(row.kind)));
-    if (signals.length < 2 || distinctKinds.size < 2) continue;
-
-    const evidence: ContentEvidenceRef[] = signals.map((row) => ({
-      sourceType: 'account_signal',
-      sourceId: String(row.id),
-      label: kindLabel(String(row.kind)),
-      detail: String(row.detail),
-      sourceUrl: String(row.evidence_url),
-      observedAt: iso(row.observed_at)
-    }));
-    const accountName = String(account.name ?? account.domain ?? 'Account');
-    const labels = [...distinctKinds].slice(0, 3).map(kindLabel);
-    const newest = evidence
-      .map((item) => item.observedAt)
-      .sort((a, b) => Date.parse(b) - Date.parse(a))[0]!;
-    const score = Math.max(0, Math.min(100, Number(account.score ?? 0)));
-    output.push(
-      await upsertContentOpportunity(
-        db,
-        {
-          workspaceId,
-          status: 'ready',
-          kind: 'company_change',
-          title: `${accountName}: ${labels.join(' + ')}`,
-          thesis: `${accountName} shows ${distinctKinds.size} independent, recent changes worth explaining together.`,
-          audience: null,
-          freshnessAt: newest,
-          score,
-          rationale: [
-            `${distinctKinds.size} independent account-signal kinds are present`,
-            `${evidence.length} source-backed facts are available`,
-            `existing account intent is ${String(account.tier)} at ${score}/100`
-          ],
-          evidence,
-          fingerprint: fingerprint(accountId, evidence)
-        },
-        now
-      )
-    );
+    const opportunity = await buildAccountOpportunity(db, workspaceId, account, since, now);
+    if (opportunity) output.push(opportunity);
   }
   return output;
+}
+
+/** Materialize or reuse the ordinary company-change story for exactly one account. */
+export async function buildCompanyChangeOpportunityForAccount(
+  db: Db,
+  workspaceId: string,
+  accountId: string,
+  now: Date = new Date()
+): Promise<ContentOpportunity | null> {
+  const since = new Date(now.getTime() - STORY_WINDOW_DAYS * DAY_MS).toISOString();
+  const account = await db
+    .prepare(
+      `SELECT a.id,a.name,a.domain,s.score,s.tier,s.distinct_kinds,s.newest_signal_at,s.computed_at
+       FROM account_scores s
+       JOIN accounts a ON a.workspace_id=s.workspace_id AND a.id=s.account_id
+       WHERE s.workspace_id=? AND a.id=? AND s.tier IN ('hot','warm') AND s.distinct_kinds>=2
+         AND COALESCE(s.newest_signal_at,s.computed_at)>=?::timestamptz
+       LIMIT 1`
+    )
+    .get<Record<string, unknown>>(workspaceId, accountId, since);
+  if (!account) return null;
+  return buildAccountOpportunity(db, workspaceId, account, since, now);
 }

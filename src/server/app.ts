@@ -115,7 +115,10 @@ import {
 } from './ledger-export.js';
 import { LOOP_COST_DEFAULT_WINDOW_DAYS, LOOP_COST_MAX_WINDOW_DAYS, loopCost } from './loop-cost.js';
 import { getToday } from './today.js';
-import { buildCompanyChangeOpportunities } from './content/opportunity-builder.js';
+import {
+  buildCompanyChangeOpportunityForAccount,
+  buildCompanyChangeOpportunities
+} from './content/opportunity-builder.js';
 import { listContentOpportunities, setContentOpportunityStatus } from './content/opportunities.js';
 import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
 import { EvidenceCardError, prepareStoryEvidenceCard } from './content/evidence-card.js';
@@ -7432,6 +7435,31 @@ export function createApp(db: Db) {
       const detail = await accountDetail(db, req.auth!.workspaceId, String(req.params.id));
       if (!detail) return res.status(404).json({ error: 'Account not found' });
       res.json(detail);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/accounts/:id/content-opportunity', async (req: AuthedRequest, res, next) => {
+    try {
+      const workspaceId = req.auth!.workspaceId;
+      const accountId = String(req.params.id);
+      const account = await getAccount(db, workspaceId, accountId);
+      if (!account) return res.status(404).json({ error: 'Account not found' });
+      const opportunity = await buildCompanyChangeOpportunityForAccount(
+        db,
+        workspaceId,
+        accountId,
+        new Date()
+      );
+      if (!opportunity) {
+        return res.status(409).json({
+          error:
+            'This account needs at least two independent recent source-backed changes before Trevra can turn it into a story.'
+        });
+      }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ opportunity });
     } catch (error) {
       next(error);
     }
