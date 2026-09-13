@@ -33,10 +33,12 @@ function generationKey(
   opportunityId: string,
   seatKey: string,
   revision: string,
-  formatTemplateId?: string | null
+  formatTemplateId?: string | null,
+  variantKey?: string | null
 ): string {
   const format = formatTemplateId ? `:format:${formatTemplateId}` : '';
-  return `story:${opportunityId}:linkedin:${seatKey}:${RENDERER_VERSION}:rev:${revision}${format}`;
+  const variant = variantKey ? `:variant:${variantKey}` : '';
+  return `story:${opportunityId}:linkedin:${seatKey}:${RENDERER_VERSION}:rev:${revision}${format}${variant}`;
 }
 function textBlocks(body: string): PostBlock[] {
   return body.split(/\n\n+/).map((paragraph) => ({
@@ -167,6 +169,8 @@ export async function prepareStoryLinkedInDraft(
     seatKey?: string;
     actorUserId?: string | null;
     formatTemplateId?: string | null;
+    /** Internal renderer variant; omitted for the canonical plain story draft. */
+    variantKey?: string | null;
   },
   now: Date = new Date()
 ): Promise<PreparedStoryLinkedInDraft> {
@@ -178,7 +182,13 @@ export async function prepareStoryLinkedInDraft(
       throw new StoryDraftError('This story is no longer available for drafting.', 409);
 
     const revision = contentOpportunityRevision(opportunity);
-    const key = generationKey(input.opportunityId, seatKey, revision, input.formatTemplateId);
+    const key = generationKey(
+      input.opportunityId,
+      seatKey,
+      revision,
+      input.formatTemplateId,
+      input.variantKey
+    );
     await tx
       .prepare('SELECT pg_advisory_xact_lock(hashtextextended(?,0)) AS locked')
       .get(`${input.workspaceId}\u001f${key}`);
@@ -280,7 +290,8 @@ export async function prepareStoryLinkedInDraft(
           renderer: RENDERER_VERSION,
           contentAngle: strategy.angle,
           strategySource: strategy.source,
-          formatTemplateId: formatTemplate?.id ?? null
+          formatTemplateId: formatTemplate?.id ?? null,
+          contentVariant: input.variantKey ?? 'plain'
         }
       },
       now

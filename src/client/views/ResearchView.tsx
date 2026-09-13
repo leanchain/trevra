@@ -22,6 +22,7 @@ import type { PublicContentReport } from '../../server/content/public-reports';
 import {
   cloneContentOpportunityFormat,
   createWatch,
+  draftContentOpportunityCarousel,
   draftContentOpportunityEvidenceCard,
   draftContentOpportunityLinkedIn,
   draftMarketPulse,
@@ -1089,6 +1090,24 @@ export function ResearchView({
     }
   }
 
+  async function draftStoryCarousel(story: ContentOpportunity): Promise<void> {
+    setStoryBusy(story.id);
+    setStoriesError('');
+    try {
+      const result = await draftContentOpportunityCarousel(story.id, seatKey || undefined);
+      setToast(
+        result.reused
+          ? 'Opened the existing source-backed carousel.'
+          : 'Source-backed carousel draft created.'
+      );
+      onNavigate(`/outreach/posts?draft=${encodeURIComponent(result.post.id)}`);
+    } catch (error) {
+      setStoriesError(error instanceof Error ? error.message : 'Could not prepare this carousel.');
+    } finally {
+      setStoryBusy(null);
+    }
+  }
+
   async function draftStoryWithCard(story: ContentOpportunity): Promise<void> {
     setStoryBusy(story.id);
     setStoriesError('');
@@ -1506,6 +1525,14 @@ export function ResearchView({
                         Use proven format
                       </button>
                     ) : null}
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={storyBusy === story.id}
+                      onClick={() => void draftStoryCarousel(story)}
+                    >
+                      Draft carousel
+                    </button>
                     <button
                       type="button"
                       className="secondary-button"

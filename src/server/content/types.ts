@@ -2,7 +2,7 @@ export type ContentOpportunityStatus = 'candidate' | 'ready' | 'dismissed' | 'ex
 export type ContentOpportunityKind =
   'company_change' | 'market_pattern' | 'watch_trend' | 'comparison' | 'index_move';
 
-export type ContentFormat = 'text_post' | 'evidence_card' | 'market_pulse' | 'report';
+export type ContentFormat = 'text_post' | 'evidence_card' | 'carousel' | 'market_pulse' | 'report';
 export type ContentAngle =
   'observation' | 'contrarian' | 'list' | 'teardown' | 'prediction' | 'comparison';
 

@@ -344,6 +344,20 @@ export async function cloneContentOpportunityFormat(
   });
 }
 
+export async function draftContentOpportunityCarousel(
+  opportunityId: string,
+  seatKey?: string
+): Promise<{
+  asset: import('../server/content/types').ContentAsset;
+  post: LinkedInPost;
+  reused: boolean;
+}> {
+  return request(`/api/content/opportunities/${encodeURIComponent(opportunityId)}/carousel`, {
+    method: 'POST',
+    body: JSON.stringify(seatKey ? { seatKey } : {})
+  });
+}
+
 export async function draftContentOpportunityEvidenceCard(
   opportunityId: string,
   seatKey?: string,

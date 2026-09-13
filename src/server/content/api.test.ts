@@ -541,6 +541,30 @@ describe('content opportunity API', () => {
     expect(cardReplay.body.reused).toBe(true);
     expect(cardReplay.body.post.media).toHaveLength(1);
 
+    const carousel = await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(story.id)}/carousel`
+    )
+      .send({ seatKey: 'owner' })
+      .expect(201);
+    expect(carousel.body).toMatchObject({
+      reused: false,
+      asset: { format: 'carousel' },
+      post: { status: 'draft' }
+    });
+    expect(carousel.body.post.id).not.toBe(first.body.post.id);
+    expect(carousel.body.post.media).toHaveLength(3);
+
+    const carouselReplay = await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(story.id)}/carousel`
+    )
+      .send({ seatKey: 'owner' })
+      .expect(200);
+    expect(carouselReplay.body.reused).toBe(true);
+    expect(carouselReplay.body.post.id).toBe(carousel.body.post.id);
+    expect(carouselReplay.body.post.media).toHaveLength(3);
+
     for (const [workspaceId, templateId] of [
       [WORKSPACE, 'fmt_api_own'],
       [OTHER, 'fmt_api_foreign']
@@ -650,6 +674,9 @@ describe('content opportunity API', () => {
       'post',
       `/api/content/opportunities/${encodeURIComponent(foreign.id)}/evidence-card`
     )
+      .send({})
+      .expect(404);
+    await authed('post', `/api/content/opportunities/${encodeURIComponent(foreign.id)}/carousel`)
       .send({})
       .expect(404);
     await authed(

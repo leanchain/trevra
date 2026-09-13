@@ -27,7 +27,11 @@ afterEach(async () => {
   await db.close();
 });
 
-async function insertTemplate(workspaceId: string, id: string): Promise<void> {
+async function insertTemplate(
+  workspaceId: string,
+  id: string,
+  visualLayout: 'portrait_card' | 'carousel' = 'portrait_card'
+): Promise<void> {
   await db
     .prepare(
       `INSERT INTO content_format_templates
@@ -37,7 +41,7 @@ async function insertTemplate(workspaceId: string, id: string): Promise<void> {
     .run(
       id,
       workspaceId,
-      'question · bullet list · short + portrait card',
+      `question · bullet list · short + ${visualLayout.replace('_', ' ')}`,
       'historical_post_1',
       JSON.stringify({
         version: 1,
@@ -47,7 +51,7 @@ async function insertTemplate(workspaceId: string, id: string): Promise<void> {
         ctaType: 'question',
         paragraphCountBand: 'compact',
         evidenceSlots: 2,
-        visualLayout: 'portrait_card'
+        visualLayout
       }),
       JSON.stringify({
         sourcePostIds: ['historical_post_1', 'historical_post_2', 'historical_post_3'],
@@ -149,6 +153,47 @@ describe('format clone preparation', () => {
       mode: 'deterministic-format-clone',
       formatTemplate: { id: 'fmt_clone_portrait', sampleSize: 3 }
     });
+  });
+
+  it('recreates a proven carousel with current evidence rather than historical media', async () => {
+    await insertTemplate(WORKSPACE, 'fmt_clone_carousel', 'carousel');
+    const story = await currentStory();
+    const first = await prepareStoryFormatClone(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        opportunityId: story.id,
+        templateId: 'fmt_clone_carousel',
+        seatKey: 'owner'
+      },
+      NOW
+    );
+    const replay = await prepareStoryFormatClone(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        opportunityId: story.id,
+        templateId: 'fmt_clone_carousel',
+        seatKey: 'owner'
+      },
+      new Date(NOW.getTime() + 60_000)
+    );
+    expect(first.template.structure.visualLayout).toBe('carousel');
+    expect(first.reused).toBe(false);
+    expect(replay.reused).toBe(true);
+    expect(replay.post.id).toBe(first.post.id);
+    const images = await loadPostImages(db, WORKSPACE, first.post.id);
+    expect(images).toHaveLength(4);
+    for (const image of images) {
+      expect(image.name).toMatch(/-carousel-\d+\.png$/);
+      expect(await sharp(image.buffer).metadata()).toMatchObject({
+        format: 'png',
+        width: 1080,
+        height: 1350
+      });
+    }
+    expect(renderPostBody(first.post.blocks)).toContain('Nova added seven platform roles.');
+    expect(renderPostBody(first.post.blocks)).not.toContain('historical_post');
   });
 
   it('cannot use a format template from another workspace', async () => {

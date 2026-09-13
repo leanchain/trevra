@@ -9,7 +9,8 @@ export type FormatHookType = 'question' | 'numbered' | 'statement';
 export type FormatListStyle = 'bullet' | 'numbered' | 'none';
 export type FormatRhythm = 'short' | 'balanced' | 'long';
 export type FormatCtaType = 'question' | 'action' | 'none';
-export type FormatVisualLayout = 'portrait_card' | 'square_card' | 'wide_card' | 'none';
+export type FormatVisualLayout =
+  'portrait_card' | 'square_card' | 'wide_card' | 'carousel' | 'none';
 
 export interface ContentFormatStructure {
   version: 1;
@@ -222,13 +223,15 @@ export async function syncOwnPublishedFormatTemplates(
     );
     const media = object(row.media_json) as Array<{ name?: unknown }> | null;
     const names = (media ?? []).map((item) => String(item.name ?? ''));
-    const visualLayout: FormatVisualLayout = names.some((name) => /-portrait\.png$/i.test(name))
-      ? 'portrait_card'
-      : names.some((name) => /-square\.png$/i.test(name))
-        ? 'square_card'
-        : names.some((name) => /-wide\.png$/i.test(name))
-          ? 'wide_card'
-          : 'none';
+    const visualLayout: FormatVisualLayout = names.some((name) => /-carousel-\d+\.png$/i.test(name))
+      ? 'carousel'
+      : names.some((name) => /-portrait\.png$/i.test(name))
+        ? 'portrait_card'
+        : names.some((name) => /-square\.png$/i.test(name))
+          ? 'square_card'
+          : names.some((name) => /-wide\.png$/i.test(name))
+            ? 'wide_card'
+            : 'none';
     const structure = extractContentFormatStructure({ body, evidenceCount, visualLayout });
     const fp = fingerprint(structure);
     const group = groups.get(fp) ?? {

@@ -896,10 +896,11 @@ For a provenance-linked saved story draft, Trevra:
 
 **Newsletter handoff shipped:** Beehiiv now has a concrete `prepare-only` adapter. Trevra preserves a real newsletter title/body, opens the Beehiiv app for handoff, and keeps the API path disabled because Beehiiv's Create Post API is restricted to Max and Enterprise publications.
 
+**Short-form carousel shipped:** Trevra can turn one source-backed story into a separate revision-aware LinkedIn carousel draft: cover, up to five evidence slides, and a sources slide. Every slide is a deterministic 1080×1350 PNG generated from current evidence, and carousel performance can feed the same proven-format learner so successful carousel structure is reusable without copying historical claims or images.
+
 Still open as genuinely new destination work:
 
 - company LinkedIn pages;
-- short-form carousel export;
 - external scheduler integrations;
 - provider-specific publish + metric collection, which must use the normal approval/external-write boundary rather than this copy-only surface.
 

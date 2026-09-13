@@ -119,6 +119,7 @@ import { buildCompanyChangeOpportunities } from './content/opportunity-builder.j
 import { listContentOpportunities, setContentOpportunityStatus } from './content/opportunities.js';
 import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
 import { EvidenceCardError, prepareStoryEvidenceCard } from './content/evidence-card.js';
+import { CarouselError, prepareStoryCarousel } from './content/carousel.js';
 import { prepareStoryFormatClone } from './content/format-clone.js';
 import { listContentFormatTemplates } from './content/format-templates.js';
 import { contentPerformanceReport } from './content/performance.js';
@@ -3065,6 +3066,31 @@ export function createApp(db: Db) {
       res.setHeader('Cache-Control', 'no-store');
       res.json(await contentPerformanceReport(db, req.auth!.workspaceId, input.limit ?? 100));
     } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post('/api/content/opportunities/:id/carousel', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({ seatKey: z.string().trim().min(1).max(120).optional() })
+        .strict()
+        .parse(req.body ?? {});
+      const result = await prepareStoryCarousel(
+        db,
+        {
+          workspaceId: req.auth!.workspaceId,
+          opportunityId: String(req.params.id),
+          seatKey: input.seatKey,
+          actorUserId: req.auth!.userId
+        },
+        new Date()
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(result.reused ? 200 : 201).json(result);
+    } catch (error) {
+      if (error instanceof CarouselError)
+        return res.status(error.status).json({ error: error.message });
       next(error);
     }
   });
