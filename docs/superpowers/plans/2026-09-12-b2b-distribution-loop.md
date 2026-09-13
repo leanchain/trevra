@@ -894,10 +894,11 @@ For a provenance-linked saved story draft, Trevra:
 
 **First genuinely new destination shipped:** Medium. The adapter preserves a real article title, supports long-form links, points the founder to Medium's web editor, and stays `prepare-only` because Medium no longer issues new API integration tokens or allows new API integrations.
 
+**Newsletter handoff shipped:** Beehiiv now has a concrete `prepare-only` adapter. Trevra preserves a real newsletter title/body, opens the Beehiiv app for handoff, and keeps the API path disabled because Beehiiv's Create Post API is restricted to Max and Enterprise publications.
+
 Still open as genuinely new destination work:
 
 - company LinkedIn pages;
-- newsletter-provider handoff/draft;
 - short-form carousel export;
 - external scheduler integrations;
 - provider-specific publish + metric collection, which must use the normal approval/external-write boundary rather than this copy-only surface.

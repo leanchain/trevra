@@ -50,6 +50,7 @@ describe('gtm.channel-plan', () => {
       'reddit',
       'producthunt',
       'x',
+      'beehiiv',
       'indiehackers',
       'linkedin'
     ]);
@@ -65,7 +66,7 @@ describe('gtm.channel-plan', () => {
     expect(reasons).toContain(`devto: +${PLAN_WEIGHTS.readyToPost} draft is ready as written`);
     expect(reasons).toContain('github: +0.4 audience 2/3 (developers, open-source)');
     expect(reasons.at(-1)).toBe(
-      'order: devto > bluesky > github > hackernews > hashnode > lobsters > mastodon > medium > reddit > producthunt > x > indiehackers > linkedin (fit desc, then key asc)'
+      'order: devto > bluesky > github > hackernews > hashnode > lobsters > mastodon > medium > reddit > producthunt > x > beehiiv > indiehackers > linkedin (fit desc, then key asc)'
     );
   });
 

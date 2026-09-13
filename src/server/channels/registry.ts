@@ -14,6 +14,7 @@ import { indiehackersChannel } from './adapters/indiehackers.js';
 import { lobstersChannel } from './adapters/lobsters.js';
 import { instagramChannel } from './adapters/instagram.js';
 import { mediumChannel } from './adapters/medium.js';
+import { beehiivChannel } from './adapters/beehiiv.js';
 
 /**
  * Distribution-channel registry.
@@ -83,6 +84,7 @@ export function listEnabled(): ChannelAdapter[] {
 }
 
 for (const channel of [
+  beehiivChannel,
   devtoChannel,
   hashnodeChannel,
   githubChannel,

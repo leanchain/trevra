@@ -5,6 +5,7 @@ import { hackernewsChannel, SHOW_HN_PREFIX } from './adapters/hackernews.js';
 import { REDDIT_SUBREDDITS, redditChannel } from './adapters/reddit.js';
 import { linkedinChannel } from './adapters/linkedin.js';
 import { mediumChannel } from './adapters/medium.js';
+import { beehiivChannel } from './adapters/beehiiv.js';
 import type { ChannelAdapter } from './types.js';
 
 const ALL = listChannels();
@@ -26,6 +27,7 @@ const baseDraft = {
 describe('the registry is populated', () => {
   it('registers every curated channel', () => {
     expect(ALL.map((channel) => channel.key)).toEqual([
+      'beehiiv',
       'bluesky',
       'devto',
       'github',
@@ -97,7 +99,7 @@ describe('automation policy invariants', () => {
       (c) => c.key
     );
     expect(apiPublish).toEqual(['bluesky', 'devto', 'github', 'mastodon']);
-    expect(ALL.filter((channel) => channel.automation.mode === 'prepare-only')).toHaveLength(10);
+    expect(ALL.filter((channel) => channel.automation.mode === 'prepare-only')).toHaveLength(11);
   });
 
   it('keeps hashnode prepare-only while its write API is behind a paid plan', () => {
@@ -257,6 +259,17 @@ describe('medium', () => {
     expect(mediumChannel.automation.reason).toContain(
       'no longer issues new API integration tokens'
     );
+  });
+});
+
+describe('beehiiv', () => {
+  it('prepares a titled newsletter and states the paid-plan API boundary', () => {
+    const post = beehiivChannel.adapt(baseDraft);
+    expect(post.title).toBe(baseDraft.title);
+    expect(post.submitUrl).toBe('https://app.beehiiv.com/');
+    expect(beehiivChannel.automation.mode).toBe('prepare-only');
+    expect(beehiivChannel.automation.reason).toContain('Max and Enterprise');
+    expect(post.warnings.some((warning) => warning.includes('copy-only'))).toBe(true);
   });
 });
 
