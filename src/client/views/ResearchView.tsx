@@ -11,7 +11,8 @@ import {
   X
 } from 'lucide-react';
 import type { ConnectionSummary, SkillRun } from '../../shared/types';
-import type { ContentOpportunity } from '../../server/content/types';
+import type { ContentAngle, ContentOpportunity } from '../../server/content/types';
+import type { StoryDraftVariantPreview } from '../../server/content/story-draft';
 import type { ContentPerformanceReport } from '../../server/content/performance';
 import type { ContentDraftStrategy } from '../../server/content/strategy';
 import type { ContentFormatTemplate } from '../../server/content/format-templates';
@@ -33,6 +34,7 @@ import {
   draftMarketPulse,
   draftMentionReply,
   getContentDraftStrategies,
+  getContentDraftVariants,
   getContentFormatTemplates,
   getContentOpportunities,
   getBrandWatchMarketPulse,
@@ -544,6 +546,11 @@ export function ResearchView({
   const [performanceLoaded, setPerformanceLoaded] = useState(false);
   const [performanceError, setPerformanceError] = useState('');
   const [storyBusy, setStoryBusy] = useState<string | null>(null);
+  const [variantBusy, setVariantBusy] = useState<string | null>(null);
+  const [variantPreview, setVariantPreview] = useState<{
+    storyId: string;
+    preview: StoryDraftVariantPreview;
+  } | null>(null);
   const [refreshingStories, setRefreshingStories] = useState(false);
   const [pulseDays, setPulseDays] = useState<MarketPulseDays>(7);
   const [pulse, setPulse] = useState<MarketPulse | null>(null);
@@ -1235,13 +1242,34 @@ export function ResearchView({
     }
   }
 
-  async function draftStory(story: ContentOpportunity): Promise<void> {
+  async function compareStoryAngles(story: ContentOpportunity): Promise<void> {
+    if (variantPreview?.storyId === story.id) {
+      setVariantPreview(null);
+      return;
+    }
+    setVariantBusy(story.id);
+    setStoriesError('');
+    try {
+      const preview = await getContentDraftVariants(story.id);
+      setVariantPreview({ storyId: story.id, preview });
+    } catch (error) {
+      setStoriesError(error instanceof Error ? error.message : 'Could not compare story angles.');
+    } finally {
+      setVariantBusy(null);
+    }
+  }
+
+  async function draftStory(story: ContentOpportunity, angle?: ContentAngle): Promise<void> {
     setStoryBusy(story.id);
     setStoriesError('');
     try {
-      const result = await draftContentOpportunityLinkedIn(story.id, seatKey || undefined);
+      const result = await draftContentOpportunityLinkedIn(story.id, seatKey || undefined, angle);
       setToast(
-        result.reused ? 'Opened the existing story draft.' : 'Evidence-backed draft created.'
+        result.reused
+          ? 'Opened the existing story draft.'
+          : angle
+            ? `${angle.replaceAll('_', ' ')} draft created from the same evidence.`
+            : 'Evidence-backed draft created.'
       );
       onNavigate(`/outreach/posts?draft=${encodeURIComponent(result.post.id)}`);
     } catch (error) {
@@ -1631,6 +1659,59 @@ export function ResearchView({
                         </a>
                       ))}
                     </div>
+                    {variantPreview?.storyId === story.id ? (
+                      <div className="research-draft-variants" aria-label="Draft angle comparison">
+                        {variantPreview.preview.variants.map((variant) => (
+                          <article className="research-draft-variant" key={variant.angle}>
+                            <header>
+                              <div>
+                                <strong>{variant.angle.replaceAll('_', ' ')}</strong>
+                                <small>{variant.reason}</small>
+                              </div>
+                              {variant.recommended ? (
+                                <span className="li-chip">Recommended</span>
+                              ) : null}
+                            </header>
+                            <pre>{variant.body}</pre>
+                            <details>
+                              <summary>Evidence map · {variant.claimMap.length} claims</summary>
+                              <ul>
+                                {variant.claimMap.map((claim, claimIndex) => (
+                                  <li key={`${variant.angle}-${claimIndex}`}>
+                                    <span>{claim.claim}</span>
+                                    <div>
+                                      {claim.evidence.map((evidence) => (
+                                        <a
+                                          key={`${claimIndex}-${evidence.sourceType}:${evidence.sourceId}`}
+                                          href={evidence.sourceUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                        >
+                                          {evidence.label}
+                                        </a>
+                                      ))}
+                                    </div>
+                                  </li>
+                                ))}
+                              </ul>
+                            </details>
+                            <button
+                              type="button"
+                              className={
+                                variant.recommended ? 'primary-button' : 'secondary-button'
+                              }
+                              disabled={storyBusy === story.id}
+                              onClick={() => void draftStory(story, variant.angle)}
+                            >
+                              {storyBusy === story.id ? (
+                                <LoaderCircle className="spin" size={15} />
+                              ) : null}
+                              Open {variant.angle.replaceAll('_', ' ')} in composer
+                            </button>
+                          </article>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="research-story-actions">
                     <button
@@ -1666,6 +1747,17 @@ export function ResearchView({
                       onClick={() => void draftStoryWithCard(story)}
                     >
                       Draft + card
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={storyBusy === story.id || variantBusy === story.id}
+                      onClick={() => void compareStoryAngles(story)}
+                    >
+                      {variantBusy === story.id ? (
+                        <LoaderCircle className="spin" size={15} />
+                      ) : null}
+                      {variantPreview?.storyId === story.id ? 'Hide angles' : 'Compare angles'}
                     </button>
                     <button
                       type="button"

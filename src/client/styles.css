@@ -13786,6 +13786,85 @@ button:disabled {
   font-size: var(--t-text-chip);
   white-space: nowrap;
 }
+.research-draft-variants {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.research-draft-variant {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--panel);
+}
+.research-draft-variant > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.research-draft-variant > header > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.research-draft-variant > header strong {
+  text-transform: capitalize;
+}
+.research-draft-variant > header small,
+.research-draft-variant details {
+  color: var(--muted);
+  font-size: var(--t-text-xs);
+  line-height: 1.45;
+}
+.research-draft-variant pre {
+  max-height: 280px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 9px;
+  border: 1px solid var(--t-line-soft);
+  border-radius: var(--t-r-sm);
+  background: var(--t-field);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--t-text-xs);
+  line-height: 1.5;
+}
+.research-draft-variant summary {
+  cursor: pointer;
+  font-weight: var(--t-w-strong);
+}
+.research-draft-variant details ul {
+  display: grid;
+  gap: 6px;
+  margin: 7px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.research-draft-variant details li {
+  display: grid;
+  gap: 3px;
+  padding-top: 6px;
+  border-top: 1px solid var(--t-line-soft);
+}
+.research-draft-variant details li > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.research-draft-variant details a {
+  color: var(--t-link);
+  font-size: var(--t-text-chip);
+}
+.research-draft-variant > button {
+  justify-self: start;
+}
 .research-story-actions {
   display: flex;
   flex-direction: column;
@@ -13823,6 +13902,13 @@ button:disabled {
   }
   .research-story-evidence small {
     white-space: normal;
+  }
+  .research-draft-variants {
+    grid-template-columns: 1fr;
+  }
+  .research-draft-variant > button {
+    width: 100%;
+    justify-content: center;
   }
 }
 

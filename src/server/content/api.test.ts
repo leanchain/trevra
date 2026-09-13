@@ -275,6 +275,77 @@ describe('content opportunity API', () => {
     ).toEqual([]);
   });
 
+  it('previews safe evidence-backed angles and persists only the founder-selected variant', async () => {
+    await db
+      .prepare("DELETE FROM content_opportunities WHERE workspace_id=? AND kind='company_change'")
+      .run(WORKSPACE);
+    await db
+      .prepare("DELETE FROM accounts WHERE workspace_id=? AND domain='content-api.example'")
+      .run(WORKSPACE);
+    await seedStoryEvidence();
+    const refresh = await authed('post', '/api/content/opportunities/refresh').send({}).expect(200);
+    const storyId = String(refresh.body.opportunities[0]?.id ?? '');
+    expect(storyId).not.toBe('');
+
+    const preview = await authed(
+      'get',
+      `/api/content/opportunities/${encodeURIComponent(storyId)}/draft-variants`
+    ).expect(200);
+    expect(preview.body.strategy).toMatchObject({
+      angle: 'observation',
+      eligibleAngles: ['observation', 'teardown', 'list']
+    });
+    expect(preview.body.variants).toHaveLength(3);
+    expect(
+      new Set(preview.body.variants.map((variant: { body: string }) => variant.body)).size
+    ).toBe(3);
+    expect(preview.body.variants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ angle: 'observation', recommended: true }),
+        expect.objectContaining({ angle: 'teardown', recommended: false }),
+        expect.objectContaining({ angle: 'list', recommended: false })
+      ])
+    );
+    for (const variant of preview.body.variants as Array<{
+      claimMap: Array<{ evidence: Array<{ sourceUrl: string }> }>;
+    }>) {
+      expect(variant.claimMap.length).toBeGreaterThan(0);
+      expect(variant.claimMap.every((claim) => claim.evidence.length > 0)).toBe(true);
+      expect(
+        variant.claimMap.every((claim) =>
+          claim.evidence.every((evidence) => evidence.sourceUrl.startsWith('https://'))
+        )
+      ).toBe(true);
+    }
+
+    const canonical = await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(storyId)}/draft-linkedin`
+    )
+      .send({})
+      .expect(201);
+    const teardown = await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(storyId)}/draft-linkedin`
+    )
+      .send({ angle: 'teardown' })
+      .expect(201);
+    expect(teardown.body.post.id).not.toBe(canonical.body.post.id);
+    expect(teardown.body.asset).toMatchObject({ angle: 'teardown' });
+    const teardownReplay = await authed(
+      'post',
+      `/api/content/opportunities/${encodeURIComponent(storyId)}/draft-linkedin`
+    )
+      .send({ angle: 'teardown' })
+      .expect(200);
+    expect(teardownReplay.body).toMatchObject({ reused: true });
+    expect(teardownReplay.body.post.id).toBe(teardown.body.post.id);
+
+    await authed('post', `/api/content/opportunities/${encodeURIComponent(storyId)}/draft-linkedin`)
+      .send({ angle: 'comparison' })
+      .expect(409);
+  });
+
   it('keeps publication performance scoped to the authenticated workspace', async () => {
     for (const workspaceId of [WORKSPACE, OTHER]) {
       await upsertSeat(db, workspaceId, { label: 'Owner', timezone: 'UTC' }, NOW);

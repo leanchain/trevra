@@ -50,7 +50,8 @@ import type {
 } from '../server/loop-cost';
 import type { PublicSkillManifest } from '../server/skill-api';
 import type { TodayPayload } from '../server/today';
-import type { ContentOpportunity } from '../server/content/types';
+import type { ContentAngle, ContentOpportunity } from '../server/content/types';
+import type { StoryDraftVariantPreview } from '../server/content/story-draft';
 import type { ContentDraftStrategy } from '../server/content/strategy';
 import type { MarketPulse, MarketPulseDays } from '../server/content/pulse';
 import type { BrandWatchMarketPulse } from '../server/content/watch-pulse';
@@ -359,6 +360,12 @@ export async function getContentDraftStrategies(
   return Object.fromEntries(result.strategies.map((row) => [row.opportunityId, row.strategy]));
 }
 
+export async function getContentDraftVariants(
+  opportunityId: string
+): Promise<StoryDraftVariantPreview> {
+  return request(`/api/content/opportunities/${encodeURIComponent(opportunityId)}/draft-variants`);
+}
+
 export async function refreshContentOpportunities(): Promise<ContentOpportunity[]> {
   const result = await request<{ opportunities: ContentOpportunity[] }>(
     '/api/content/opportunities/refresh',
@@ -432,7 +439,8 @@ export async function draftContentOpportunityEvidenceCard(
 
 export async function draftContentOpportunityLinkedIn(
   opportunityId: string,
-  seatKey?: string
+  seatKey?: string,
+  angle?: ContentAngle
 ): Promise<{
   asset: import('../server/content/types').ContentAsset;
   post: LinkedInPost;
@@ -440,7 +448,7 @@ export async function draftContentOpportunityLinkedIn(
 }> {
   return request(`/api/content/opportunities/${encodeURIComponent(opportunityId)}/draft-linkedin`, {
     method: 'POST',
-    body: JSON.stringify(seatKey ? { seatKey } : {})
+    body: JSON.stringify({ ...(seatKey ? { seatKey } : {}), ...(angle ? { angle } : {}) })
   });
 }
 

@@ -120,7 +120,11 @@ import {
   buildCompanyChangeOpportunities
 } from './content/opportunity-builder.js';
 import { listContentOpportunities, setContentOpportunityStatus } from './content/opportunities.js';
-import { StoryDraftError, prepareStoryLinkedInDraft } from './content/story-draft.js';
+import {
+  StoryDraftError,
+  prepareStoryLinkedInDraft,
+  previewStoryDraftVariants
+} from './content/story-draft.js';
 import { EvidenceCardError, prepareStoryEvidenceCard } from './content/evidence-card.js';
 import { CarouselError, prepareStoryCarousel } from './content/carousel.js';
 import { prepareStoryFormatClone } from './content/format-clone.js';
@@ -3072,6 +3076,24 @@ export function createApp(db: Db) {
     }
   });
 
+  app.get(
+    '/api/content/opportunities/:id/draft-variants',
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const preview = await previewStoryDraftVariants(db, {
+          workspaceId: req.auth!.workspaceId,
+          opportunityId: String(req.params.id)
+        });
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(preview);
+      } catch (error) {
+        if (error instanceof StoryDraftError)
+          return res.status(error.status).json({ error: error.message });
+        next(error);
+      }
+    }
+  );
+
   app.get('/api/content/format-templates', async (req: AuthedRequest, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
@@ -3305,13 +3327,19 @@ export function createApp(db: Db) {
     async (req: AuthedRequest, res, next) => {
       try {
         const input = z
-          .object({ seatKey: z.string().trim().min(1).max(120).optional() })
+          .object({
+            seatKey: z.string().trim().min(1).max(120).optional(),
+            angle: z
+              .enum(['observation', 'contrarian', 'list', 'teardown', 'prediction', 'comparison'])
+              .optional()
+          })
           .strict()
           .parse(req.body ?? {});
         const result = await prepareStoryLinkedInDraft(db, {
           workspaceId: req.auth!.workspaceId,
           opportunityId: String(req.params.id),
           seatKey: input.seatKey,
+          angle: input.angle,
           actorUserId: req.auth!.userId
         });
         res.status(result.reused ? 200 : 201).json(result);

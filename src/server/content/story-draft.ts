@@ -154,6 +154,53 @@ export interface PreparedStoryLinkedInDraft {
   reused: boolean;
 }
 
+export interface StoryDraftVariant {
+  angle: ContentAngle;
+  recommended: boolean;
+  reason: string;
+  body: string;
+  claimMap: ClaimMapEntry[];
+}
+
+export interface StoryDraftVariantPreview {
+  strategy: ContentDraftStrategy;
+  variants: StoryDraftVariant[];
+}
+
+/**
+ * Preview every safe framing for one evidence-backed story without creating
+ * assets, posts, or any external side effect. The same deterministic renderer
+ * used by the persisted draft produces these bytes, so choosing a preview does
+ * not swap in a second generation path.
+ */
+export async function previewStoryDraftVariants(
+  db: Db,
+  input: { workspaceId: string; opportunityId: string }
+): Promise<StoryDraftVariantPreview> {
+  const opportunity = await getContentOpportunity(db, input.workspaceId, input.opportunityId);
+  if (!opportunity) throw new StoryDraftError('Content opportunity not found.', 404);
+  if (opportunity.status === 'dismissed' || opportunity.status === 'expired')
+    throw new StoryDraftError('This story is no longer available for drafting.', 409);
+  const performance = await contentPerformanceReport(db, input.workspaceId, 200);
+  const strategy = contentDraftStrategy(opportunity, performance);
+  return {
+    strategy,
+    variants: strategy.eligibleAngles.map((angle) => {
+      const rendered = deterministicCopy(opportunity, { ...strategy, angle });
+      return {
+        angle,
+        recommended: angle === strategy.angle,
+        reason:
+          angle === strategy.angle
+            ? strategy.reason
+            : `Safe ${angle.replaceAll('_', ' ')} alternative for this ${opportunity.kind.replaceAll('_', ' ')} story.`,
+        body: rendered.body,
+        claimMap: rendered.claimMap
+      };
+    })
+  };
+}
+
 /**
  * Render one evidence-backed story into an editable LinkedIn draft.
  *
@@ -169,6 +216,8 @@ export async function prepareStoryLinkedInDraft(
     seatKey?: string;
     actorUserId?: string | null;
     formatTemplateId?: string | null;
+    /** Optional founder-selected safe framing from previewStoryDraftVariants. */
+    angle?: ContentAngle;
     /** Internal renderer variant; omitted for the canonical plain story draft. */
     variantKey?: string | null;
   },
@@ -181,13 +230,21 @@ export async function prepareStoryLinkedInDraft(
     if (opportunity.status === 'dismissed' || opportunity.status === 'expired')
       throw new StoryDraftError('This story is no longer available for drafting.', 409);
 
+    const performance = await contentPerformanceReport(tx, input.workspaceId, 200);
+    const baseStrategy = contentDraftStrategy(opportunity, performance);
+    const requestedAngle = input.angle ?? baseStrategy.angle;
+    if (!baseStrategy.eligibleAngles.includes(requestedAngle))
+      throw new StoryDraftError('That angle is not safe for this story type.', 409);
+    const strategy: ContentDraftStrategy = { ...baseStrategy, angle: requestedAngle };
+    const angleVariant =
+      input.angle && input.angle !== baseStrategy.angle ? `angle:${input.angle}` : null;
     const revision = contentOpportunityRevision(opportunity);
     const key = generationKey(
       input.opportunityId,
       seatKey,
       revision,
       input.formatTemplateId,
-      input.variantKey
+      input.variantKey ?? angleVariant
     );
     await tx
       .prepare('SELECT pg_advisory_xact_lock(hashtextextended(?,0)) AS locked')
@@ -217,8 +274,6 @@ export async function prepareStoryLinkedInDraft(
       return { asset, post, reused: true };
     }
 
-    const performance = await contentPerformanceReport(tx, input.workspaceId, 200);
-    const strategy = contentDraftStrategy(opportunity, performance);
     const formatTemplate = input.formatTemplateId
       ? await getContentFormatTemplate(tx, input.workspaceId, input.formatTemplateId)
       : null;
@@ -291,7 +346,7 @@ export async function prepareStoryLinkedInDraft(
           contentAngle: strategy.angle,
           strategySource: strategy.source,
           formatTemplateId: formatTemplate?.id ?? null,
-          contentVariant: input.variantKey ?? 'plain'
+          contentVariant: input.variantKey ?? angleVariant ?? 'plain'
         }
       },
       now

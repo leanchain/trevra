@@ -508,6 +508,8 @@ Potential entry:
 
 # Phase 5 — Evidence-constrained drafting
 
+**Status: V1 shipped through the deterministic evidence renderer rather than a separate LLM skill.** Research can now compare every safe framing for a story before persistence, inspect each claim→source map, and choose the exact angle that opens in the ordinary LinkedIn composer. Preview is read-only; selected non-default angles get their own revision/idempotency key, while the recommended angle reuses the canonical draft. A deterministic content critic remains the next correctness layer; model-assisted drafting is optional rather than required for the founder loop.
+
 ## 2.1 New skill: `gtm.content-draft`
 
 Create `src/server/skills/content-draft.ts` and register it.
@@ -607,6 +609,8 @@ A story is useful without generating anything. Evidence is visible before the CT
 **Status: shipped.** Expanded hot/warm target-account rows now expose `Turn into post` when the score has at least two signal kinds. The server re-validates recency and source-backed independent evidence, materializes or reuses the ordinary deterministic `company_change` opportunity for that exact workspace Account, creates/reuses the same provenance-linked LinkedIn draft, and opens the existing Posts composer. There is no account-specific generator or second content model.
 
 ## 3.3 Draft UX
+
+**Status: V1 shipped.** Research shows the performance-backed recommended framing plus a compact `Compare angles` surface. Safe alternatives use the same deterministic renderer as persisted drafts, expose the exact body and claim→source map, and open the selected angle in the existing composer. No duplicate editor or second generation path was introduced.
 
 Use a modal/drawer or focused flow from Research; do not duplicate the full `LinkedInPosts` editor.
 
