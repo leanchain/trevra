@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createAccount } from '../accounts/store.js';
 import { id, openDatabase, type Db } from '../db.js';
+import { createWatch } from '../watch/store.js';
 import {
   listMarketPulseSchedules,
   nextMarketPulseRunAt,
@@ -28,6 +29,39 @@ afterEach(async () => {
     await db.prepare('DELETE FROM workspaces WHERE id=?').run(workspaceId);
   await db.close();
 });
+
+async function addWatchMention(
+  workspaceId: string,
+  watchId: string,
+  idValue: string,
+  url: string,
+  at: string
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO brand_watch_mentions
+       (id,workspace_id,watch_id,platform,external_id,url,title,content,score,num_comments,
+        matched_keywords,sentiment_label,sentiment_score,sentiment_span,sentiment_version,content_hash,
+        metadata_json,mention_created_at,first_seen_at,last_seen_at)
+       VALUES (?,?,?,?,?,?,?,?,0,0,?,'neutral',0,?,1,?,'{}'::jsonb,?,?,?)`
+    )
+    .run(
+      idValue,
+      workspaceId,
+      watchId,
+      'hackernews',
+      `external-${idValue}`,
+      url,
+      `${idValue} title`,
+      `${idValue} source-backed mention`,
+      ['trevra'],
+      `${idValue} source-backed mention`,
+      `hash-${idValue}`,
+      at,
+      at,
+      at
+    );
+}
 
 async function addSignal(domain: string, name: string): Promise<void> {
   const account = await createAccount(db, WORKSPACE, { domain, name, source: 'manual' }, NOW);
@@ -127,6 +161,76 @@ describe('Market Pulse schedules', () => {
     const afterBlockedRun = (await listMarketPulseSchedules(db, WORKSPACE))[0]!;
     expect(afterBlockedRun.lastBlocker).toContain('at least two active Accounts');
     expect(new Date(afterBlockedRun.nextRunAt).getTime()).toBeGreaterThan(NOW.getTime());
+  });
+
+  it('prepares a recurring Brand-watch Pulse through the same scheduler and rejects a foreign watch', async () => {
+    const watch = await createWatch(
+      db,
+      WORKSPACE,
+      { name: 'Trevra', keywords: ['trevra'], platforms: ['hackernews'], cadence: 'daily' },
+      NOW
+    );
+    await addWatchMention(
+      WORKSPACE,
+      watch.id,
+      'watch_sched_one',
+      'https://news.ycombinator.com/item?id=watch-sched-one',
+      '2026-09-11T10:00:00.000Z'
+    );
+    await addWatchMention(
+      WORKSPACE,
+      watch.id,
+      'watch_sched_two',
+      'https://news.ycombinator.com/item?id=watch-sched-two',
+      '2026-09-12T10:00:00.000Z'
+    );
+    const schedule = await upsertMarketPulseSchedule(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        scopeType: 'brand_watch',
+        watchId: watch.id,
+        cadence: 'weekly',
+        enabled: true
+      },
+      NOW
+    );
+    expect(schedule).toMatchObject({
+      scopeType: 'brand_watch',
+      watchId: watch.id,
+      tag: null
+    });
+    await db
+      .prepare('UPDATE content_pulse_schedules SET next_run_at=? WHERE workspace_id=? AND id=?')
+      .run(NOW.toISOString(), WORKSPACE, schedule.id);
+
+    const result = await runDueMarketPulseSchedules(db, WORKSPACE, NOW);
+    expect(result).toEqual({ checked: 1, prepared: 1, blocked: 0, failed: 0 });
+    const after = (await listMarketPulseSchedules(db, WORKSPACE)).find(
+      (item) => item.id === schedule.id
+    );
+    expect(after?.lastPostId).toBeTruthy();
+    expect(after?.lastBlocker).toBeNull();
+
+    const foreignWatch = await createWatch(
+      db,
+      OTHER,
+      { name: 'Foreign', keywords: ['foreign'], platforms: ['reddit'], cadence: 'daily' },
+      NOW
+    );
+    await expect(
+      upsertMarketPulseSchedule(
+        db,
+        {
+          workspaceId: WORKSPACE,
+          scopeType: 'brand_watch',
+          watchId: foreignWatch.id,
+          cadence: 'weekly',
+          enabled: true
+        },
+        NOW
+      )
+    ).rejects.toThrow(/Brand watch not found/i);
   });
 
   it('clamps monthly recurrences to the last valid day of the target month', () => {

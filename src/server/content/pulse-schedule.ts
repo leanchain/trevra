@@ -1,13 +1,26 @@
 import { id, type Db } from '../db.js';
 import { materializeAccountMarketPulse, type MarketPulseDays } from './pulse.js';
+import { materializeBrandWatchMarketPulse } from './watch-pulse.js';
 import { prepareStoryLinkedInDraft } from './story-draft.js';
 
 export type MarketPulseCadence = 'weekly' | 'monthly';
+export type MarketPulseScheduleScope = 'accounts' | 'brand_watch';
+
+export class MarketPulseScheduleError extends Error {
+  constructor(
+    message: string,
+    public readonly status = 400
+  ) {
+    super(message);
+  }
+}
 
 export interface MarketPulseSchedule {
   id: string;
   workspaceId: string;
+  scopeType: MarketPulseScheduleScope;
   tag: string | null;
+  watchId: string | null;
   cadence: MarketPulseCadence;
   enabled: boolean;
   nextRunAt: string;
@@ -29,7 +42,9 @@ function serialize(row: Record<string, unknown>): MarketPulseSchedule {
   return {
     id: String(row.id),
     workspaceId: String(row.workspace_id),
+    scopeType: String(row.scope_type ?? 'accounts') as MarketPulseScheduleScope,
     tag: row.tag ? String(row.tag) : null,
+    watchId: row.watch_id ? String(row.watch_id) : null,
     cadence: String(row.cadence) as MarketPulseCadence,
     enabled: Boolean(row.enabled),
     nextRunAt: iso(row.next_run_at) ?? new Date(0).toISOString(),
@@ -61,37 +76,54 @@ export async function listMarketPulseSchedules(
     .prepare(
       `SELECT * FROM content_pulse_schedules
        WHERE workspace_id=?
-       ORDER BY COALESCE(LOWER(tag),''),created_at,id`
+       ORDER BY scope_type,COALESCE(LOWER(tag),''),COALESCE(watch_id,''),created_at,id`
     )
     .all<Record<string, unknown>>(workspaceId);
   return rows.map(serialize);
 }
 
-/** One schedule per existing account-watchlist scope (all Accounts or one tag). */
+/** One schedule per account-watchlist/tag scope or named Brand Watch. */
 export async function upsertMarketPulseSchedule(
   db: Db,
   input: {
     workspaceId: string;
+    scopeType?: MarketPulseScheduleScope;
     tag?: string | null;
+    watchId?: string | null;
     cadence: MarketPulseCadence;
     enabled: boolean;
   },
   now: Date = new Date()
 ): Promise<MarketPulseSchedule> {
-  const tag = input.tag?.trim() || null;
+  const scopeType: MarketPulseScheduleScope =
+    input.scopeType ?? (input.watchId ? 'brand_watch' : 'accounts');
+  const tag = scopeType === 'accounts' ? input.tag?.trim() || null : null;
+  const watchId = scopeType === 'brand_watch' ? input.watchId?.trim() || null : null;
+  if (scopeType === 'brand_watch' && !watchId)
+    throw new MarketPulseScheduleError('Brand-watch Market Pulse schedule requires a watch.');
+  if (watchId) {
+    const watch = await db
+      .prepare('SELECT id FROM brand_watches WHERE workspace_id=? AND id=?')
+      .get<{ id: string }>(input.workspaceId, watchId);
+    if (!watch) throw new MarketPulseScheduleError('Brand watch not found.', 404);
+  }
+
   const timestamp = now.toISOString();
   const nextRun = nextMarketPulseRunAt(now, input.cadence).toISOString();
+  const scopeKey = `${scopeType}\u001f${tag?.toLowerCase() ?? ''}\u001f${watchId ?? ''}`;
   return db.transaction(async (tx) => {
     await tx
       .prepare('SELECT pg_advisory_xact_lock(hashtextextended(?,0)) AS locked')
-      .get(`content-pulse-schedule\u001f${input.workspaceId}\u001f${tag?.toLowerCase() ?? ''}`);
+      .get(`content-pulse-schedule\u001f${input.workspaceId}\u001f${scopeKey}`);
     const existing = await tx
       .prepare(
         `SELECT * FROM content_pulse_schedules
-         WHERE workspace_id=? AND COALESCE(LOWER(tag),'')=COALESCE(LOWER(?),'')
+         WHERE workspace_id=? AND scope_type=?
+           AND COALESCE(LOWER(tag),'')=COALESCE(LOWER(?),'')
+           AND COALESCE(watch_id,'')=COALESCE(?,'')
          LIMIT 1`
       )
-      .get<Record<string, unknown>>(input.workspaceId, tag);
+      .get<Record<string, unknown>>(input.workspaceId, scopeType, tag, watchId);
     if (existing) {
       const changedCadence = String(existing.cadence) !== input.cadence;
       const reenabled = !Boolean(existing.enabled) && input.enabled;
@@ -118,13 +150,15 @@ export async function upsertMarketPulseSchedule(
     const row = await tx
       .prepare(
         `INSERT INTO content_pulse_schedules
-         (id,workspace_id,tag,cadence,enabled,next_run_at,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?) RETURNING *`
+         (id,workspace_id,scope_type,tag,watch_id,cadence,enabled,next_run_at,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING *`
       )
       .get<Record<string, unknown>>(
         id('cps'),
         input.workspaceId,
+        scopeType,
         tag,
+        watchId,
         input.cadence,
         input.enabled,
         nextRun,
@@ -174,14 +208,16 @@ export async function runDueMarketPulseSchedules(
     let blocker: string | null = null;
     try {
       const days: MarketPulseDays = schedule.cadence === 'weekly' ? 7 : 30;
-      const materialized = await materializeAccountMarketPulse(
-        db,
-        workspaceId,
-        { days, tag: schedule.tag },
-        now
-      );
+      const materialized =
+        schedule.scopeType === 'brand_watch' && schedule.watchId
+          ? await materializeBrandWatchMarketPulse(db, workspaceId, schedule.watchId, { days }, now)
+          : await materializeAccountMarketPulse(db, workspaceId, { days, tag: schedule.tag }, now);
       if (!materialized.opportunity) {
-        blocker = materialized.pulse.draftBlocker ?? 'No cross-account market pattern is ready.';
+        blocker =
+          materialized.pulse.draftBlocker ??
+          (schedule.scopeType === 'brand_watch'
+            ? 'No source-backed watch trend is ready.'
+            : 'No cross-account market pattern is ready.');
         result.blocked += 1;
       } else {
         opportunityId = materialized.opportunity.id;

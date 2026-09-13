@@ -53,6 +53,7 @@ import type { TodayPayload } from '../server/today';
 import type { ContentOpportunity } from '../server/content/types';
 import type { ContentDraftStrategy } from '../server/content/strategy';
 import type { MarketPulse, MarketPulseDays } from '../server/content/pulse';
+import type { BrandWatchMarketPulse } from '../server/content/watch-pulse';
 import type { AccountMomentumIndex } from '../server/content/index';
 import type { ContentFormatTemplate } from '../server/content/format-templates';
 import type { MarketPulseCadence, MarketPulseSchedule } from '../server/content/pulse-schedule';
@@ -226,6 +227,25 @@ export async function getMarketPulse(days: MarketPulseDays = 7): Promise<MarketP
   return request(`/api/content/pulse?days=${days}`);
 }
 
+export async function getBrandWatchMarketPulse(
+  watchId: string,
+  days: MarketPulseDays = 7
+): Promise<BrandWatchMarketPulse> {
+  return request(
+    `/api/content/pulse/watch/${encodeURIComponent(watchId)}?days=${encodeURIComponent(String(days))}`
+  );
+}
+
+export async function draftBrandWatchMarketPulse(
+  watchId: string,
+  days: MarketPulseDays = 7
+): Promise<{ pulse: BrandWatchMarketPulse; opportunity: ContentOpportunity }> {
+  return request(`/api/content/pulse/watch/${encodeURIComponent(watchId)}/draft`, {
+    method: 'POST',
+    body: JSON.stringify({ days })
+  });
+}
+
 export async function getMarketIndex(days: MarketPulseDays = 30): Promise<AccountMomentumIndex> {
   return request(`/api/content/index?days=${days}`);
 }
@@ -249,10 +269,18 @@ export async function getMarketPulseSchedules(): Promise<MarketPulseSchedule[]> 
 export async function saveMarketPulseSchedule(input: {
   cadence: MarketPulseCadence;
   enabled: boolean;
+  scopeType?: 'accounts' | 'brand_watch';
+  tag?: string | null;
+  watchId?: string | null;
 }): Promise<MarketPulseSchedule> {
   const result = await request<{ schedule: MarketPulseSchedule }>('/api/content/pulse/schedule', {
     method: 'PUT',
-    body: JSON.stringify({ ...input, tag: null })
+    body: JSON.stringify({
+      ...input,
+      scopeType: input.scopeType ?? 'accounts',
+      tag: input.tag ?? null,
+      watchId: input.watchId ?? null
+    })
   });
   return result.schedule;
 }

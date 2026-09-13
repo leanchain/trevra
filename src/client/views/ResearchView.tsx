@@ -16,6 +16,7 @@ import type { ContentPerformanceReport } from '../../server/content/performance'
 import type { ContentDraftStrategy } from '../../server/content/strategy';
 import type { ContentFormatTemplate } from '../../server/content/format-templates';
 import type { MarketPulse, MarketPulseDays } from '../../server/content/pulse';
+import type { BrandWatchMarketPulse } from '../../server/content/watch-pulse';
 import type { AccountMomentumIndex } from '../../server/content/index';
 import type { MarketPulseSchedule } from '../../server/content/pulse-schedule';
 import type {
@@ -25,6 +26,7 @@ import type {
 import {
   cloneContentOpportunityFormat,
   createWatch,
+  draftBrandWatchMarketPulse,
   draftContentOpportunityCarousel,
   draftContentOpportunityEvidenceCard,
   draftContentOpportunityLinkedIn,
@@ -33,6 +35,7 @@ import {
   getContentDraftStrategies,
   getContentFormatTemplates,
   getContentOpportunities,
+  getBrandWatchMarketPulse,
   getContentPerformance,
   getMarketIndex,
   getMarketPulse,
@@ -549,6 +552,7 @@ export function ResearchView({
   const [pulseBusy, setPulseBusy] = useState(false);
   const [pulseError, setPulseError] = useState('');
   const [pulseSchedule, setPulseSchedule] = useState<MarketPulseSchedule | null>(null);
+  const [pulseSchedules, setPulseSchedules] = useState<MarketPulseSchedule[]>([]);
   const [pulseScheduleBusy, setPulseScheduleBusy] = useState(false);
   const [publicReports, setPublicReports] = useState<PublicContentReport[]>([]);
   const [publicReportCtaUrl, setPublicReportCtaUrl] = useState('');
@@ -578,6 +582,9 @@ export function ResearchView({
   const [mentionsLoaded, setMentionsLoaded] = useState(false);
   const [mentionsError, setMentionsError] = useState(false);
   const [trend, setTrend] = useState<WatchTrendPoint[]>([]);
+  const [watchPulse, setWatchPulse] = useState<BrandWatchMarketPulse | null>(null);
+  const [watchPulseLoaded, setWatchPulseLoaded] = useState(false);
+  const [watchPulseBusy, setWatchPulseBusy] = useState(false);
   // The last "Run now" result for the selected watch, if any -- fresher than
   // the watch's own `platformAvailability`, and merged over it by
   // `mergedAvailabilityNote`. Reset whenever the selected watch changes so a
@@ -629,10 +636,20 @@ export function ResearchView({
     getMarketPulseSchedules()
       .then((schedules) => {
         if (cancelled) return;
-        setPulseSchedule(schedules.find((schedule) => schedule.tag === null) ?? null);
+        setPulseSchedules(schedules);
+        setPulseSchedule(
+          schedules.find(
+            (schedule) =>
+              schedule.scopeType === 'accounts' &&
+              schedule.tag === null &&
+              schedule.watchId === null
+          ) ?? null
+        );
       })
       .catch(() => {
-        if (!cancelled) setPulseSchedule(null);
+        if (cancelled) return;
+        setPulseSchedules([]);
+        setPulseSchedule(null);
       });
     return () => {
       cancelled = true;
@@ -773,31 +790,42 @@ export function ResearchView({
     if (!selectedWatch) {
       setMentions([]);
       setTrend([]);
+      setWatchPulse(null);
       setMentionsError(false);
       setMentionsLoaded(true);
+      setWatchPulseLoaded(true);
       return;
     }
     let cancelled = false;
     setMentionsLoaded(false);
-    Promise.all([getWatchMentions(selectedWatch), getWatchTrend(selectedWatch)])
-      .then(([rows, points]) => {
+    setWatchPulseLoaded(false);
+    Promise.all([
+      getWatchMentions(selectedWatch),
+      getWatchTrend(selectedWatch),
+      getBrandWatchMarketPulse(selectedWatch, pulseDays)
+    ])
+      .then(([rows, points, nextPulse]) => {
         if (cancelled) return;
         setMentions(rows);
         setTrend(points);
+        setWatchPulse(nextPulse);
         setMentionsError(false);
         setMentionsLoaded(true);
+        setWatchPulseLoaded(true);
       })
       .catch(() => {
         if (cancelled) return;
         setMentions([]);
         setTrend([]);
+        setWatchPulse(null);
         setMentionsError(true);
         setMentionsLoaded(true);
+        setWatchPulseLoaded(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedWatch]);
+  }, [selectedWatch, pulseDays]);
 
   useEffect(() => {
     if (!drafting && !draftingMention) return;
@@ -973,11 +1001,43 @@ export function ResearchView({
     setPulseError('');
     try {
       const cadence = mode === 'off' ? (pulseSchedule?.cadence ?? 'weekly') : mode;
-      const schedule = await saveMarketPulseSchedule({ cadence, enabled: mode !== 'off' });
+      const schedule = await saveMarketPulseSchedule({
+        scopeType: 'accounts',
+        cadence,
+        enabled: mode !== 'off'
+      });
       setPulseSchedule(schedule);
+      setPulseSchedules((current) => [
+        schedule,
+        ...current.filter((item) => item.id !== schedule.id)
+      ]);
     } catch (error) {
       setPulseError(
         error instanceof Error ? error.message : 'Could not update recurring pulse drafts.'
+      );
+    } finally {
+      setPulseScheduleBusy(false);
+    }
+  }
+
+  async function updateWatchPulseSchedule(mode: 'off' | 'weekly' | 'monthly'): Promise<void> {
+    if (!selectedWatch) return;
+    setPulseScheduleBusy(true);
+    try {
+      const cadence = mode === 'off' ? (selectedWatchSchedule?.cadence ?? 'weekly') : mode;
+      const schedule = await saveMarketPulseSchedule({
+        scopeType: 'brand_watch',
+        watchId: selectedWatch,
+        cadence,
+        enabled: mode !== 'off'
+      });
+      setPulseSchedules((current) => [
+        schedule,
+        ...current.filter((item) => item.id !== schedule.id)
+      ]);
+    } catch (error) {
+      setToast(
+        error instanceof Error ? error.message : 'Could not update this watch pulse schedule.'
       );
     } finally {
       setPulseScheduleBusy(false);
@@ -1057,6 +1117,34 @@ export function ResearchView({
       );
     } finally {
       setPulseBusy(false);
+    }
+  }
+
+  async function draftWatchPulse(): Promise<void> {
+    if (!selectedWatch) return;
+    setWatchPulseBusy(true);
+    try {
+      const prepared = await draftBrandWatchMarketPulse(selectedWatch, pulseDays);
+      setWatchPulse(prepared.pulse);
+      setStories((current) => {
+        const without = current.filter((item) => item.id !== prepared.opportunity.id);
+        return [prepared.opportunity, ...without];
+      });
+      setDraftStrategies(await getContentDraftStrategies(20));
+      const result = await draftContentOpportunityLinkedIn(
+        prepared.opportunity.id,
+        seatKey || undefined
+      );
+      setToast(
+        result.reused
+          ? 'Opened the existing watch pulse draft.'
+          : 'Brand-watch pulse draft created.'
+      );
+      onNavigate(`/outreach/posts?draft=${encodeURIComponent(result.post.id)}`);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Could not prepare this watch pulse.');
+    } finally {
+      setWatchPulseBusy(false);
     }
   }
 
@@ -1175,6 +1263,10 @@ export function ResearchView({
   const showBriefs = platform === 'all' || platform === 'linkedin';
   const showRedditCorpus = platform === 'all' || platform === 'reddit';
   const selectedWatchRow = watches.find((watch) => watch.id === selectedWatch) ?? null;
+  const selectedWatchSchedule =
+    pulseSchedules.find(
+      (schedule) => schedule.scopeType === 'brand_watch' && schedule.watchId === selectedWatch
+    ) ?? null;
   const watchAvailabilityNote = mergedAvailabilityNote(selectedWatchRow, runReports);
   const watchRunWarningsNote = lastRunWarningsNote(selectedWatchRow);
 
@@ -1744,6 +1836,88 @@ export function ResearchView({
               )}
             </p>
           )}
+          {selectedWatchRow ? (
+            !watchPulseLoaded ? (
+              <p className="research-watch-meta">Compiling source-backed watch pulse…</p>
+            ) : watchPulse ? (
+              <div className="research-watch-pulse">
+                <div className="research-pulse-metrics" aria-label="Brand watch pulse summary">
+                  <div>
+                    <strong>{watchPulse.mentionCount}</strong>
+                    <span>mentions</span>
+                  </div>
+                  <div>
+                    <strong>{watchPulse.sourceCount}</strong>
+                    <span>independent sources</span>
+                  </div>
+                  <div>
+                    <strong>{watchPulse.platformCount}</strong>
+                    <span>platforms</span>
+                  </div>
+                </div>
+                <p className="research-watch-meta">
+                  {watchPulse.sentiment.positive} positive · {watchPulse.sentiment.neutral} neutral
+                  · {watchPulse.sentiment.negative} negative
+                  {watchPulse.topKeywords.length > 0
+                    ? ` · Top: ${watchPulse.topKeywords
+                        .slice(0, 3)
+                        .map((item) => `${item.keyword} (${item.mentionCount})`)
+                        .join(', ')}`
+                    : ''}
+                </p>
+                <div className="research-pulse-schedule">
+                  <span>Prepare watch drafts</span>
+                  <div
+                    className="li-filter-row"
+                    role="group"
+                    aria-label="Recurring brand watch pulse drafts"
+                  >
+                    {(['off', 'weekly', 'monthly'] as const).map((mode) => {
+                      const active =
+                        mode === 'off'
+                          ? !selectedWatchSchedule?.enabled
+                          : selectedWatchSchedule?.enabled &&
+                            selectedWatchSchedule.cadence === mode;
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          className={`li-range ${active ? 'is-active' : ''}`}
+                          aria-pressed={active}
+                          disabled={pulseScheduleBusy}
+                          onClick={() => void updateWatchPulseSchedule(mode)}
+                        >
+                          {mode === 'off' ? 'Off' : mode === 'weekly' ? 'Weekly' : 'Monthly'}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {selectedWatchSchedule?.enabled ? (
+                    <small>
+                      Next draft {new Date(selectedWatchSchedule.nextRunAt).toLocaleString()}
+                      {selectedWatchSchedule.lastBlocker
+                        ? ` · Last run: ${selectedWatchSchedule.lastBlocker}`
+                        : ''}
+                    </small>
+                  ) : null}
+                </div>
+                <div className="research-pulse-action-buttons">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!watchPulse.canDraft || watchPulseBusy}
+                    onClick={() => void draftWatchPulse()}
+                  >
+                    {watchPulseBusy ? <LoaderCircle className="spin" size={15} /> : null}
+                    Draft watch pulse
+                  </button>
+                  {!watchPulse.canDraft && watchPulse.draftBlocker ? (
+                    <small className="research-pulse-blocker">{watchPulse.draftBlocker}</small>
+                  ) : null}
+                </div>
+              </div>
+            ) : null
+          ) : null}
           {watches.length === 0 && (
             <p className="research-watch-empty">
               Create a watch to start tracking mentions of your brand or a keyword.

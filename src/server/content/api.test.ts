@@ -101,6 +101,59 @@ async function seedStoryEvidence(): Promise<void> {
   }
 }
 
+async function seedBrandWatchPulse(workspaceId: string, watchId: string): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO brand_watches
+       (id,workspace_id,name,keywords,platforms,cadence,enabled,limit_per_platform,next_run_at,created_at,updated_at)
+       VALUES (?,?,?,?,?,'daily',TRUE,25,?,?,?)`
+    )
+    .run(
+      watchId,
+      workspaceId,
+      `${workspaceId} pulse watch`,
+      ['trevra', 'founder'],
+      ['hackernews', 'reddit'],
+      NOW.toISOString(),
+      NOW.toISOString(),
+      NOW.toISOString()
+    );
+  for (const [index, platform] of ['hackernews', 'reddit'].entries()) {
+    const at = new Date(NOW.getTime() - index * 60 * 60 * 1000).toISOString();
+    await db
+      .prepare(
+        `INSERT INTO brand_watch_mentions
+         (id,workspace_id,watch_id,platform,external_id,url,title,content,author,community,
+          score,num_comments,matched_keywords,sentiment_label,sentiment_score,sentiment_span,
+          sentiment_version,content_hash,metadata_json,first_seen_at,last_seen_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?,?::jsonb,?,?)`
+      )
+      .run(
+        `bwm_${workspaceId}_${index}`,
+        workspaceId,
+        watchId,
+        platform,
+        `${workspaceId}-${index}`,
+        `https://${platform}.example/${workspaceId}/${index}`,
+        `Founder discussion ${index + 1}`,
+        `People are discussing Trevra founder workflows ${index + 1}.`,
+        `author${index}`,
+        platform === 'reddit' ? 'r/startups' : null,
+        20 + index,
+        4 + index,
+        index === 0 ? ['trevra', 'founder'] : ['trevra'],
+        index === 0 ? 'positive' : 'neutral',
+        index === 0 ? 0.6 : 0,
+        index === 0 ? 'positive discussion' : 'neutral discussion',
+        1,
+        `hash-${workspaceId}-${index}`,
+        '{}',
+        at,
+        at
+      );
+  }
+}
+
 beforeAll(async () => {
   await migrateAuthDatabase();
   db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
@@ -118,6 +171,82 @@ afterAll(async () => {
 });
 
 describe('content opportunity API', () => {
+  it('keeps Brand-watch Pulse preview, drafting and schedules inside the authenticated workspace', async () => {
+    const ownWatch = 'bw_content_api_own';
+    const foreignWatch = 'bw_content_api_foreign';
+    await seedBrandWatchPulse(WORKSPACE, ownWatch);
+    await seedBrandWatchPulse(OTHER, foreignWatch);
+
+    const preview = await authed(
+      'get',
+      `/api/content/pulse/watch/${encodeURIComponent(ownWatch)}?days=7`
+    ).expect(200);
+    expect(preview.body).toMatchObject({
+      scope: { type: 'brand_watch', watchId: ownWatch },
+      sourceCount: 2,
+      platformCount: 2,
+      canDraft: true
+    });
+
+    await authed(
+      'get',
+      `/api/content/pulse/watch/${encodeURIComponent(foreignWatch)}?days=7`
+    ).expect(404);
+
+    const drafted = await authed(
+      'post',
+      `/api/content/pulse/watch/${encodeURIComponent(ownWatch)}/draft`
+    )
+      .send({ days: 7 })
+      .expect(200);
+    expect(drafted.body.opportunity).toMatchObject({
+      workspaceId: WORKSPACE,
+      kind: 'watch_trend',
+      status: 'ready'
+    });
+
+    await authed('post', `/api/content/pulse/watch/${encodeURIComponent(foreignWatch)}/draft`)
+      .send({ days: 7 })
+      .expect(404);
+
+    const schedule = await authed('put', '/api/content/pulse/schedule')
+      .send({
+        scopeType: 'brand_watch',
+        watchId: ownWatch,
+        cadence: 'weekly',
+        enabled: true
+      })
+      .expect(200);
+    expect(schedule.body.schedule).toMatchObject({
+      workspaceId: WORKSPACE,
+      scopeType: 'brand_watch',
+      watchId: ownWatch,
+      cadence: 'weekly',
+      enabled: true
+    });
+
+    await authed('put', '/api/content/pulse/schedule')
+      .send({
+        scopeType: 'brand_watch',
+        watchId: foreignWatch,
+        cadence: 'weekly',
+        enabled: true
+      })
+      .expect(404);
+    const schedules = await authed('get', '/api/content/pulse/schedules').expect(200);
+    expect(schedules.body.schedules).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ scopeType: 'brand_watch', watchId: ownWatch })
+      ])
+    );
+    expect(JSON.stringify(schedules.body.schedules)).not.toContain(foreignWatch);
+
+    await db
+      .prepare("DELETE FROM content_opportunities WHERE workspace_id=? AND kind='watch_trend'")
+      .run(WORKSPACE);
+    await db.prepare('DELETE FROM brand_watches WHERE id IN (?,?)').run(ownWatch, foreignWatch);
+  });
+
   it('refreshes only source-backed workspace stories and lets the founder dismiss one', async () => {
     await seedStoryEvidence();
     const before = await authed('get', '/api/content/opportunities').expect(200);

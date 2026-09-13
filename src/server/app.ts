@@ -134,8 +134,17 @@ import {
 } from './content/public-reports.js';
 import { contentDraftStrategy } from './content/strategy.js';
 import { compileAccountMarketPulse, materializeAccountMarketPulse } from './content/pulse.js';
+import {
+  BrandWatchPulseError,
+  compileBrandWatchMarketPulse,
+  materializeBrandWatchMarketPulse
+} from './content/watch-pulse.js';
 import { compileAccountMomentumIndex } from './content/index.js';
-import { listMarketPulseSchedules, upsertMarketPulseSchedule } from './content/pulse-schedule.js';
+import {
+  MarketPulseScheduleError,
+  listMarketPulseSchedules,
+  upsertMarketPulseSchedule
+} from './content/pulse-schedule.js';
 import { DemandActionError, prepareDemandAction } from './demand/actions.js';
 import { listConversationMessages, listConversations } from './conversations.js';
 import { listEmailDeliveries } from './email-deliveries.js';
@@ -2754,6 +2763,33 @@ export function createApp(db: Db) {
     }
   });
 
+  app.get('/api/content/pulse/watch/:watchId', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          days: z.coerce
+            .number()
+            .int()
+            .refine((value) => value === 7 || value === 30)
+            .optional()
+        })
+        .parse(req.query);
+      const pulse = await compileBrandWatchMarketPulse(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.watchId),
+        { days: (input.days ?? 7) as 7 | 30 },
+        new Date()
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(pulse);
+    } catch (error) {
+      if (error instanceof BrandWatchPulseError)
+        return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
   app.get('/api/content/index', async (req: AuthedRequest, res, next) => {
     try {
       const input = z
@@ -2813,6 +2849,41 @@ export function createApp(db: Db) {
     }
   });
 
+  app.post('/api/content/pulse/watch/:watchId/draft', async (req: AuthedRequest, res, next) => {
+    try {
+      const input = z
+        .object({
+          days: z
+            .number()
+            .int()
+            .refine((value) => value === 7 || value === 30)
+            .optional()
+        })
+        .strict()
+        .parse(req.body ?? {});
+      const result = await materializeBrandWatchMarketPulse(
+        db,
+        req.auth!.workspaceId,
+        String(req.params.watchId),
+        { days: (input.days ?? 7) as 7 | 30 },
+        new Date()
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      if (!result.opportunity) {
+        return res.status(409).json({
+          error:
+            result.pulse.draftBlocker ?? 'This watch does not yet contain a source-backed trend.',
+          pulse: result.pulse
+        });
+      }
+      res.json(result);
+    } catch (error) {
+      if (error instanceof BrandWatchPulseError)
+        return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
   app.get('/api/content/pulse/schedules', async (req: AuthedRequest, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-store');
@@ -2828,7 +2899,9 @@ export function createApp(db: Db) {
         .object({
           cadence: z.enum(['weekly', 'monthly']),
           enabled: z.boolean(),
-          tag: z.string().trim().min(1).max(120).nullable().optional()
+          scopeType: z.enum(['accounts', 'brand_watch']).optional(),
+          tag: z.string().trim().min(1).max(120).nullable().optional(),
+          watchId: z.string().trim().min(1).max(200).nullable().optional()
         })
         .strict()
         .parse(req.body ?? {});
@@ -2836,15 +2909,19 @@ export function createApp(db: Db) {
         db,
         {
           workspaceId: req.auth!.workspaceId,
+          scopeType: input.scopeType ?? (input.watchId ? 'brand_watch' : 'accounts'),
           cadence: input.cadence,
           enabled: input.enabled,
-          tag: input.tag ?? null
+          tag: input.tag ?? null,
+          watchId: input.watchId ?? null
         },
         new Date()
       );
       res.setHeader('Cache-Control', 'no-store');
       res.json({ schedule });
     } catch (error) {
+      if (error instanceof MarketPulseScheduleError)
+        return res.status(error.status).json({ error: error.message });
       next(error);
     }
   });

@@ -301,11 +301,10 @@ The drafter may use this later as input, but the calculation itself stays determ
 - [x] Append-only own-post metrics with tapered 6h/24h lifecycle reads; unreadable metrics stay null.
 - [x] Commercial content attribution: engager → Person → qualified demand → verified reply → Opportunity → won.
 - [x] Outcome-aware draft framing with minimum `n=3` per angle and visible reasoning; commercial outcomes outrank reach.
-- [x] Account-watchlist Market Pulse for 7/30-day windows, including existing Account tag scopes and cross-account evidence guards.
-- [x] Opt-in weekly/monthly Market Pulse draft preparation through the existing workspace automation lease; never auto-publishes.
-- [ ] Evidence-card rendering / native visual attachment.
-- [ ] Brand-watch and saved-filter Market Pulse scopes.
-- [ ] Public reports/indexes, format cloning, and additional publisher adapters.
+- [x] Evidence-card rendering / native visual attachment, including revision-safe PNG proof cards and carousel variants.
+- [x] Brand-watch Market Pulse scope with source-count guards, sentiment/keyword summaries, manual drafting and opt-in weekly/monthly preparation through the existing workspace automation lease.
+- [ ] Generic saved-filter Market Pulse scope is deferred until Trevra has a canonical saved-filter model; do not invent a parallel filter entity just to satisfy the plan.
+- [x] Public reports/indexes with external acquisition attribution, safe format cloning, and additional copy-only publisher adapters/handoffs.
 
 ## Phase 0 — Demand Graph V1
 
@@ -898,12 +897,13 @@ For a provenance-linked saved story draft, Trevra:
 
 **Short-form carousel shipped:** Trevra can turn one source-backed story into a separate revision-aware LinkedIn carousel draft: cover, up to five evidence slides, and a sources slide. Every slide is a deterministic 1080×1350 PNG generated from current evidence, and carousel performance can feed the same proven-format learner so successful carousel structure is reusable without copying historical claims or images.
 
-Still open as genuinely new destination work:
+Still open as genuinely new destination work after the proven copy-only/channel-neutral bridge:
 
-- company LinkedIn pages;
+- company LinkedIn pages, once Trevra has an explicit company-page identity/configuration model;
 - external scheduler integrations;
 - provider-specific publish + metric collection, which must use the normal approval/external-write boundary rather than this copy-only surface.
 
+These are extension work, not blockers for the founder GTM/distribution loop.
 **Gate:** one evidence-backed Trevra story can be safely reshaped for the existing channel registry from the editor without losing provenance or creating an external write. **Met.**
 
 ---
