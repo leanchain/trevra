@@ -13812,6 +13812,13 @@ button:disabled {
   gap: 3px;
   min-width: 0;
 }
+.research-draft-variant-badges {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 5px;
+}
 .research-draft-variant > header strong {
   text-transform: capitalize;
 }

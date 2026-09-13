@@ -1668,11 +1668,44 @@ export function ResearchView({
                                 <strong>{variant.angle.replaceAll('_', ' ')}</strong>
                                 <small>{variant.reason}</small>
                               </div>
-                              {variant.recommended ? (
-                                <span className="li-chip">Recommended</span>
-                              ) : null}
+                              <div className="research-draft-variant-badges">
+                                {variant.recommended ? (
+                                  <span className="li-chip">Recommended</span>
+                                ) : null}
+                                <span
+                                  className={
+                                    variant.critique.passed ? 'li-chip' : 'li-chip li-chip-warn'
+                                  }
+                                >
+                                  {variant.critique.passed
+                                    ? variant.critique.warnings.length > 0
+                                      ? `${variant.critique.warnings.length} proof warning${variant.critique.warnings.length === 1 ? '' : 's'}`
+                                      : 'Proof checked'
+                                    : `${variant.critique.blockers.length} blocked`}
+                                </span>
+                              </div>
                             </header>
                             <pre>{variant.body}</pre>
+                            {variant.critique.blockers.length > 0 ||
+                            variant.critique.warnings.length > 0 ? (
+                              <details>
+                                <summary>Proof checks</summary>
+                                <ul>
+                                  {[...variant.critique.blockers, ...variant.critique.warnings].map(
+                                    (issue) => (
+                                      <li
+                                        key={`${variant.angle}-${issue.code}-${issue.claim ?? ''}`}
+                                      >
+                                        <span>
+                                          {issue.severity === 'blocker' ? 'Blocked: ' : 'Warning: '}
+                                          {issue.message}
+                                        </span>
+                                      </li>
+                                    )
+                                  )}
+                                </ul>
+                              </details>
+                            ) : null}
                             <details>
                               <summary>Evidence map · {variant.claimMap.length} claims</summary>
                               <ul>
@@ -1700,7 +1733,7 @@ export function ResearchView({
                               className={
                                 variant.recommended ? 'primary-button' : 'secondary-button'
                               }
-                              disabled={storyBusy === story.id}
+                              disabled={storyBusy === story.id || !variant.critique.passed}
                               onClick={() => void draftStory(story, variant.angle)}
                             >
                               {storyBusy === story.id ? (

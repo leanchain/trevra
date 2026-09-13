@@ -301,9 +301,21 @@ describe('content opportunity API', () => {
     ).toBe(3);
     expect(preview.body.variants).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ angle: 'observation', recommended: true }),
-        expect.objectContaining({ angle: 'teardown', recommended: false }),
-        expect.objectContaining({ angle: 'list', recommended: false })
+        expect.objectContaining({
+          angle: 'observation',
+          recommended: true,
+          critique: expect.objectContaining({ passed: true, blockers: [] })
+        }),
+        expect.objectContaining({
+          angle: 'teardown',
+          recommended: false,
+          critique: expect.objectContaining({ passed: true, blockers: [] })
+        }),
+        expect.objectContaining({
+          angle: 'list',
+          recommended: false,
+          critique: expect.objectContaining({ passed: true, blockers: [] })
+        })
       ])
     );
     for (const variant of preview.body.variants as Array<{
@@ -343,6 +355,15 @@ describe('content opportunity API', () => {
 
     await authed('post', `/api/content/opportunities/${encodeURIComponent(storyId)}/draft-linkedin`)
       .send({ angle: 'comparison' })
+      .expect(409);
+
+    // Proof validation happens before idempotent reuse: an old draft must not
+    // reopen through the story action once its underlying evidence is stale.
+    await db
+      .prepare('UPDATE content_opportunities SET freshness_at=? WHERE workspace_id=? AND id=?')
+      .run('2026-08-01T00:00:00.000Z', WORKSPACE, storyId);
+    await authed('post', `/api/content/opportunities/${encodeURIComponent(storyId)}/draft-linkedin`)
+      .send({})
       .expect(409);
   });
 

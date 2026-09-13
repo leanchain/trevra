@@ -550,6 +550,8 @@ Do not generate five paraphrases of the same post.
 
 ## 2.3 Content critic
 
+**Status: deterministic V1 shipped.** Before a preview can be selected or a draft can be created/reused, Trevra verifies that every factual claim belongs to the canonical story snapshot, every claim has exact stored provenance with an inspectable HTTP(S) URL and observation timestamp, the story is still fresh, and the rendered copy is inside the LinkedIn length boundary. Prediction framing must label inference explicitly. Overlong/promotional/thesis-light copy is surfaced as warnings, and critique results are stored with the ContentAsset generation metadata. Stale evidence blocks even an already-existing idempotent draft from reopening through the story action.
+
 Create `src/server/content/critic.ts`.
 
 Hard blockers:

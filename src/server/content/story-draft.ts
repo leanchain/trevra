@@ -4,6 +4,7 @@ import { createPost, type LinkedInPost } from '../linkedin/posts.js';
 import { createContentAsset, getContentAsset } from './assets.js';
 import { getContentOpportunity } from './opportunities.js';
 import { contentPerformanceReport } from './performance.js';
+import { critiqueContentDraft, type ContentCritique } from './critic.js';
 import { contentOpportunityRevision } from './revision.js';
 import { contentDraftStrategy, type ContentDraftStrategy } from './strategy.js';
 import {
@@ -160,6 +161,7 @@ export interface StoryDraftVariant {
   reason: string;
   body: string;
   claimMap: ClaimMapEntry[];
+  critique: ContentCritique;
 }
 
 export interface StoryDraftVariantPreview {
@@ -187,6 +189,11 @@ export async function previewStoryDraftVariants(
     strategy,
     variants: strategy.eligibleAngles.map((angle) => {
       const rendered = deterministicCopy(opportunity, { ...strategy, angle });
+      const critique = critiqueContentDraft(opportunity, {
+        angle,
+        body: rendered.body,
+        claimMap: rendered.claimMap
+      });
       return {
         angle,
         recommended: angle === strategy.angle,
@@ -195,7 +202,8 @@ export async function previewStoryDraftVariants(
             ? strategy.reason
             : `Safe ${angle.replaceAll('_', ' ')} alternative for this ${opportunity.kind.replaceAll('_', ' ')} story.`,
         body: rendered.body,
-        claimMap: rendered.claimMap
+        claimMap: rendered.claimMap,
+        critique
       };
     })
   };
@@ -236,6 +244,23 @@ export async function prepareStoryLinkedInDraft(
     if (!baseStrategy.eligibleAngles.includes(requestedAngle))
       throw new StoryDraftError('That angle is not safe for this story type.', 409);
     const strategy: ContentDraftStrategy = { ...baseStrategy, angle: requestedAngle };
+    const formatTemplate = input.formatTemplateId
+      ? await getContentFormatTemplate(tx, input.workspaceId, input.formatTemplateId)
+      : null;
+    if (input.formatTemplateId && !formatTemplate)
+      throw new StoryDraftError('Content format template not found.', 404);
+    const rendered = deterministicCopy(opportunity, strategy, formatTemplate);
+    const critique = critiqueContentDraft(
+      opportunity,
+      { angle: strategy.angle, body: rendered.body, claimMap: rendered.claimMap },
+      now
+    );
+    if (!critique.passed) {
+      throw new StoryDraftError(
+        critique.blockers[0]?.message ?? 'Draft failed deterministic proof checks.',
+        409
+      );
+    }
     const angleVariant =
       input.angle && input.angle !== baseStrategy.angle ? `angle:${input.angle}` : null;
     const revision = contentOpportunityRevision(opportunity);
@@ -274,12 +299,6 @@ export async function prepareStoryLinkedInDraft(
       return { asset, post, reused: true };
     }
 
-    const formatTemplate = input.formatTemplateId
-      ? await getContentFormatTemplate(tx, input.workspaceId, input.formatTemplateId)
-      : null;
-    if (input.formatTemplateId && !formatTemplate)
-      throw new StoryDraftError('Content format template not found.', 404);
-    const rendered = deterministicCopy(opportunity, strategy, formatTemplate);
     const asset = await createContentAsset(
       tx,
       {
@@ -323,7 +342,8 @@ export async function prepareStoryLinkedInDraft(
             minimumSample: strategy.minimumSample,
             eligibleAngles: strategy.eligibleAngles,
             hints: strategy.hints
-          }
+          },
+          critique
         },
         createdBy: input.actorUserId ?? null
       },
