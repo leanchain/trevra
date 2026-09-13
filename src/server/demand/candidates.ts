@@ -16,7 +16,8 @@ export interface DemandEvidence {
     | 'conversation_message'
     | 'opportunity'
     | 'linkedin_post_engagement'
-    | 'brand_watch_mention';
+    | 'brand_watch_mention'
+    | 'public_report';
   sourceId: string;
   label: string;
   category: 'request' | 'history' | 'supporting';
@@ -96,6 +97,49 @@ function recencyFor(observedAt: string, now: Date): number {
 function iso(value: unknown): string {
   const parsed = new Date(String(value));
   return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : String(value);
+}
+
+function object(value: unknown): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value))
+    return value as Record<string, unknown>;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+async function publicReportAttributionEvidence(
+  db: Db,
+  workspaceId: string,
+  attributionValue: unknown,
+  observedAt: string
+): Promise<DemandEvidence[]> {
+  const attribution = object(attributionValue);
+  if (String(attribution.utm_source ?? '') !== 'trevra_public_report') return [];
+  const slug = String(attribution.utm_campaign ?? '').trim();
+  if (!slug) return [];
+  const report = await db
+    .prepare(
+      `SELECT id,title,template FROM content_public_reports
+       WHERE workspace_id=? AND slug=? LIMIT 1`
+    )
+    .get<{ id: string; title: string; template: string }>(workspaceId, slug);
+  if (!report) return [];
+  return [
+    {
+      sourceType: 'public_report',
+      sourceId: report.id,
+      label: report.template === 'index' ? 'Originating public index' : 'Originating public report',
+      category: 'supporting',
+      excerpt: `This request carried attribution from "${report.title}" (${slug}).`,
+      observedAt
+    }
+  ];
 }
 
 async function loadAccountSignals(
@@ -411,6 +455,7 @@ export async function buildDemandCandidates(
         s.kind AS submission_kind,
         s.message,
         s.page_url,
+        s.attribution_json,
         s.received_at,
         p.name AS person_name,
         p.email AS person_email,
@@ -488,6 +533,12 @@ export async function buildDemandCandidates(
       relationship: relationshipState.score,
       recency
     };
+    const reportEvidence = await publicReportAttributionEvidence(
+      db,
+      workspaceId,
+      row.attribution_json,
+      receivedAt
+    );
 
     const evidence: DemandEvidence[] = [
       {
@@ -501,6 +552,7 @@ export async function buildDemandCandidates(
         externalUrl: row.page_url ? String(row.page_url) : null,
         observedAt: receivedAt
       },
+      ...reportEvidence,
       ...(scoreKnown
         ? [
             {
@@ -550,6 +602,9 @@ export async function buildDemandCandidates(
           : highIntentInbound
             ? ['explicit demo/pilot/pricing intent does not require an inferred account score']
             : []),
+        ...(reportEvidence.length > 0
+          ? ['the request is attributable to a Trevra public intelligence report']
+          : []),
         ...(relationshipState.recentInbound
           ? ['a recent inbound conversation means the next action is a reply, not cold outreach']
           : []),

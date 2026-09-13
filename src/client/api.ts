@@ -272,26 +272,28 @@ export async function getPublicContentReportPerformance(): Promise<
 }
 
 export async function publishMarketPulseReport(
-  days: MarketPulseDays = 7
+  days: MarketPulseDays = 7,
+  ctaUrl?: string | null
 ): Promise<PublicContentReport> {
   const result = await request<{ report: PublicContentReport }>(
     '/api/content/public-reports/market-pulse',
     {
       method: 'POST',
-      body: JSON.stringify({ days, tag: null })
+      body: JSON.stringify({ days, tag: null, ctaUrl: ctaUrl?.trim() || null })
     }
   );
   return result.report;
 }
 
 export async function publishMarketIndexReport(
-  days: MarketPulseDays = 30
+  days: MarketPulseDays = 30,
+  ctaUrl?: string | null
 ): Promise<PublicContentReport> {
   const result = await request<{ report: PublicContentReport }>(
     '/api/content/public-reports/index',
     {
       method: 'POST',
-      body: JSON.stringify({ days, tag: null })
+      body: JSON.stringify({ days, tag: null, ctaUrl: ctaUrl?.trim() || null })
     }
   );
   return result.report;

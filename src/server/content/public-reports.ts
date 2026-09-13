@@ -60,6 +60,7 @@ export interface PublicContentReport {
   description: string;
   snapshot: PublicReportSnapshot;
   methodology: string[];
+  ctaUrl: string | null;
   publishedAt: string;
   unpublishedAt: string | null;
   createdAt: string;
@@ -113,6 +114,7 @@ function serialize(row: Record<string, unknown>): PublicContentReport {
     description: String(row.description),
     snapshot: object(row.snapshot_json) as PublicReportSnapshot,
     methodology: (object(row.methodology_json) as string[]) ?? [],
+    ctaUrl: row.cta_url ? String(row.cta_url) : null,
     publishedAt: iso(row.published_at) ?? new Date(0).toISOString(),
     unpublishedAt: iso(row.unpublished_at),
     createdAt: iso(row.created_at) ?? new Date(0).toISOString(),
@@ -135,10 +137,11 @@ function snapshotHash(
   workspaceId: string,
   title: string,
   description: string,
-  snapshot: PublicReportSnapshot
+  snapshot: PublicReportSnapshot,
+  ctaUrl: string | null
 ): string {
   return createHash('sha256')
-    .update(JSON.stringify([workspaceId, title, description, snapshot]))
+    .update(JSON.stringify([workspaceId, title, description, snapshot, ctaUrl]))
     .digest('hex');
 }
 
@@ -177,6 +180,7 @@ export async function publishMarketPulseReport(
     workspaceId: string;
     days?: MarketPulseDays;
     tag?: string | null;
+    ctaUrl?: string | null;
     actorUserId?: string | null;
   },
   now: Date = new Date()
@@ -205,7 +209,8 @@ export async function publishMarketPulseReport(
     'A market pattern requires at least two distinct companies; first-capture baselines are excluded.',
     'Examples are snapshots of what Trevra observed at publication time; this public report does not query private workspace state live.'
   ];
-  const hash = snapshotHash(input.workspaceId, title, description, snapshot);
+  const ctaUrl = input.ctaUrl?.trim() || null;
+  const hash = snapshotHash(input.workspaceId, title, description, snapshot, ctaUrl);
   const timestamp = now.toISOString();
   return db.transaction(async (tx) => {
     await tx
@@ -231,8 +236,8 @@ export async function publishMarketPulseReport(
     const row = await tx
       .prepare(
         `INSERT INTO content_public_reports
-      (id,workspace_id,slug,template,status,title,description,snapshot_json,methodology_json,snapshot_hash,created_by,published_at,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?,?,?,?) RETURNING *`
+      (id,workspace_id,slug,template,status,title,description,snapshot_json,methodology_json,snapshot_hash,cta_url,created_by,published_at,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?,?,?,?,?) RETURNING *`
       )
       .get<Record<string, unknown>>(
         id('cpr'),
@@ -245,6 +250,7 @@ export async function publishMarketPulseReport(
         JSON.stringify(snapshot),
         JSON.stringify(methodology),
         hash,
+        ctaUrl,
         input.actorUserId ?? null,
         timestamp,
         timestamp,
@@ -261,6 +267,7 @@ export async function publishMarketIndexReport(
     workspaceId: string;
     days?: MarketPulseDays;
     tag?: string | null;
+    ctaUrl?: string | null;
     actorUserId?: string | null;
   },
   now: Date = new Date()
@@ -293,7 +300,8 @@ export async function publishMarketIndexReport(
     ...index.formula,
     'Every ranked row includes source links captured at publication time; the public page never queries private workspace state live.'
   ];
-  const hash = snapshotHash(input.workspaceId, title, description, snapshot);
+  const ctaUrl = input.ctaUrl?.trim() || null;
+  const hash = snapshotHash(input.workspaceId, title, description, snapshot, ctaUrl);
   const timestamp = now.toISOString();
   return db.transaction(async (tx) => {
     await tx
@@ -318,8 +326,8 @@ export async function publishMarketIndexReport(
     const row = await tx
       .prepare(
         `INSERT INTO content_public_reports
-         (id,workspace_id,slug,template,status,title,description,snapshot_json,methodology_json,snapshot_hash,created_by,published_at,created_at,updated_at)
-         VALUES (?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?,?,?,?) RETURNING *`
+         (id,workspace_id,slug,template,status,title,description,snapshot_json,methodology_json,snapshot_hash,cta_url,created_by,published_at,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?::jsonb,?::jsonb,?,?,?,?,?,?) RETURNING *`
       )
       .get<Record<string, unknown>>(
         id('cpr'),
@@ -332,6 +340,7 @@ export async function publishMarketIndexReport(
         JSON.stringify(snapshot),
         JSON.stringify(methodology),
         hash,
+        ctaUrl,
         input.actorUserId ?? null,
         timestamp,
         timestamp,

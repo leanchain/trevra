@@ -12,6 +12,7 @@ import {
 import { listContacts, resolveContact } from './people.js';
 import { persistImportedPeople } from './import.js';
 import { createAccount } from '../accounts/store.js';
+import { runRecommendationEngine } from '../recommendation-engine.js';
 import { resealSecrets, secretsCustodyReport } from '../secrets/custody.js';
 import { listInboundSubmissions } from './submissions.js';
 
@@ -275,6 +276,100 @@ describe('generic lead capture', () => {
       )
       .get<{ source: string; confidence: string }>(WORKSPACE_A, first.body.personId);
     expect(accountLink).toEqual({ source: 'capture', confidence: 'explicit' });
+  });
+
+  it('carries public-report attribution through signed capture into qualified-demand proof', async () => {
+    const reportId = 'cpr_capture_report';
+    const slug = 'founder-market-pulse-report';
+    await db
+      .prepare('DELETE FROM content_public_reports WHERE workspace_id=? AND id=?')
+      .run(WORKSPACE_A, reportId);
+    await db
+      .prepare(
+        `INSERT INTO content_public_reports
+         (id,workspace_id,slug,template,status,title,description,snapshot_json,methodology_json,snapshot_hash,cta_url,published_at,created_at,updated_at)
+         VALUES (?,?,?,'market_pulse','published',?,?,?::jsonb,'[]'::jsonb,?,?,?, ?,?)`
+      )
+      .run(
+        reportId,
+        WORKSPACE_A,
+        slug,
+        'Founder market pulse',
+        'A source-backed public report.',
+        JSON.stringify({
+          version: 1,
+          kind: 'market_pulse',
+          scopeLabel: 'All watched accounts',
+          days: 7,
+          from: new Date(Date.now() - 7 * 86_400_000).toISOString(),
+          to: new Date().toISOString(),
+          accountCount: 2,
+          changedAccountCount: 2,
+          signalCount: 2,
+          patterns: []
+        }),
+        'capture-report-hash',
+        'https://customer.example/demo',
+        new Date().toISOString(),
+        new Date().toISOString(),
+        new Date().toISOString()
+      );
+
+    const first = await intake(sourceSecret, 'idem-report-demo-001', {
+      kind: 'demo_request',
+      person: { name: 'Report Reader', email: 'report-reader@example.com', role: 'Founder' },
+      company: { domain: 'report-reader-company.example', name: 'Report Reader Co' },
+      page: {
+        url: 'https://customer.example/demo',
+        referrer: `https://trevra.example/signals/${slug}`
+      },
+      attribution: {
+        utm_source: 'trevra_public_report',
+        utm_medium: 'report',
+        utm_campaign: slug,
+        utm_content: 'market_pulse'
+      },
+      message: 'I would like a demo.'
+    }).expect(202);
+
+    await runRecommendationEngine(db, WORKSPACE_A, new Date(), { includeStaleProposals: false });
+
+    const recommendation = await db
+      .prepare(
+        `SELECT id,type,status FROM recommendations
+         WHERE workspace_id=? AND person_id=? AND account_id=? AND type='qualified_demand'
+         ORDER BY created_at DESC LIMIT 1`
+      )
+      .get<{ id: string; type: string; status: string }>(
+        WORKSPACE_A,
+        first.body.personId,
+        first.body.accountId
+      );
+    expect(recommendation).toMatchObject({ type: 'qualified_demand', status: 'ready' });
+
+    const proof = await db
+      .prepare(
+        `SELECT source_type,source_id,label,excerpt FROM recommendation_evidence
+         WHERE workspace_id=? AND recommendation_id=? AND source_type='public_report' LIMIT 1`
+      )
+      .get<{ source_type: string; source_id: string; label: string; excerpt: string }>(
+        WORKSPACE_A,
+        recommendation!.id
+      );
+    expect(proof).toMatchObject({
+      source_type: 'public_report',
+      source_id: reportId,
+      label: 'Originating public report'
+    });
+    expect(proof?.excerpt).toContain(slug);
+
+    const stored = (await listInboundSubmissions(db, WORKSPACE_A)).find(
+      (submission) => submission.id === first.body.submissionId
+    );
+    expect(stored?.attribution).toMatchObject({
+      utm_source: 'trevra_public_report',
+      utm_campaign: slug
+    });
   });
 
   it('does not derive an Account from an email domain and cannot link a foreign-workspace Account', async () => {

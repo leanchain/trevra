@@ -72,6 +72,7 @@ import {
   whyChips
 } from './researchFormat';
 import { useDialog } from '../ui/dialog';
+import { Field, Input } from '../ui/primitives';
 import { useActiveSeatKey } from '../LinkedInActiveAccount';
 
 /*
@@ -550,6 +551,7 @@ export function ResearchView({
   const [pulseSchedule, setPulseSchedule] = useState<MarketPulseSchedule | null>(null);
   const [pulseScheduleBusy, setPulseScheduleBusy] = useState(false);
   const [publicReports, setPublicReports] = useState<PublicContentReport[]>([]);
+  const [publicReportCtaUrl, setPublicReportCtaUrl] = useState('');
   const [publicReportPerformance, setPublicReportPerformance] = useState<
     Record<string, PublicContentReportPerformance>
   >({});
@@ -986,7 +988,7 @@ export function ResearchView({
     setPublicReportBusy('index');
     setPulseError('');
     try {
-      const report = await publishMarketIndexReport(pulseDays);
+      const report = await publishMarketIndexReport(pulseDays, publicReportCtaUrl);
       setPublicReports((current) => [report, ...current.filter((item) => item.id !== report.id)]);
       setToast('Public market index published.');
     } catch (error) {
@@ -1002,7 +1004,7 @@ export function ResearchView({
     setPublicReportBusy('publish');
     setPulseError('');
     try {
-      const report = await publishMarketPulseReport(pulseDays);
+      const report = await publishMarketPulseReport(pulseDays, publicReportCtaUrl);
       setPublicReports((current) => [report, ...current.filter((item) => item.id !== report.id)]);
       setToast('Public market report published.');
     } catch (error) {
@@ -1340,6 +1342,19 @@ export function ResearchView({
                 </small>
               ) : null}
             </div>
+            <Field
+              label="Public report CTA"
+              hint="Optional. Send readers to your own demo, scan, pricing or signup page. Trevra adds report attribution automatically."
+              className="research-report-cta"
+            >
+              <Input
+                type="url"
+                value={publicReportCtaUrl}
+                placeholder="https://yourcompany.com/demo"
+                maxLength={2048}
+                onChange={(event) => setPublicReportCtaUrl(event.target.value)}
+              />
+            </Field>
             <div className="research-pulse-actions">
               <span>{pulse.scopeLabel}</span>
               <div className="research-pulse-action-buttons">

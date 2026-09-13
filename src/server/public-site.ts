@@ -178,7 +178,7 @@ function publicReportUrl(config: SiteConfig, report: PublicContentReport): strin
 }
 
 function publicReportCtaUrl(config: SiteConfig, report: PublicContentReport): string {
-  const raw = config.hostedAppUrl || '/';
+  const raw = report.ctaUrl || config.hostedAppUrl || '/';
   try {
     const url = new URL(raw, config.origin);
     url.searchParams.set('utm_source', 'trevra_public_report');

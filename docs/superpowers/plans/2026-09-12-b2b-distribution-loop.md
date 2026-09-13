@@ -1039,9 +1039,13 @@ Current status:
 - [x] the browser sends only the public report slug; Trevra resolves report/workspace ownership server-side;
 - [x] report CTAs carry cross-origin-safe UTM lineage and same-origin session attribution;
 - [x] Research reports readers, CTA clicks and attributed signup/demo conversions per public report;
-- [ ] customer-property CTA targeting + identity-bearing capture still needs to feed the owner workspace's canonical Person × Account Demand Graph.
+- [x] the founder can snapshot an explicit http(s) customer-property CTA per public report; blank keeps the hosted Trevra CTA;
+- [x] customer-property CTAs receive the same report UTM lineage automatically;
+- [x] the existing signed generic capture preserves that lineage on identity-bearing demo/pricing/pilot requests;
+- [x] Demand Graph resolves only a real same-workspace report slug and adds an `Originating public report` proof item to `qualified_demand`;
+- [x] no anonymous report reader becomes a Person until an explicit identity-bearing capture occurs.
 
-So Trevra-hosted acquisition attribution is shipped, but Checkpoint G is not fully complete until the customer-property/person-level bridge exists.
+**Checkpoint G is met:** public intelligence can now create measurable anonymous acquisition and, after an explicit customer-property conversion, attributable canonical Person × Account demand without a parallel lead model.
 
 ---
 

@@ -309,13 +309,15 @@ describe('content opportunity API', () => {
         );
     }
 
+    const customerCta = 'https://customer.example/demo?from=market-pulse';
     const created = await authed('post', '/api/content/public-reports/market-pulse')
-      .send({ days: 7, tag: 'public-report-test' })
+      .send({ days: 7, tag: 'public-report-test', ctaUrl: customerCta })
       .expect(201);
     expect(created.body.report).toMatchObject({
       workspaceId: WORKSPACE,
       status: 'published',
-      template: 'market_pulse'
+      template: 'market_pulse',
+      ctaUrl: customerCta
     });
     const slug = created.body.report.slug as string;
     const publicPage = await request(app)
@@ -327,6 +329,8 @@ describe('content opportunity API', () => {
     expect(publicPage.text).toContain('og:title');
     expect(publicPage.text).toContain('marketing-analytics.js');
     expect(publicPage.text).toContain(`data-public-report-slug="${slug}"`);
+    expect(publicPage.text).toContain('https://customer.example/demo?');
+    expect(publicPage.text).toContain('from=market-pulse');
     expect(publicPage.text).toContain('utm_source=trevra_public_report');
     expect(publicPage.text).toContain(`utm_campaign=${encodeURIComponent(slug)}`);
     expect(publicPage.text).not.toContain(WORKSPACE);
@@ -393,10 +397,20 @@ describe('content opportunity API', () => {
     );
 
     const replay = await authed('post', '/api/content/public-reports/market-pulse')
-      .send({ days: 7, tag: 'public-report-test' })
+      .send({ days: 7, tag: 'public-report-test', ctaUrl: customerCta })
       .expect(201);
     expect(replay.body.report.id).toBe(created.body.report.id);
     expect(replay.body.report.slug).toBe(slug);
+
+    const changedDestination = await authed('post', '/api/content/public-reports/market-pulse')
+      .send({ days: 7, tag: 'public-report-test', ctaUrl: 'https://customer.example/pricing' })
+      .expect(201);
+    expect(changedDestination.body.report.id).not.toBe(created.body.report.id);
+    expect(changedDestination.body.report.ctaUrl).toBe('https://customer.example/pricing');
+
+    await authed('post', '/api/content/public-reports/market-pulse')
+      .send({ days: 7, tag: 'public-report-test', ctaUrl: 'javascript:alert(1)' })
+      .expect(400);
 
     await db
       .prepare("UPDATE account_signals SET detail='MUTATED PRIVATE STATE' WHERE id='sig_report-a'")

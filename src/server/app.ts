@@ -2868,7 +2868,6 @@ export function createApp(db: Db) {
       next(error);
     }
   });
-
   app.post('/api/content/public-reports/market-pulse', async (req: AuthedRequest, res, next) => {
     try {
       const input = z
@@ -2878,7 +2877,17 @@ export function createApp(db: Db) {
             .int()
             .refine((value) => value === 7 || value === 30)
             .optional(),
-          tag: z.string().trim().min(1).max(120).nullable().optional()
+          tag: z.string().trim().min(1).max(120).nullable().optional(),
+          ctaUrl: z
+            .string()
+            .trim()
+            .url()
+            .max(2048)
+            .refine((value) => ['http:', 'https:'].includes(new URL(value).protocol), {
+              message: 'ctaUrl must use http or https'
+            })
+            .nullable()
+            .optional()
         })
         .strict()
         .parse(req.body ?? {});
@@ -2888,6 +2897,7 @@ export function createApp(db: Db) {
           workspaceId: req.auth!.workspaceId,
           days: (input.days ?? 7) as 7 | 30,
           tag: input.tag ?? null,
+          ctaUrl: input.ctaUrl ?? null,
           actorUserId: req.auth!.userId
         },
         new Date()
@@ -2900,7 +2910,7 @@ export function createApp(db: Db) {
       next(error);
     }
   });
-
+  const input = z;
   app.post('/api/content/public-reports/index', async (req: AuthedRequest, res, next) => {
     try {
       const input = z
@@ -2910,7 +2920,17 @@ export function createApp(db: Db) {
             .int()
             .refine((value) => value === 7 || value === 30)
             .optional(),
-          tag: z.string().trim().min(1).max(120).nullable().optional()
+          tag: z.string().trim().min(1).max(120).nullable().optional(),
+          ctaUrl: z
+            .string()
+            .trim()
+            .url()
+            .max(2048)
+            .refine((value) => ['http:', 'https:'].includes(new URL(value).protocol), {
+              message: 'ctaUrl must use http or https'
+            })
+            .nullable()
+            .optional()
         })
         .strict()
         .parse(req.body ?? {});
@@ -2920,6 +2940,7 @@ export function createApp(db: Db) {
           workspaceId: req.auth!.workspaceId,
           days: (input.days ?? 30) as 7 | 30,
           tag: input.tag ?? null,
+          ctaUrl: input.ctaUrl ?? null,
           actorUserId: req.auth!.userId
         },
         new Date()
@@ -2948,7 +2969,6 @@ export function createApp(db: Db) {
       next(error);
     }
   });
-
   app.get('/api/content/draft-strategies', async (req: AuthedRequest, res, next) => {
     try {
       const input = z
