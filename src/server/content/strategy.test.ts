@@ -60,6 +60,11 @@ function report(learning: ContentLearningBucket[]): ContentPerformanceReport {
   return {
     publications: [],
     learning,
+    velocityBaseline: {
+      sampleSize: 0,
+      medianImpressionsPerHour: null,
+      eligibleForComparison: false
+    },
     totals: {
       published: 0,
       engagers: 0,

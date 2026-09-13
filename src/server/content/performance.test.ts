@@ -332,6 +332,32 @@ describe('content commercial performance', () => {
     ).toMatchObject({ sampleSize: 1, eligibleForComparison: false });
   });
 
+  it('builds a recent personal velocity baseline only after three comparable posts', async () => {
+    const workspaceId = await workspace('Velocity baseline');
+    const expectedRates = [100, 200, 400];
+    for (const [index, delta] of expectedRates.entries()) {
+      const publication = await publishedStory(workspaceId, `velocity-${index}`, 100);
+      await appendLinkedInContentMetric(
+        db,
+        {
+          workspaceId,
+          postId: publication.postId,
+          observedAt: '2026-09-12T13:05:00.000Z',
+          impressions: 100 + delta,
+          reactions: 5 + index,
+          comments: index
+        },
+        NOW
+      );
+    }
+    const report = await contentPerformanceReport(db, workspaceId);
+    expect(report.velocityBaseline).toEqual({
+      sampleSize: 3,
+      medianImpressionsPerHour: 200,
+      eligibleForComparison: true
+    });
+  });
+
   it('uses medians and refuses comparison claims until three published samples exist', async () => {
     const workspaceId = await workspace('Learning sample');
     const one = await publishedStory(workspaceId, 'one', 100);
@@ -342,6 +368,11 @@ describe('content commercial performance', () => {
       windowHours: null,
       impressionsDelta: null,
       impressionsPerHour: null
+    });
+    expect(report.velocityBaseline).toEqual({
+      sampleSize: 0,
+      medianImpressionsPerHour: null,
+      eligibleForComparison: false
     });
     let angle = report.learning.find(
       (row) => row.dimension === 'angle' && row.value === 'observation'

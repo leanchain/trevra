@@ -142,7 +142,8 @@ function isValidOfferUrl(value: string): boolean {
 }
 
 function performanceVelocityCopy(
-  publication: ContentPerformanceReport['publications'][number]
+  publication: ContentPerformanceReport['publications'][number],
+  baseline: ContentPerformanceReport['velocityBaseline']
 ): string {
   const velocity = publication.velocity;
   if (velocity.snapshotCount === 0) return 'No metric snapshots yet';
@@ -167,6 +168,16 @@ function performanceVelocityCopy(
   if (velocity.reactionsDelta !== null) bits.push(`${signed(velocity.reactionsDelta)} reactions`);
   if (velocity.commentsDelta !== null) bits.push(`${signed(velocity.commentsDelta)} comments`);
   if (velocity.repostsDelta !== null) bits.push(`${signed(velocity.repostsDelta)} reposts`);
+  if (
+    baseline.eligibleForComparison &&
+    baseline.medianImpressionsPerHour !== null &&
+    baseline.medianImpressionsPerHour > 0 &&
+    velocity.impressionsPerHour !== null
+  ) {
+    bits.push(
+      `${(velocity.impressionsPerHour / baseline.medianImpressionsPerHour).toFixed(1)}× your recent median`
+    );
+  }
   return bits.join(' · ');
 }
 
@@ -1897,7 +1908,7 @@ export function ResearchView({
                             : `${publication.latestMetrics.impressions.toLocaleString()} impressions`}
                         </span>
                         <small className="research-performance-velocity">
-                          {performanceVelocityCopy(publication)}
+                          {performanceVelocityCopy(publication, performance.velocityBaseline)}
                         </small>
                       </div>
                       <div className="research-performance-chain">

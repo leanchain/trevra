@@ -52,9 +52,16 @@ export interface ContentLearningBucket {
   summary: string;
 }
 
+export interface ContentVelocityBaseline {
+  sampleSize: number;
+  medianImpressionsPerHour: number | null;
+  eligibleForComparison: boolean;
+}
+
 export interface ContentPerformanceReport {
   publications: ContentPublicationPerformance[];
   learning: ContentLearningBucket[];
+  velocityBaseline: ContentVelocityBaseline;
   totals: ContentCommercialOutcomes & { published: number };
 }
 
@@ -466,9 +473,20 @@ export async function contentPerformanceReport(
   limit = 100
 ): Promise<ContentPerformanceReport> {
   const publications = await listContentPublicationPerformance(db, workspaceId, limit);
+  const velocitySamples = publications
+    .slice(0, 30)
+    .flatMap((row) =>
+      row.velocity.impressionsPerHour === null ? [] : [row.velocity.impressionsPerHour]
+    );
+  const medianImpressionsPerHour = median(velocitySamples);
   return {
     publications,
     learning: buildBuckets(publications),
+    velocityBaseline: {
+      sampleSize: velocitySamples.length,
+      medianImpressionsPerHour,
+      eligibleForComparison: velocitySamples.length >= CONTENT_LEARNING_MIN_SAMPLE
+    },
     totals: { published: publications.length, ...sumCommercial(publications) }
   };
 }

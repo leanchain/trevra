@@ -712,7 +712,7 @@ On post history show:
 
 # Phase 9 — Learning / format selection
 
-**Shipped 2026-09-12:** generation-time feature extraction, deterministic angle buckets with `n`, commercial-outcome attribution, minimum-sample guards, safe heuristic exploration, and visible performance-backed framing hints. Commercial outcomes are compared per post before reach; reach is only a tiebreaker when both buckets have enough readable impression samples. Early-velocity and rolling-baseline refinements remain optional follow-up.
+**Shipped 2026-09-12:** generation-time feature extraction, deterministic angle buckets with `n`, commercial-outcome attribution, minimum-sample guards, safe heuristic exploration, visible performance-backed framing hints, early post velocity, and a founder-specific recent velocity baseline. Commercial outcomes are compared per post before reach; reach is only a tiebreaker when both buckets have enough readable impression samples. Trevra only shows a `× your recent median` velocity comparison after at least three comparable posts have two or more observed metric snapshots. No global benchmark is used.
 
 ## 6.1 Feature extraction
 
