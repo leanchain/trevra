@@ -66,6 +66,18 @@ export interface PublicContentReport {
   updatedAt: string;
 }
 
+export interface PublicContentReportPerformance {
+  reportId: string;
+  slug: string;
+  views: number;
+  uniqueVisitors: number;
+  ctaClicks: number;
+  ctaVisitors: number;
+  signupStarts: number;
+  signupCompletions: number;
+  demoStarts: number;
+}
+
 export class PublicReportError extends Error {
   constructor(
     message: string,
@@ -340,6 +352,69 @@ export async function listPublicContentReports(
     )
     .all<Record<string, unknown>>(workspaceId);
   return rows.map(serialize);
+}
+
+export async function listPublicContentReportPerformance(
+  db: Db,
+  workspaceId: string
+): Promise<PublicContentReportPerformance[]> {
+  const rows = await db
+    .prepare(
+      `SELECT
+         r.id AS report_id,
+         r.slug,
+         (COUNT(e.id) FILTER (
+           WHERE e.event_name='page_view'
+             AND e.metadata_json->>'publicReportId'=r.id
+         ))::int AS views,
+         (COUNT(DISTINCT e.visitor_hash) FILTER (
+           WHERE e.event_name='page_view'
+             AND e.metadata_json->>'publicReportId'=r.id
+             AND e.visitor_hash IS NOT NULL
+         ))::int AS unique_visitors,
+         (COUNT(e.id) FILTER (
+           WHERE e.event_name='public_report_cta'
+             AND e.metadata_json->>'publicReportId'=r.id
+         ))::int AS cta_clicks,
+         (COUNT(DISTINCT e.visitor_hash) FILTER (
+           WHERE e.event_name='public_report_cta'
+             AND e.metadata_json->>'publicReportId'=r.id
+             AND e.visitor_hash IS NOT NULL
+         ))::int AS cta_visitors,
+         (COUNT(e.id) FILTER (
+           WHERE e.event_name='signup_started' AND e.campaign=r.slug
+         ))::int AS signup_starts,
+         (COUNT(e.id) FILTER (
+           WHERE e.event_name='signup_completed' AND e.campaign=r.slug
+         ))::int AS signup_completions,
+         (COUNT(e.id) FILTER (
+           WHERE e.event_name='demo_started' AND e.campaign=r.slug
+         ))::int AS demo_starts
+       FROM content_public_reports r
+       LEFT JOIN marketing_events e
+         ON (e.metadata_json->>'publicReportId'=r.id)
+         OR (
+           e.campaign=r.slug
+           AND e.source='trevra_public_report'
+           AND e.medium='report'
+           AND e.event_name IN ('signup_started','signup_completed','demo_started')
+         )
+       WHERE r.workspace_id=?
+       GROUP BY r.id,r.slug,r.published_at
+       ORDER BY r.published_at DESC,r.id DESC`
+    )
+    .all<Record<string, unknown>>(workspaceId);
+  return rows.map((row) => ({
+    reportId: String(row.report_id),
+    slug: String(row.slug),
+    views: Number(row.views ?? 0),
+    uniqueVisitors: Number(row.unique_visitors ?? 0),
+    ctaClicks: Number(row.cta_clicks ?? 0),
+    ctaVisitors: Number(row.cta_visitors ?? 0),
+    signupStarts: Number(row.signup_starts ?? 0),
+    signupCompletions: Number(row.signup_completions ?? 0),
+    demoStarts: Number(row.demo_starts ?? 0)
+  }));
 }
 
 export async function unpublishContentReport(

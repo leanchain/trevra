@@ -126,6 +126,7 @@ import { contentPerformanceReport } from './content/performance.js';
 import { ContentChannelVariantError, contentChannelVariants } from './content/channel-variants.js';
 import {
   PublicReportError,
+  listPublicContentReportPerformance,
   listPublicContentReports,
   publishMarketIndexReport,
   publishMarketPulseReport,
@@ -2852,6 +2853,17 @@ export function createApp(db: Db) {
     try {
       res.setHeader('Cache-Control', 'no-store');
       res.json({ reports: await listPublicContentReports(db, req.auth!.workspaceId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get('/api/content/public-reports/performance', async (req: AuthedRequest, res, next) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        performance: await listPublicContentReportPerformance(db, req.auth!.workspaceId)
+      });
     } catch (error) {
       next(error);
     }

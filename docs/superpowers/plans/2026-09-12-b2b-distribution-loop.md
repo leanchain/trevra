@@ -932,13 +932,9 @@ POST   /api/content/reports/:id/publish      # later phase
 
 `render/linkedin` creates an ordinary `linkedin_posts` draft. It must not publish.
 
----
-
 `render/linkedin` creates an ordinary `linkedin_posts` draft. It must not publish.
 
 ---
-
-# Testing / release qualification
 
 ## Unit
 
@@ -1036,6 +1032,16 @@ Market Pulse repeatedly produces useful fresh drafts from new observations.
 ## Checkpoint G — external loop
 
 Public reports/indexes cause readers to visit Trevra/customer properties and can be attributed into the same demand graph.
+
+Current status:
+
+- [x] public report views are privacy-respecting client events, so crawlers and DNT/GPC readers are not silently counted;
+- [x] the browser sends only the public report slug; Trevra resolves report/workspace ownership server-side;
+- [x] report CTAs carry cross-origin-safe UTM lineage and same-origin session attribution;
+- [x] Research reports readers, CTA clicks and attributed signup/demo conversions per public report;
+- [ ] customer-property CTA targeting + identity-bearing capture still needs to feed the owner workspace's canonical Person × Account Demand Graph.
+
+So Trevra-hosted acquisition attribution is shipped, but Checkpoint G is not fully complete until the customer-property/person-level bridge exists.
 
 ---
 

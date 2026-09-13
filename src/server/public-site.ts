@@ -46,7 +46,8 @@ export type MarketingEventName =
   | 'marketing_catalog_json'
   | 'marketing_self_host_cta'
   | 'marketing_founder_cta'
-  | 'marketing_hosted_cta';
+  | 'marketing_hosted_cta'
+  | 'public_report_cta';
 
 export interface SiteConfig {
   origin: string;
@@ -97,7 +98,8 @@ const eventNameSchema = z.enum([
   'marketing_catalog_json',
   'marketing_self_host_cta',
   'marketing_founder_cta',
-  'marketing_hosted_cta'
+  'marketing_hosted_cta',
+  'public_report_cta'
 ]);
 
 const marketingEventSchema = z.object({
@@ -175,12 +177,29 @@ function publicReportUrl(config: SiteConfig, report: PublicContentReport): strin
   return `${config.origin}/signals/${encodeURIComponent(report.slug)}`;
 }
 
+function publicReportCtaUrl(config: SiteConfig, report: PublicContentReport): string {
+  const raw = config.hostedAppUrl || '/';
+  try {
+    const url = new URL(raw, config.origin);
+    url.searchParams.set('utm_source', 'trevra_public_report');
+    url.searchParams.set('utm_medium', 'report');
+    url.searchParams.set('utm_campaign', report.slug);
+    url.searchParams.set('utm_content', report.template);
+    return raw.startsWith('/') && url.origin === config.origin
+      ? `${url.pathname}${url.search}${url.hash}`
+      : url.toString();
+  } catch {
+    return raw;
+  }
+}
+
 /** Crawlable, snapshot-only public intelligence page. No workspace state is read here. */
 export function renderPublicSignalReport(
   report: PublicContentReport,
   config = getSiteConfig()
 ): string {
   const canonical = publicReportUrl(config, report);
+  const ctaUrl = publicReportCtaUrl(config, report);
   const published = new Date(report.publishedAt).toISOString().slice(0, 10);
   const body =
     report.snapshot.kind === 'market_pulse'
@@ -225,7 +244,7 @@ export function renderPublicSignalReport(
     url: canonical,
     publisher: { '@type': 'Organization', name: config.name, url: config.origin }
   }).replaceAll('<', '\\u003c');
-  return `<!doctype html><html lang="en"><head>
+  return `<!doctype html><html lang="en" data-public-report-slug="${html(report.slug)}" data-public-report-template="${html(report.template)}"><head>
     <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>${html(report.title)} · ${html(config.name)}</title>
     <meta name="description" content="${html(report.description)}">
@@ -236,12 +255,13 @@ export function renderPublicSignalReport(
     <meta name="twitter:description" content="${html(report.description)}">
     <link rel="stylesheet" href="/signal-report.css">
     <script type="application/ld+json">${jsonLd}</script>
+    <script src="/marketing-analytics.js" defer></script>
   </head><body><main class="signal-report">
     <nav><a href="/">${html(config.name)}</a><span>Market intelligence</span></nav>
     <header><p class="signal-kicker">${html(report.snapshot.scopeLabel)} · ${report.snapshot.days} days</p><h1>${html(report.title)}</h1><p class="signal-deck">${html(report.description)}</p><p class="signal-meta">Published ${published} · ${headlineMeta}</p></header>
     ${body}
     <section class="signal-method"><h2>Methodology</h2><ul>${methodology}</ul></section>
-    <aside class="signal-cta"><p><strong>See market movement before it becomes obvious.</strong> ${html(config.name)} turns source-backed changes into research, distribution and qualified next actions.</p><a href="${html(config.hostedAppUrl || '/')}" data-hosted-cta>Explore ${html(config.name)}</a></aside>
+    <aside class="signal-cta"><p><strong>See market movement before it becomes obvious.</strong> ${html(config.name)} turns source-backed changes into research, distribution and qualified next actions.</p><a href="${html(ctaUrl)}" data-hosted-cta data-public-report-cta>Explore ${html(config.name)}</a></aside>
   </main></body></html>`;
 }
 
@@ -390,7 +410,25 @@ export function registerPublicSiteRoutes(app: Express, db: Db): void {
       if (fetchSite && !['same-origin', 'none'].includes(fetchSite))
         return res.status(403).json({ error: 'Cross-site events are not accepted' });
       const input = marketingEventSchema.parse(req.body ?? {});
-      await recordMarketingEvent(db, input);
+      const reportSlug =
+        typeof input.metadata?.publicReportSlug === 'string'
+          ? input.metadata.publicReportSlug.trim()
+          : '';
+      const report = reportSlug ? await getPublishedContentReportBySlug(db, reportSlug) : null;
+      await recordMarketingEvent(db, {
+        ...input,
+        ...(report ? { workspaceId: report.workspaceId } : {}),
+        metadata: {
+          ...(input.metadata ?? {}),
+          ...(report
+            ? {
+                publicReportId: report.id,
+                publicReportSlug: report.slug,
+                publicReportTemplate: report.template
+              }
+            : {})
+        }
+      });
       res.status(202).json({ accepted: true });
     }
   );

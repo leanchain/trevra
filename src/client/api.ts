@@ -58,7 +58,10 @@ import type { ContentFormatTemplate } from '../server/content/format-templates';
 import type { MarketPulseCadence, MarketPulseSchedule } from '../server/content/pulse-schedule';
 import type { ContentPerformanceReport } from '../server/content/performance';
 import type { ContentChannelVariant } from '../server/content/channel-variants';
-import type { PublicContentReport } from '../server/content/public-reports';
+import type {
+  PublicContentReport,
+  PublicContentReportPerformance
+} from '../server/content/public-reports';
 import type { PreparedOutreachResult } from '../server/outreach/prepare';
 import type { GtmIntent, GtmPlan, PreparedGtmPlanResult } from '../server/gtm/intent';
 import type { ConversationMessage, ConversationSummary } from '../server/conversations';
@@ -257,6 +260,15 @@ export async function saveMarketPulseSchedule(input: {
 export async function getPublicContentReports(): Promise<PublicContentReport[]> {
   const result = await request<{ reports: PublicContentReport[] }>('/api/content/public-reports');
   return result.reports;
+}
+
+export async function getPublicContentReportPerformance(): Promise<
+  PublicContentReportPerformance[]
+> {
+  const result = await request<{ performance: PublicContentReportPerformance[] }>(
+    '/api/content/public-reports/performance'
+  );
+  return result.performance;
 }
 
 export async function publishMarketPulseReport(

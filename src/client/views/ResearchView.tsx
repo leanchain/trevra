@@ -18,7 +18,10 @@ import type { ContentFormatTemplate } from '../../server/content/format-template
 import type { MarketPulse, MarketPulseDays } from '../../server/content/pulse';
 import type { AccountMomentumIndex } from '../../server/content/index';
 import type { MarketPulseSchedule } from '../../server/content/pulse-schedule';
-import type { PublicContentReport } from '../../server/content/public-reports';
+import type {
+  PublicContentReport,
+  PublicContentReportPerformance
+} from '../../server/content/public-reports';
 import {
   cloneContentOpportunityFormat,
   createWatch,
@@ -34,6 +37,7 @@ import {
   getMarketIndex,
   getMarketPulse,
   getMarketPulseSchedules,
+  getPublicContentReportPerformance,
   getPublicContentReports,
   getOutreachOfferDefaults,
   getOutreachThreads,
@@ -546,6 +550,9 @@ export function ResearchView({
   const [pulseSchedule, setPulseSchedule] = useState<MarketPulseSchedule | null>(null);
   const [pulseScheduleBusy, setPulseScheduleBusy] = useState(false);
   const [publicReports, setPublicReports] = useState<PublicContentReport[]>([]);
+  const [publicReportPerformance, setPublicReportPerformance] = useState<
+    Record<string, PublicContentReportPerformance>
+  >({});
   const [publicReportBusy, setPublicReportBusy] = useState<string | null>(null);
   const [redditOpen, setRedditOpen] = useState(false);
   const [threads, setThreads] = useState<FeedThread[]>([]);
@@ -657,12 +664,18 @@ export function ResearchView({
 
   useEffect(() => {
     let cancelled = false;
-    getPublicContentReports()
-      .then((reports) => {
-        if (!cancelled) setPublicReports(reports);
+    Promise.all([getPublicContentReports(), getPublicContentReportPerformance()])
+      .then(([reports, reportPerformance]) => {
+        if (cancelled) return;
+        setPublicReports(reports);
+        setPublicReportPerformance(
+          Object.fromEntries(reportPerformance.map((row) => [row.reportId, row]))
+        );
       })
       .catch(() => {
-        if (!cancelled) setPublicReports([]);
+        if (cancelled) return;
+        setPublicReports([]);
+        setPublicReportPerformance({});
       });
     return () => {
       cancelled = true;
@@ -1366,43 +1379,49 @@ export function ResearchView({
             {publicReports.length > 0 ? (
               <div className="research-public-reports">
                 <strong>Public reports</strong>
-                {publicReports.slice(0, 3).map((report) => (
-                  <div key={report.id} className="research-public-report-row">
-                    <div>
-                      <span>{report.title}</span>
-                      <small>
-                        {report.status === 'published' ? 'Public' : 'Unpublished'} ·{' '}
-                        {new Date(report.publishedAt).toLocaleDateString()}
-                      </small>
+                {publicReports.slice(0, 3).map((report) => {
+                  const reportPerformance = publicReportPerformance[report.id];
+                  return (
+                    <div key={report.id} className="research-public-report-row">
+                      <div>
+                        <span>{report.title}</span>
+                        <small>
+                          {report.status === 'published' ? 'Public' : 'Unpublished'} ·{' '}
+                          {new Date(report.publishedAt).toLocaleDateString()}
+                          {reportPerformance
+                            ? ` · ${reportPerformance.uniqueVisitors} readers · ${reportPerformance.ctaClicks} CTA · ${reportPerformance.signupCompletions + reportPerformance.demoStarts} conversions`
+                            : ''}
+                        </small>
+                      </div>
+                      <div>
+                        {report.status === 'published' ? (
+                          <a
+                            className="secondary-button"
+                            href={`/signals/${encodeURIComponent(report.slug)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <ExternalLink size={14} />
+                            View
+                          </a>
+                        ) : null}
+                        {report.status === 'published' ? (
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={publicReportBusy !== null}
+                            onClick={() => void unpublishReport(report)}
+                          >
+                            {publicReportBusy === report.id ? (
+                              <LoaderCircle className="spin" size={14} />
+                            ) : null}
+                            Unpublish
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
-                    <div>
-                      {report.status === 'published' ? (
-                        <a
-                          className="secondary-button"
-                          href={`/signals/${encodeURIComponent(report.slug)}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <ExternalLink size={14} />
-                          View
-                        </a>
-                      ) : null}
-                      {report.status === 'published' ? (
-                        <button
-                          type="button"
-                          className="secondary-button"
-                          disabled={publicReportBusy !== null}
-                          onClick={() => void unpublishReport(report)}
-                        >
-                          {publicReportBusy === report.id ? (
-                            <LoaderCircle className="spin" size={14} />
-                          ) : null}
-                          Unpublish
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : null}
             {!pulse.canDraft && pulse.draftBlocker ? (

@@ -325,8 +325,72 @@ describe('content opportunity API', () => {
     expect(publicPage.text).toContain('report-b changed pricing.');
     expect(publicPage.text).toContain('Methodology');
     expect(publicPage.text).toContain('og:title');
+    expect(publicPage.text).toContain('marketing-analytics.js');
+    expect(publicPage.text).toContain(`data-public-report-slug="${slug}"`);
+    expect(publicPage.text).toContain('utm_source=trevra_public_report');
+    expect(publicPage.text).toContain(`utm_campaign=${encodeURIComponent(slug)}`);
     expect(publicPage.text).not.toContain(WORKSPACE);
     expect(publicPage.text).not.toContain('sig_report-a');
+
+    await request(app)
+      .post('/api/marketing/events')
+      .send({
+        eventName: 'page_view',
+        visitorId: 'report-reader-0001',
+        workspaceId: OTHER,
+        path: `/signals/${slug}`,
+        metadata: { publicReportSlug: slug, publicReportTemplate: 'market_pulse' }
+      })
+      .expect(202);
+    await request(app)
+      .post('/api/marketing/events')
+      .send({
+        eventName: 'public_report_cta',
+        visitorId: 'report-reader-0001',
+        path: `/signals/${slug}`,
+        metadata: { publicReportSlug: slug, publicReportTemplate: 'market_pulse' }
+      })
+      .expect(202);
+    await request(app)
+      .post('/api/marketing/events')
+      .send({
+        eventName: 'signup_completed',
+        visitorId: 'report-reader-0001',
+        path: '/signup',
+        source: 'trevra_public_report',
+        medium: 'report',
+        campaign: slug,
+        content: 'market_pulse'
+      })
+      .expect(202);
+
+    const attributed = await db
+      .prepare(
+        `SELECT workspace_id,metadata_json FROM marketing_events
+         WHERE event_name='page_view' AND path=? ORDER BY created_at DESC LIMIT 1`
+      )
+      .get<{ workspace_id: string; metadata_json: Record<string, unknown> }>(`/signals/${slug}`);
+    expect(attributed?.workspace_id).toBe(WORKSPACE);
+    expect(attributed?.metadata_json).toMatchObject({
+      publicReportId: created.body.report.id,
+      publicReportSlug: slug,
+      publicReportTemplate: 'market_pulse'
+    });
+
+    const performance = await authed('get', '/api/content/public-reports/performance').expect(200);
+    expect(performance.body.performance).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reportId: created.body.report.id,
+          slug,
+          views: 1,
+          uniqueVisitors: 1,
+          ctaClicks: 1,
+          ctaVisitors: 1,
+          signupCompletions: 1
+        })
+      ])
+    );
 
     const replay = await authed('post', '/api/content/public-reports/market-pulse')
       .send({ days: 7, tag: 'public-report-test' })
