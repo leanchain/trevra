@@ -62,7 +62,7 @@ import {
 } from './posts.js';
 import { runManagedCampaigns, type RunnerResult } from './runner.js';
 import type { DayShapeFn } from './pacing.js';
-import { encodeBackgroundRunDetail, recordSeatEvent, seatRestingUntil } from './seat-events.js';
+import { encodeBackgroundRunDetail, recordSeatEvent } from './seat-events.js';
 import { OWNER_SEAT_KEY, effectivePosture, getSeat } from './seats.js';
 import {
   AVAILABILITY_CATCHUP_MARKER,
@@ -1273,17 +1273,10 @@ export async function runLinkedInSideTasks(
   const startedAt = normalVisit ? verdict.startedAt! : now;
   const visitIndex = normalVisit ? verdict.visit!.index : -1;
 
-  // A sitting break blocks ordinary LinkedIn work, not proof that the HUMAN
-  // recovery the operator just completed actually worked. Verification opens
-  // no inbox, profile, lead source or send surface; it only asks the existing
-  // session question once.
-  const resting = await seatRestingUntil(db, options.workspaceId, seatKey);
-  if (resting && resting.getTime() > now.getTime() && !recoveryVerification) {
-    return {
-      ...result,
-      skipped: `This seat is between sittings until ${resting.toISOString()}, so nothing was read.`
-    };
-  }
+  // Send-batch cooldown is not an account-state blackout. Inbox and recent-
+  // connection reconciliation are bounded reads of this seat's own state; hiding
+  // them behind the sender cooldown is what allowed acceptance detection to starve.
+  // The outbound worker still honours `resting_until` before it sends anything.
 
   // ONE PASS PER NORMAL VISIT, plus at most ONE availability-return catch-up.
   // If reconnect happens inside a visit that already ran, only stale tasks can

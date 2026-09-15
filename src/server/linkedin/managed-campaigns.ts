@@ -13,7 +13,7 @@ import {
 import { getLeadList } from './lead-lists.js';
 import { effectivePosture, getSeat, OWNER_SEAT_KEY, warmupWeekOf } from './seats.js';
 import {
-  bandFor,
+  bandForSeat,
   effectiveDailyCeiling,
   seatOperatorLimit,
   warmupMultiplierFor,
@@ -2366,7 +2366,7 @@ export async function previewManagedCampaignLaunch(
     for (const kind of Object.keys(demand) as Array<keyof typeof demand>) {
       if (demand[kind] <= 0) continue;
       const paced = workflowKindToPaced(kind);
-      const band = bandFor(paced, posture === 'steady' ? 'steady' : 'warmup');
+      const band = bandForSeat(paced, posture === 'steady' ? 'steady' : 'warmup', seat);
       const ceiling = effectiveDailyCeiling(
         band.perDay,
         seatOperatorLimit(seat, paced),
@@ -4093,7 +4093,10 @@ export async function campaignAdmissionForecast(
   const row = await db
     .prepare(
       `SELECT
-         COUNT(*) FILTER (WHERE kind='invite' AND status IN ('sent','accepted','replied','declined'))::int AS invite_sample,
+         -- Pending sent invitations are UNKNOWN, not failed outcomes. Counting
+         -- them here turned a late/broken acceptance sync into a fake 0% rate and
+         -- throttled new admissions to 25% after only twenty sends.
+         COUNT(*) FILTER (WHERE kind='invite' AND status IN ('accepted','replied','declined'))::int AS invite_sample,
          COUNT(*) FILTER (WHERE kind='invite' AND status IN ('accepted','replied'))::int AS invite_accepted,
          COUNT(*) FILTER (WHERE kind IN (${messageKinds}) AND status IN ('sent','accepted','replied'))::int AS message_sample,
          COUNT(*) FILTER (WHERE kind IN (${messageKinds}) AND status='replied')::int AS message_replied,

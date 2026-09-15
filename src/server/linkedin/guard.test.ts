@@ -457,15 +457,12 @@ describe('day-over-day delta for an explicitly established account', () => {
       { dayShape: FLAT_DAY_SHAPE }
     );
 
-  it('starts an established account at half its configured ceiling, not at one', async () => {
+  it('lets an established account use the configured daily ceiling immediately', async () => {
     await establishedSeat(true);
-    // The live ledger: one profile view today, nothing on any day before it.
     await log('profile_view', 'sent', 1);
     const verdict = await view();
-    // floor(25 x WARMUP_MULTIPLIERS[0]) = 12, against a ramp-only ceiling of 1.
-    expect(check(verdict, 'day-over-day-delta').detail).toContain('ramp alone would allow 1');
-    expect(check(verdict, 'day-over-day-delta').detail).toContain('marked established');
-    expect(check(verdict, 'day-over-day-delta').detail).toContain("today's ceiling is instead 12");
+    expect(check(verdict, 'day-over-day-delta').detail).toContain('cold-account +35%');
+    expect(check(verdict, 'day-over-day-delta').detail).toContain('configured 25/day ceiling');
     expect(check(verdict, 'day-over-day-delta').passed).toBe(true);
   });
 
@@ -478,25 +475,12 @@ describe('day-over-day delta for an explicitly established account', () => {
     expect(check(verdict, 'day-over-day-delta').passed).toBe(false);
   });
 
-  it('never lets the established floor RAISE a ceiling the ramp already cleared', async () => {
+  it('still stops an established account at the rolling daily account limit', async () => {
     await establishedSeat(true);
-    for (let index = 0; index < 20; index += 1) await log('profile_view', 'sent', 30);
-    await log('profile_view', 'sent', 1);
+    for (let index = 0; index < 25; index += 1) await log('profile_view', 'sent', 1);
     const verdict = await view();
-    // 20 x 1.35 = 27, which is above the floor of 12, so the ratio binds and
-    // the detail says nothing about being established.
-    expect(check(verdict, 'day-over-day-delta').detail).toContain("today's ceiling is 27");
-    expect(check(verdict, 'day-over-day-delta').detail).not.toContain('marked established');
-  });
-
-  it('still clamps an established account once it is running above the floor', async () => {
-    await establishedSeat(true);
-    for (let index = 0; index < 4; index += 1) await log('profile_view', 'sent', 30);
-    for (let index = 0; index < 12; index += 1) await log('profile_view', 'sent', 1);
-    const verdict = await view();
-    // The floor is 12 and 12 are already used, so the 13th is refused: an
-    // established account is a paced one, not an unpaced one.
     expect(check(verdict, 'day-over-day-delta').passed).toBe(false);
+    expect(check(verdict, 'rolling-24h').passed).toBe(false);
   });
 });
 

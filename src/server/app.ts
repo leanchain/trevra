@@ -242,7 +242,7 @@ import {
   PACED_KIND_VALUES,
   WARMUP_WEEKS,
   WEEKEND_FACTOR,
-  bandFor,
+  bandForSeat,
   effectiveDailyCeiling,
   seatOperatorLimit,
   warmupMultiplier,
@@ -9951,7 +9951,7 @@ async function effectiveLinkedInLimits(
   // says 50. Every number here comes off `LINKEDIN_LIMITS` via `bandFor`.
   const bands = {} as Record<PacedKind, LinkedInBand>;
   for (const kind of PACED_KINDS) {
-    const bandLimits = bandFor(kind, band);
+    const bandLimits = bandForSeat(kind, band, seat);
     bands[kind] = bandLimits;
     const [usedDay, usedWeek, usedMonth] = await Promise.all([
       countActionsInWindow(db, seatRef, kind, LINKEDIN_WINDOW_HOURS.day, now),

@@ -308,8 +308,8 @@ describe('managed campaign runner', () => {
     const tick = await runManagedCampaigns(db, WORKSPACE, NOW);
     const plannedInvites = (await actions()).filter((action) => action.kind === 'invite');
 
-    expect(tick.actionsPlanned).toBe(3);
-    expect(plannedInvites).toHaveLength(3);
+    expect(tick.actionsPlanned).toBe(4);
+    expect(plannedInvites).toHaveLength(4);
     expect(plannedInvites.every((action) => action.status === 'planned')).toBe(true);
   });
 

@@ -305,7 +305,7 @@ export const ACTION_LEASE_MS = 15 * 60_000;
  * How long a claim on a SEAT is believed without a heartbeat.
  *
  * Longer than an action's, because a batch legitimately runs for tens of
- * minutes (up to 25 actions behind 30-120s gaps), and heartbeated while it
+ * minutes (a bounded queue batch behind 120-180s gaps), and heartbeated while it
  * does.
  */
 export const SEAT_LEASE_MS = 45 * 60_000;
@@ -684,41 +684,23 @@ const DEFAULT_CAMPAIGN_SHARE_WEIGHT = 2;
 const NEW_DM_THREAD_LOOKUP_DEPTH = 5;
 
 /**
- * HOW LONG ONE AUTONOMOUS BATCH IS, AND HOW LONG THE SEAT IS AWAY AFTERWARDS.
+ * QUEUE BATCHING, NOT A SECOND VOLUME LIMIT.
  *
- * These are rate controls first: `DEFAULT_MAX_ACTIONS` bounds one tick, and
- * this bounds one sitting so an overdue queue cannot reopen the browser in a
- * loop. What changed is that they are DRAWN rather than fixed.
+ * The old 3-8 action sitting followed by 25-60 minutes of silence made the
+ * worker itself much stricter than the account ceiling. A campaign could have
+ * safe capacity left and still spend most of the day deliberately idle. The
+ * queue now drains 12-20 actions at the 120-180s inter-action gap, then takes a
+ * short 3-8 minute hand-off break before another worker tick may continue.
  *
- * A FIXED FIVE AND A FIXED THIRTY MINUTES IS ITSELF A NUMBER THE SYSTEM EMITS.
- * Exactly five actions, then exactly 30:00 away, then exactly five actions, is
- * a period; nothing about the work produces it, and it is the same class of
- * artefact as the 123-second gap that prompted this change. Drawing the batch
- * from 3-8 and the break from 25-60 minutes deletes the period without
- * touching what actually bounds risk -- the ceilings in `limits.ts` and the
- * gate are unchanged, and every action in every sitting is still evaluated by
- * `evaluateLinkedInSafety` one at a time.
+ * Every action is still re-gated immediately before the external side effect;
+ * daily/weekly ceilings remain authoritative. These bounds only keep one browser
+ * lease finite and avoid an unbounded single batch.
  *
- * THE MEANS MOVED DELIBERATELY LITTLE. 3-8 averages 5.5 against the fixed 5,
- * so throughput is if anything slightly up. 25-60 averages 42.5 against the
- * fixed 30, which is the one number here that costs the operator something: at
- * the worst draw a seat is away for an hour rather than half of one. That is
- * the reason the band stops at 60 rather than at the 90 this file used
- * historically -- an operator watching a campaign move is owed a bounded wait,
- * and 25-60 removes the constant just as completely as 25-90 does. A ten-hour
- * window still holds ~14 sittings at the mean, which is far more than any
- * daily ceiling in `limits.ts` can fill.
- *
- * Seeded per seat AND per session index, so consecutive sittings differ from
- * each other and from the next seat's, and none of it is `Math.random()`.
- *
- * lc-debt: in-process Maps, so a worker restart forgets an in-flight break and
- * the seat may start its next sitting early; the same trade `challengedSeats`
- * already makes, and `setSeatRestingUntil` (migration 061) is the durable half.
- * Upgrade path: move the session index onto the seat row too.
+ * Seeded per seat AND per session index, so consecutive batches differ while
+ * remaining reproducible.
  */
-const SESSION_ACTIONS = { min: 3, max: 8 } as const;
-const SESSION_BREAK_MS = { min: 25 * 60_000, max: 60 * 60_000 } as const;
+const SESSION_ACTIONS = { min: 12, max: 20 } as const;
+const SESSION_BREAK_MS = { min: 3 * 60_000, max: 8 * 60_000 } as const;
 /** seat handle key -> epoch ms this seat may next open a browser. */
 const seatBreaks = new Map<string, number>();
 /** seat handle key -> how many sittings this process has served it. */
@@ -830,26 +812,21 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((done) => setTim
  * 123, 123, 123, 124, 123, 123 seconds apart. A repeated interval accurate to
  * one second across six consecutive actions is not something the work produces
  * -- it is the constant, visible in the log. `limits.ts` has always documented
- * 30-120s as the intended BAND; taking only its top turned a range into a
+ * a timing BAND; taking only its top turned a range into a
  * period, and this draws from it again.
  *
  * NOT A DISGUISE, AND NOT THE SAFETY CONTROL. Nothing here imitates a person
  * (`human.ts` still refuses to fake typing cadence, hover or dwell), and what
  * bounds risk on this account is volume -- the bands, the operator's ceilings
- * and the gate, all unchanged. This only stops the scheduler signing its own
- * name on the timestamps. It is also, on average, MORE spacing per unit of
- * work than a fixed floor would be and less than a fixed ceiling: the mean gap
- * is 75s rather than 120s, which is the one direction this trades against, and
- * the per-day ceilings are what actually cap load.
+ * and the gate. The queue envelope now centers on 150s (120-180s), matching the
+ * public Waalaxy timing model while avoiding a fixed scheduler signature.
  *
- * SEEDED, so "randomised" means unpredictable to LinkedIn and not
- * unreproducible to us: re-running the same batch produces the same gaps, and
- * the pacing is therefore assertable in a test rather than merely hoped for.
+ * SEEDED, so the same batch is reproducible and testable rather than relying on
+ * process randomness.
  */
 export function actionGapSeconds(seed: string): number {
-  return (
-    ACTION_GAP_SECONDS.min + seededUnit(seed) * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min)
-  );
+  const span = ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min;
+  return ACTION_GAP_SECONDS.min + seededUnit(seed) * span;
 }
 
 /**
@@ -1303,7 +1280,7 @@ export async function runLinkedInLocalBatch(
 
     // The gap goes BEFORE the gate, not after it: the gate's verdict has to be
     // the last thing that happens before the driver touches LinkedIn, and a
-    // 30-120s sleep in between would make it stale by exactly that much.
+    // 120-180s sleep in between would make it stale by exactly that much.
     if (index > 0) await sleep(Math.round(actionGapSeconds(`${batchId}:${action.id}`) * 1000));
 
     const at = now();
@@ -1334,7 +1311,7 @@ export async function runLinkedInLocalBatch(
       // that is released and not excluded is the OLDEST due row again on the
       // very next iteration -- and the gate that just refused it refuses it
       // again, because nothing about the ledger changed in between. The loop
-      // used to spend all 25 iterations, each behind a 30-120s sleep, re-asking
+      // used to spend the whole batch, each behind an inter-action sleep, re-asking
       // one question it already had the answer to, while every other action in
       // the queue went untouched. One refusal per row per pass; the row stays
       // planned, and the next pass asks again against a ledger that has moved.
@@ -2540,7 +2517,7 @@ export function postgresLocalWorkerStore(
       // THE LEASE MOVES ONLY WHILE SOMETHING IS ACTUALLY HAPPENING TO THE ROW.
       //
       // Called immediately before the driver touches LinkedIn -- after the
-      // 30-120s paced gap, which is the long wait -- so the deadline a reaper
+      // 120-180s paced gap, which is the long wait -- so the deadline a reaper
       // compares against is never more than one action old. That is what makes an expired lease
       // mean "this worker is gone" rather than "this worker is slow" -- and
       // the whole safety of reclaiming a claim rests on that distinction, since
@@ -4967,7 +4944,7 @@ export async function closeIdleBrowsers(
  *      that function for why moving a seat between hosts is a new-device login
  *      and therefore the loudest challenge signal available to us.
  *   3. CONCURRENT, BOUNDED. This loop was strictly serial: open a browser, sign
- *      in, drain up to 25 actions at a 30-120s gap each, then the next seat.
+ *      in, drain one bounded queue batch at a 120-180s gap each, then the next seat.
  *      That is ~31 minutes per seat, so a worker with 100 due seats needed ~52
  *      hours to finish a pass that the tick timer expected to take under a
  *      minute -- and `linkedinRunning` no-opped every later tick, so the queue
@@ -5287,7 +5264,7 @@ export async function runDueLinkedInActions(
     }
 
     // WHILE THE BATCH RUNS, THE LEASE IS PUSHED FORWARD. A batch legitimately
-    // takes tens of minutes (25 actions behind 30-120s gaps), and a lease that
+    // takes tens of minutes (a queue batch behind 120-180s gaps), and a lease that
     // expired underneath a live worker would let a second worker open a second
     // Chrome on the same profile directory. Unref'd: a heartbeat must never be
     // the reason a process will not exit.

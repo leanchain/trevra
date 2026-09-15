@@ -13,7 +13,7 @@ import {
   PACED_KIND_VALUES,
   WARMUP_WEEKS,
   WEEKEND_FACTOR,
-  bandFor,
+  bandForSeat,
   dayOverDayCeiling,
   effectiveDailyCeiling,
   establishedDayOverDayFloor,
@@ -619,7 +619,7 @@ export async function evaluateLinkedInSafety(
   const posture = seat ? effectivePosture(seat, now) : 'warmup';
   const timezone = seat?.timezone ?? 'UTC';
   const warmupWeek = seat ? warmupWeekOf(seat.activatedAt, now) : 1;
-  const band = bandFor(input.kind, posture === 'steady' ? 'steady' : 'warmup');
+  const band = bandForSeat(input.kind, posture === 'steady' ? 'steady' : 'warmup', seat);
   // The seat's own days and hours, or the researched default when there is no
   // seat to ask. Same window `pacing.ts` places slots inside.
   const window = workWindowOf(seat);
@@ -857,39 +857,22 @@ export async function evaluateLinkedInSafety(
     )
   });
 
-  // The anti-"slide and spike" check, and the reason this module exists at all
-  // (plan 1.3): a day-over-day jump is the signal, not the daily total.
-  //
-  // RAMPED FROM A WINDOW, NOT FROM YESTERDAY. Reading only the previous
-  // business day meant a single day that carried nothing -- a paused seat, an
-  // offline companion, a holiday -- handed the next day a ceiling of
-  // `MIN_RAMP_STEP` and a ten-day climb back to where the seat already was.
-  // `DAY_OVER_DAY_BASELINE_DAYS` in `limits.ts` carries the full argument; the
-  // short version is that the one-day seed was generating the sawtooth this
-  // check is here to refuse. A real 5-10 day decline still fills the window and
-  // still lowers the ceiling, which is the case the research actually names.
+  // The anti-"slide and spike" check applies only while Trevra is warming an
+  // account from its own observed history. An operator-marked established account
+  // has explicitly said that history predates Trevra, so rebuilding from 9 -> 12
+  // -> 16 after the override is contradictory and was the live throughput bug.
   const history = ledger.dailyCounts;
   const todayLocal = localDateOf(now, timezone);
   const baseline = sustainedBusinessDayCount(history, todayLocal, window);
-  // An operator who marked this account established asserted that its real
-  // history is older than Trevra. `warmupOverride` already skips the account
-  // warm-up multiplier; without this it did NOT skip the identical cold start
-  // hiding in this check, which is how a seat configured for 25 profile
-  // views/day was refused its second one. See `establishedDayOverDayFloor`.
-  const establishedFloor = seat?.warmupOverride
-    ? establishedDayOverDayFloor(effectiveDailyLimit)
-    : 0;
-  // The same ceiling WITHOUT the established floor, so the detail below can say
-  // what the ramp alone would have allowed rather than only what it allowed.
   const rampOnlyCeiling = dayOverDayCeiling(baseline);
-  const deltaCeiling = dayOverDayCeiling(baseline, establishedFloor);
+  const deltaCeiling = seat?.warmupOverride ? effectiveDailyLimit : rampOnlyCeiling;
   const previous = previousBusinessDayCount(history, todayLocal, window);
   checks.push({
     check: 'day-over-day-delta',
     passed: pacingPass(used24 + 1 <= deltaCeiling),
     detail: pacingDetail(
-      deltaCeiling > rampOnlyCeiling
-        ? `The last ${DAY_OVER_DAY_BASELINE_DAYS} business days carried at most ${baseline} ${input.kind}(s) (the most recent one carried ${previous}), so the +${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}% ramp alone would allow ${rampOnlyCeiling}. This account is marked established, so today's ceiling is instead ${deltaCeiling} -- an empty Trevra ledger is not evidence of a cold LinkedIn account. ${used24} used so far.`
+      seat?.warmupOverride
+        ? `This account is marked established, so Trevra's cold-account +${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}% day-over-day ramp is skipped. ${used24} of the configured ${effectiveDailyLimit}/day ceiling is used; the rolling-24h limit still applies.`
         : `The last ${DAY_OVER_DAY_BASELINE_DAYS} business days carried at most ${baseline} ${input.kind}(s) (the most recent one carried ${previous}), so today's ceiling is ${deltaCeiling} (+${(MAX_DAY_OVER_DAY_DELTA * 100).toFixed(0)}%); ${used24} used so far.`
     )
   });
@@ -897,9 +880,6 @@ export async function evaluateLinkedInSafety(
   const acceptance = {
     decided: ledger.acceptanceDecided,
     accepted: ledger.acceptanceAccepted,
-    // null when nothing has been decided yet, exactly as `acceptanceRate`
-    // returns it: an absent signal is not a bad one, and callers do NOT
-    // throttle on it.
     rate:
       ledger.acceptanceDecided === 0 ? null : ledger.acceptanceAccepted / ledger.acceptanceDecided
   };
@@ -912,24 +892,17 @@ export async function evaluateLinkedInSafety(
         : `${ACCEPTANCE_WINDOW_DAYS}-day invite acceptance is ${(acceptance.rate * 100).toFixed(0)}% (${acceptance.accepted} of ${acceptance.decided} decided); floor is ${(MIN_ACCEPTANCE_RATE * 100).toFixed(0)}%.`
     )
   });
-
   const plannedAt = new Date(input.plannedFor);
   const parsed = !Number.isNaN(plannedAt.getTime());
   const local = parsed ? localDateOf(plannedAt, timezone) : null;
-
-  // The window and the weekday predicate BOTH come from `pacing.ts`, and that
-  // is the fix for the gap that made this comment necessary: the planner used
-  // to place slots against a hardcoded 08:00-18:00 Mon-Fri while this gate
-  // enforced the seat's own configuration, so a seat working 10:00-14:00
-  // Tue/Thu was handed slots that were refused here and never happened.
   const weekday = local === null ? null : weekdayOf(local);
   const minuteOfDay = local === null ? null : local.hour * 60 + local.minute;
-  // > 0 means "this seat may act on this weekday at all". A day the operator
-  // configured scores 1 whether or not it is a weekend; an unconfigured
-  // weekend scores WEEKEND_FACTOR; anything else scores 0.
+
+  // > 0 means "this seat may act on this weekday at all". A configured day
+  // scores 1 whether or not it is a weekend; anything else scores the policy factor.
   const dayFactor = weekday === null ? 0 : weekdayVolumeFactor(window, weekday);
-  // THE DAY THIS ACTION FALLS ON, which is not always the day the ceiling was
-  // drawn for: a slot placed for tomorrow is judged against tomorrow's shape.
+  // The day this action falls on is not always today; a slot placed for tomorrow
+  // is judged against tomorrow's own shape.
   const plannedShape =
     local === null ? todayShape : shapeDay(`${input.workspaceId}:${seatKey}`, local, window);
   const insideConfiguredWindow =

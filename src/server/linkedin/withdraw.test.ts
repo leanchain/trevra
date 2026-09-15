@@ -845,8 +845,8 @@ describe('runWithdrawalBatch', () => {
   }
 
   it('PACES THE QUEUE -- a gap between every withdrawal but the first', async () => {
-    // Clearing 400 invites in ten minutes is the "+120% surge" half of the
-    // Slide-and-Spike signature. The gap is the whole reason this loop exists.
+    // Withdrawal actions use the same queue rhythm as other LinkedIn writes.
+    // The gap is the whole reason this loop exists.
     await steadySeat();
     for (const handle of ['a', 'b', 'c']) await pendingInvite(handle, 40);
     await sweepStaleInvites(db, SEAT, NOW);
@@ -858,8 +858,8 @@ describe('runWithdrawalBatch', () => {
     expect(targets).toHaveLength(3);
     expect(slept).toHaveLength(2);
     for (const ms of slept) {
-      expect(ms).toBeGreaterThanOrEqual(30_000);
-      expect(ms).toBeLessThanOrEqual(120_000);
+      expect(ms).toBeGreaterThanOrEqual(120_000);
+      expect(ms).toBeLessThanOrEqual(180_000);
     }
   });
 

@@ -132,12 +132,12 @@ describe('warm-up ramp', () => {
     expect(week3.reasons.join(' ')).toContain('10 invite/day x 1 = 10/day');
   });
 
-  it('lets an explicitly established account skip account warm-up without losing the recorded clock', async () => {
+  it('lets an explicitly established account use its configured volume immediately', async () => {
     await seat('2026-08-04');
     await upsertSeat(
       db,
       WORKSPACE_ID,
-      { label: 'Test seat', timezone: 'UTC', warmupOverride: true },
+      { label: 'Test seat', timezone: 'UTC', warmupOverride: true, dailyInviteLimit: 30 },
       NOW
     );
     const plan = await planPacing(
@@ -146,30 +146,15 @@ describe('warm-up ramp', () => {
       NOW,
       { dayShape: FLAT_DAY_SHAPE }
     );
-    // WAS [1, 2, 0, 0, 3, 4, 5], AND THAT WAS THE BUG THIS TEST NOW GUARDS.
-    //
-    // An account the operator had marked established, with an empty Trevra
-    // ledger, planned ONE action on its first day and needed a fortnight to
-    // reach the ceiling it was configured for -- because `warmupOverride`
-    // skipped the account warm-up multiplier and left the day-over-day clamp
-    // reading the same empty ledger and finding zero. The clamp's floor for an
-    // established account is `establishedDayOverDayFloor`: half the daily
-    // ceiling, the week-1 fraction of the researched ramp, so 9 of 18 here.
-    // From there the +35% ratio takes over -- 9, 12, weekend, 16 -- and day 6
-    // is 3 only because 40 targets have run out, not because a ceiling bound.
-    expect(perDay(plan)).toEqual([9, 12, 0, 0, 16, 3, 0]);
+    // Established means exactly that: do not rebuild volume from Trevra's empty
+    // ledger one +35% day at a time. The configured 30/day account limit is the
+    // ceiling; 40 targets therefore drain as 30 then 10.
+    expect(perDay(plan)).toEqual([30, 10, 0, 0, 0, 0, 0]);
     expect(plan.ceilingsApplied).not.toContain('warmup-multiplier');
+    expect(plan.ceilingsApplied).not.toContain('day-over-day-delta');
     expect(plan.reasons.join(' ')).toContain('Account warm-up is explicitly skipped');
     expect(plan.reasons.join(' ')).toContain('recorded clock is week 1');
-    expect(plan.reasons.join(' ')).toContain(
-      'an empty Trevra ledger is not evidence of a cold LinkedIn account'
-    );
   });
-
-  /**
-   * The same seat WITHOUT the established mark, so the floor is the only
-   * difference between the two plans and this is what it is a difference from.
-   */
   it('leaves an account nobody marked established on the one-a-day cold start', async () => {
     await seat('2026-01-01');
     const plan = await planPacing(

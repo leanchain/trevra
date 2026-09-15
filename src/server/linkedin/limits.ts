@@ -342,24 +342,19 @@ export const ACCEPTANCE_THROTTLE_FACTOR = 0.5;
 export const BUSINESS_HOURS = { start: 8, end: 18 };
 
 /**
- * The gap between two autonomous external actions. REPORTED (1.4): "randomised
- * 30-120s gaps, never a block".
+ * The gap between two autonomous external actions.
  *
- * A BAND, AND IT IS DRAWN FROM. Both numbers were here the whole time, but the
- * planner and the worker took only `.max`, which turned the band into a
- * constant: on 2026-08-24 six consecutive real sends came out 123, 123, 123,
- * 124, 123, 123 seconds apart. An interval repeated to the second is a fact
- * about the divisor rather than about the work, and it is the one thing in a
- * send log that cannot be explained by anything else. `pacing.ts` and
- * `local-worker.ts` now draw from `min`-`max` with a seeded generator.
+ * Waalaxy's current public queue documentation describes roughly 2m30s between
+ * invitations/messages with ±20% variation. Trevra uses the same 120-180s
+ * envelope for the explicit queue-style mode. Both the managed planner and the
+ * executor draw deterministic values inside the band, so neither layer turns
+ * it back into a fixed interval.
  *
- * THIS IS NOT WHERE SAFETY COMES FROM, and the mean gap falling from 120s to
- * 75s is the honest cost of saying so. What bounds load on an account is the
- * per-day/-week/-month ceilings in this file, the day-over-day clamp and the
- * gate -- none of which this constant participates in. Spacing keeps a batch
- * from being a burst; it was never the control.
+ * THIS IS NOT THE VOLUME SAFETY CONTROL. Daily/weekly ceilings, the day-over-day
+ * clamp and the pre-send gate still decide how much work may happen; spacing
+ * only prevents the allowed work from becoming a burst.
  */
-export const ACTION_GAP_SECONDS = { min: 30, max: 120 };
+export const ACTION_GAP_SECONDS = { min: 120, max: 180 };
 
 /**
  * What a weekend day's volume is multiplied by. REPORTED (1.4): "weekends ~50%
@@ -460,6 +455,30 @@ export function bandFor(kind: PacedKind, band: BandName): LinkedInBand {
 }
 
 /**
+ * The band for one kind, including the operator's explicit established-account posture.
+ *
+ * `warmupOverride` is the product's "this is an established LinkedIn account" decision.
+ * Once it is set, Trevra must stop applying its cold-account research band underneath
+ * the operator's own configured limits. We therefore expose the broader queue envelope
+ * here; `effectiveDailyCeiling` still takes the LOWER of this band and the account's
+ * configured daily limit unless the separate safety-band override is enabled. For the
+ * live seat that means 30 invites/day and 25 profile views/day -- exactly the numbers
+ * configured by the operator, not an accidental 18/12 hidden cap.
+ */
+export function bandForSeat(
+  kind: PacedKind,
+  band: BandName,
+  seat: Pick<LinkedInSeat, 'safetyBandOverride' | 'warmupOverride'> | null | undefined
+): LinkedInBand {
+  const base = bandFor(kind, band);
+  const established = band === 'steady' && seat?.warmupOverride === true;
+  if (!established) return base;
+  if (kind === 'invite') return { perDay: 100, perWeek: 200 };
+  if (kind === 'profile_view') return { perDay: 150 };
+  return base;
+}
+
+/**
  * The operator's own daily number for one kind, or null when they set none.
  *
  * `linkedin_seats` carries FOUR operator ceilings and this file paces EIGHT
@@ -476,10 +495,6 @@ export function bandFor(kind: PacedKind, band: BandName): LinkedInBand {
  * SEPARATELY FROM THE BAND TABLE. "25 messages a day" is a statement about the
  * account's total outbound messaging, not about DMs specifically, so it is
  * compared against the count of all three kinds together -- while the band
- * above it (`LINKEDIN_LIMITS`) is per kind and is compared against that kind's
- * own count. Collapsing the two into a single `Math.min` is exactly the bug
- * this pair of functions replaced: an InMail's 3/day band would clamp the
- * operator's whole 25-message pool to 3, so three DMs blocked every InMail.
  * `guard.ts` keeps them as two independent ceilings; both must pass.
  *
  * Null for `like` and `endorse` is deliberate rather than a gap to fill later:

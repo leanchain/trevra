@@ -204,8 +204,6 @@ describe('dueSideTasks', () => {
   });
 
   it('picks the more overdue of the two autonomous reads, one per visit', () => {
-    // MAX_TASKS_PER_VISIT is 1, so adding a second autonomous task must not mean
-    // two page loads in one visit -- it means they take turns, longest wait first.
     const runs: SideTaskRuns = new Map([
       ['inbox', new Date(NOW.getTime() - 3 * 3_600_000)],
       ['connections', new Date(NOW.getTime() - 30 * 3_600_000)]

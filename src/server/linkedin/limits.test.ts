@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { LINKEDIN_LIMITS, PACED_KINDS, effectiveDailyCeiling, seatOperatorLimit } from './limits.js';
+import {
+  LINKEDIN_LIMITS,
+  PACED_KINDS,
+  bandForSeat,
+  effectiveDailyCeiling,
+  seatOperatorLimit
+} from './limits.js';
 import type { LinkedInSeat } from './seats.js';
 
 /**
@@ -48,6 +54,29 @@ describe('seatOperatorLimit', () => {
 
   it('answers null for every kind when there is no seat at all', () => {
     for (const kind of PACED_KINDS) expect(seatOperatorLimit(undefined, kind)).toBeNull();
+  });
+});
+
+describe('bandForSeat', () => {
+  it('keeps the conservative band unless the operator explicitly chose full speed', () => {
+    expect(bandForSeat('invite', 'steady', undefined)).toEqual({ perDay: 18, perWeek: 90 });
+    expect(
+      bandForSeat('invite', 'steady', {
+        safetyBandOverride: true,
+        warmupOverride: false
+      } as LinkedInSeat)
+    ).toEqual({ perDay: 18, perWeek: 90 });
+  });
+
+  it('uses the Waalaxy-class envelope only for an explicit established full-speed seat', () => {
+    const fullSpeed = {
+      safetyBandOverride: true,
+      warmupOverride: true
+    } as LinkedInSeat;
+    expect(bandForSeat('invite', 'steady', fullSpeed)).toEqual({ perDay: 100, perWeek: 200 });
+    expect(bandForSeat('profile_view', 'steady', fullSpeed)).toEqual({ perDay: 150 });
+    // Warm-up posture never inherits the high-volume envelope.
+    expect(bandForSeat('invite', 'warmup', fullSpeed)).toEqual({ perDay: 10, perWeek: 20 });
   });
 });
 

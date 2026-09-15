@@ -12,7 +12,7 @@ import {
 import {
   ACTION_GAP_SECONDS,
   INMAIL_MONTHLY_QUOTA,
-  bandFor,
+  bandForSeat,
   effectiveDailyCeiling,
   seatOperatorLimit,
   warmupMultiplierFor
@@ -204,7 +204,7 @@ interface InviteRow {
  */
 function seatDailyCeilingFor(seat: LinkedInSeat, kind: BudgetedKind, now: Date): number {
   const posture = effectivePosture(seat, now);
-  const band = bandFor(kind, posture === 'steady' ? 'steady' : 'warmup');
+  const band = bandForSeat(kind, posture === 'steady' ? 'steady' : 'warmup', seat);
   const dailyCeiling = effectiveDailyCeiling(
     band.perDay,
     seatOperatorLimit(seat, kind),
@@ -412,9 +412,17 @@ function scheduleSlot(
   seat: LinkedInSeat,
   earliest: Date,
   floor: Date | null,
-  _seed: string
+  seed: string
 ): Date | null {
-  const gapMs = ACTION_GAP_SECONDS.max * 1000;
+  // The managed planner used ACTION_GAP_SECONDS.max here, which turned the
+  // queue into an exact metronome even though the executor later drew a varied
+  // gap. Derive one reproducible 120-180s interval from the member+step seed so
+  // planning and execution describe the same queue-style policy.
+  const hash = createHash('sha256').update(`schedule-gap:${seed}`).digest();
+  const unit = hash.readUInt32BE(0) / 0xffffffff;
+  const gapSeconds =
+    ACTION_GAP_SECONDS.min + unit * (ACTION_GAP_SECONDS.max - ACTION_GAP_SECONDS.min);
+  const gapMs = Math.round(gapSeconds * 1000);
   let candidate = new Date(earliest.getTime());
   if (floor && floor.getTime() + gapMs > candidate.getTime())
     candidate = new Date(floor.getTime() + gapMs);

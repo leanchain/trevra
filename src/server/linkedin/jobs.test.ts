@@ -988,8 +988,9 @@ describe('how often the side-task tick touches LinkedIn', () => {
     expect(result.skipped).toContain('03:00');
   });
 
-  it('opens no browser while the seat is between sittings', async () => {
+  it('still reconciles account state while the sender is in its batch cooldown', async () => {
     await connectedSeat();
+    await connectionsJustRead();
     await setSeatRestingUntil(
       db,
       WORKSPACE_ID,
@@ -1000,9 +1001,9 @@ describe('how often the side-task tick touches LinkedIn', () => {
 
     const result = await tick(VISIT_AT, driver);
 
-    expect(calls).toEqual([]);
-    expect(inboxCalls).toHaveLength(0);
-    expect(result.skipped).toContain('between sittings');
+    expect(calls).toEqual(['readSeat']);
+    expect(inboxCalls).toHaveLength(1);
+    expect(result.ran).toEqual(['inbox']);
   });
 
   it('opens no browser for a paused seat', async () => {

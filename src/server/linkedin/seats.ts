@@ -820,8 +820,8 @@ export async function upsertSeat(
   };
   const dailyInviteLimit = resolveLimit(
     patch.dailyInviteLimit,
-    existing?.dailyInviteLimit ?? 30,
-    75,
+    existing?.dailyInviteLimit ?? 100,
+    100,
     'daily_invite_limit'
   );
   const dailyMessageLimit = resolveLimit(
@@ -832,8 +832,8 @@ export async function upsertSeat(
   );
   const dailyProfileViewLimit = resolveLimit(
     patch.dailyProfileViewLimit,
-    existing?.dailyProfileViewLimit ?? 25,
-    100,
+    existing?.dailyProfileViewLimit ?? 150,
+    150,
     'daily_profile_view_limit'
   );
   const dailyFollowLimit = resolveLimit(

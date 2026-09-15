@@ -22,7 +22,7 @@ import {
   PACED_KIND_VALUES,
   WARMUP_WEEKS,
   WEEKEND_FACTOR,
-  bandFor,
+  bandForSeat,
   dayOverDayCeiling,
   effectiveDailyCeiling,
   establishedDayOverDayFloor,
@@ -796,7 +796,7 @@ export async function planPacing(
     reasons.push(`${dropped} empty or repeated target(s) were dropped; one target gets one slot.`);
 
   const warmupWeek = warmupWeekOf(seat.activatedAt, now);
-  const band = bandFor(input.kind, posture === 'steady' ? 'steady' : 'warmup');
+  const band = bandForSeat(input.kind, posture === 'steady' ? 'steady' : 'warmup', seat);
 
   /* --- Step 2: base daily volume = daily ceiling x warm-up multiplier. ---
    *
@@ -975,24 +975,21 @@ export async function planPacing(
     // THE SAME ARITHMETIC THE GATE APPLIES, deliberately un-floored and
     // un-cushioned. `guard.ts` computes its own `floor(ceiling * draw)` from
     // the same `shape.draw`; putting a `Math.max(1, ...)` here so a 1/day seat
-    // never loses a day would schedule a slot the gate then refuses, which is a
-    // blocked action wearing a plan's clothes. If a small-ceiling seat is ever
-    // to keep its floor, both files have to gain it in the same commit.
     const dayCeiling = shape.resting ? 0 : Math.floor(baseDaily * shape.draw);
     if (shape.resting) restDayTaken = true;
     else if (dayCeiling < baseDaily) dailyDrawApplied = true;
 
-    // --- Step 3: variance smoothing against the recent days' ACTUALS. ---
+    // --- Step 3: variance smoothing against recent ACTUALS. ---
     const baseline = recentActuals.length === 0 ? 0 : Math.max(...recentActuals);
-    const deltaCeiling = dayOverDayCeiling(baseline, establishedFloor);
+    // An established-account override removes the cold-history ramp completely.
+    // Daily draw and rolling limits still apply, so this does not remove volume bounds.
+    const deltaCeiling = seat.warmupOverride ? dayCeiling : dayOverDayCeiling(baseline);
     let allowed = Math.min(dayCeiling, deltaCeiling);
-    if (deltaCeiling < baseDaily) deltaClamped = true;
+    if (!seat.warmupOverride && deltaCeiling < baseDaily) deltaClamped = true;
 
     // --- Step 4: acceptance-rate throttle. Halves, never zeroes. ---
     if (throttled)
       allowed = Math.max(allowed > 0 ? 1 : 0, Math.floor(allowed * ACCEPTANCE_THROTTLE_FACTOR));
-
-    // --- Step 5: the seat's configured days. ---
     //
     // The configured days decide WHICH days exist for this seat; the weekend
     // factor only shapes the volume of a weekend day nobody configured. So an

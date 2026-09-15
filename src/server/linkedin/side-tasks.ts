@@ -81,10 +81,10 @@ export const AVAILABILITY_CATCHUP_MARKER = 'availability_catchup';
  */
 export const SIDE_TASK_MIN_HOURS: Record<SideTaskName, number> = {
   inbox: 2,
-  // Twice a working day. An acceptance is not urgent -- the next step in a
-  // sequence waits a day anyway -- and one page load per half-day is a rhythm
-  // no reasonable reading of LinkedIn's own use calls automation.
-  connections: 6,
+  // Keep acceptance state fresh enough that campaign admission never spends a
+  // working day believing an accepted invite is still unresolved. This is one
+  // read of the operator's own connections list, not one profile load per lead.
+  connections: 2,
   pending_invites: 12,
   acceptance: 10,
   withdrawals: 20,

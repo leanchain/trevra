@@ -885,6 +885,41 @@ describe('channel analytics', () => {
 });
 
 describe('campaign admission forecasting', () => {
+  it('does not treat unresolved sent invitations as rejected outcomes', async () => {
+    const listId = await leadList('Pending forecast leads', ['pending-forecast-seed']);
+    const created = await createManagedCampaign(
+      db,
+      {
+        workspaceId: WORKSPACE,
+        name: 'Pending forecast campaign',
+        leadListId: listId,
+        workflowId: await workflow('Pending forecast flow')
+      },
+      NOW
+    );
+    for (let index = 0; index < 25; index += 1) {
+      await recordAction(
+        db,
+        {
+          workspaceId: WORKSPACE,
+          campaignId: created.campaign.id,
+          kind: 'invite',
+          targetRef: `https://www.linkedin.com/in/pending-forecast-${index}/`,
+          status: 'sent',
+          source: 'campaign',
+          plannedFor: NOW.toISOString()
+        },
+        NOW
+      );
+    }
+
+    const forecast = await campaignAdmissionForecast(db, WORKSPACE, created.campaign.id, NOW);
+    expect(forecast.acceptanceSampleSize).toBe(0);
+    expect(forecast.acceptanceRate).toBeNull();
+    expect(forecast.throttle).toBe(1);
+    expect(forecast.reasons.join(' ')).not.toContain('Invite acceptance is 0%');
+  });
+
   it('uses campaign outcome samples and throttles only downward after enough evidence', async () => {
     const listId = await leadList('Forecast leads', ['forecast-seed']);
     const created = await createManagedCampaign(
@@ -986,7 +1021,9 @@ describe('campaign admission forecasting', () => {
       { workspaceId: WORKSPACE, leadListId: listId, workflowId },
       NOW
     );
-    expect(established.dayOneCapacity.invite).toBe(3);
+    // Established/full-speed uses the 100/day queue envelope; campaign day 1
+    // still keeps its independent 20% ramp, so launch capacity is 20.
+    expect(established.dayOneCapacity.invite).toBe(20);
   });
 
   it('previews provider enrichment credits separately from emails already on the list', async () => {
