@@ -4,7 +4,7 @@ import pg from 'pg';
 import { APIError, betterAuth } from 'better-auth';
 import { fromNodeHeaders } from 'better-auth/node';
 import { getMigrations } from 'better-auth/db/migration';
-import { magicLink, organization } from 'better-auth/plugins';
+import { genericOAuth, magicLink, organization } from 'better-auth/plugins';
 import type { Db } from './db.js';
 import { DEMO_WORKSPACE_ID, id } from './db.js';
 import {
@@ -49,6 +49,31 @@ const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
 if (Boolean(googleClientId) !== Boolean(googleClientSecret)) {
   throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured together');
 }
+
+const authwardIssuer = process.env.AUTHWARD_ISSUER?.trim().replace(/\/$/, '');
+const authwardClientId = process.env.AUTHWARD_CLIENT_ID?.trim();
+if (Boolean(authwardIssuer) !== Boolean(authwardClientId)) {
+  throw new Error('AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID must be configured together');
+}
+const authwardProvider = genericOAuth({
+  config:
+    authwardIssuer && authwardClientId
+      ? [
+          {
+            providerId: 'authward',
+            clientId: authwardClientId,
+            discoveryUrl: `${authwardIssuer}/.well-known/openid-configuration`,
+            issuer: authwardIssuer,
+            requireIssuerValidation: true,
+            scopes: ['openid', 'profile', 'email', 'offline_access', 'trevra:access'],
+            pkce: true,
+            authorizationUrlParams: { resource: 'https://api.usetrevra.com' },
+            tokenUrlParams: { resource: 'https://api.usetrevra.com' },
+            redirectURI: `${baseURL}/api/auth/oauth2/callback/authward`
+          }
+        ]
+      : []
+});
 
 const socialProviders =
   googleClientId && googleClientSecret
@@ -260,6 +285,7 @@ export const auth = betterAuth({
     useSecureCookies: production && process.env.COOKIE_SECURE !== 'false'
   },
   plugins: [
+    authwardProvider,
     magicLink({
       expiresIn: 15 * 60,
       storeToken: 'hashed',

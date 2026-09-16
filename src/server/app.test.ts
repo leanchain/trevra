@@ -134,6 +134,8 @@ afterEach(async () => {
   delete process.env.OPENAI_API_KEY;
   delete process.env.GOOGLE_CLIENT_ID;
   delete process.env.GOOGLE_CLIENT_SECRET;
+  delete process.env.AUTHWARD_ISSUER;
+  delete process.env.AUTHWARD_CLIENT_ID;
   delete process.env.PUBLIC_SITE_URL;
   delete process.env.PUBLIC_REGISTRY_CORS_ORIGIN;
   delete process.env.TREVRA_SANDBOX_GATEWAY_URL;
@@ -279,6 +281,19 @@ describe('Trevra API on PostgreSQL', () => {
     expect(typeof config.magicLinkAuthEnabled).toBe('boolean');
     expect(typeof config.emailPasswordAuthEnabled).toBe('boolean');
     expect(config.magicLinkAuthEnabled && config.emailPasswordAuthEnabled).toBe(false);
+  });
+
+  it('exposes Authward only when issuer and client id are configured', async () => {
+    db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
+    const app = createApp(db);
+    expect(
+      (await request(app).get('/api/public-config').expect(200)).body.authwardAuthEnabled
+    ).toBe(false);
+    process.env.AUTHWARD_ISSUER = 'https://auth.beseam.com';
+    process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
+    expect(
+      (await request(app).get('/api/public-config').expect(200)).body.authwardAuthEnabled
+    ).toBe(true);
   });
 
   it('exposes Google OAuth only when both credentials are configured', async () => {

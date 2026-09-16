@@ -753,6 +753,7 @@ export function createApp(db: Db) {
 
   app.get('/api/public-config', (_req, res) =>
     res.json({
+      authwardAuthEnabled: Boolean(process.env.AUTHWARD_ISSUER && process.env.AUTHWARD_CLIENT_ID),
       googleAuthEnabled: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
       // Hosted always has SMTP by configuration, so it gets passwordless email
       // sign-in. Self-hosted prefers the same flow when SMTP exists and exposes
