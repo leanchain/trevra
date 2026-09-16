@@ -67,7 +67,13 @@ const authwardProvider = genericOAuth({
             requireIssuerValidation: true,
             scopes: ['openid', 'profile', 'email', 'offline_access', 'trevra:access'],
             pkce: true,
-            authorizationUrlParams: { resource: 'https://api.usetrevra.com' },
+            authorizationUrlParams: (ctx) => {
+              const upstreamProvider = ctx.body.additionalData?.upstreamProvider;
+              return {
+                resource: 'https://api.usetrevra.com',
+                ...(upstreamProvider === 'google' ? { upstream_provider: 'google' } : {})
+              };
+            },
             tokenUrlParams: { resource: 'https://api.usetrevra.com' },
             redirectURI: `${baseURL}/api/auth/oauth2/callback/authward`
           }

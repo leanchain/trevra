@@ -602,7 +602,6 @@ function AuthScreen({
   const [googleBusy, setGoogleBusy] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authwardEnabled, setAuthwardEnabled] = useState(false);
-  const [authwardBusy, setAuthwardBusy] = useState(false);
   const [googleEnabled, setGoogleEnabled] = useState(false);
   const [magicLinkEnabled, setMagicLinkEnabled] = useState(false);
   const [magicLinkSent, setMagicLinkSent] = useState(false);
@@ -636,33 +635,21 @@ function AuthScreen({
     }
   }, []);
 
-  const signInWithAuthward = async () => {
-    setAuthwardBusy(true);
-    setAuthError('');
-    try {
-      const result = await authClient.signIn.oauth2({
-        providerId: 'authward',
-        callbackURL: `${window.location.origin}/`
-      });
-      if (result?.error) {
-        setAuthError(result.error.message ?? 'Sign-in failed');
-        setAuthwardBusy(false);
-      }
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : 'Sign-in failed');
-      setAuthwardBusy(false);
-    }
-  };
-
   const signInWithGoogle = async () => {
     setGoogleBusy(true);
     setAuthError('');
     trackEvent('google_auth_started');
     try {
-      const result = await authClient.signIn.social({
-        provider: 'google',
-        callbackURL: `${window.location.origin}/`
-      });
+      const result = authwardEnabled
+        ? await authClient.signIn.oauth2({
+            providerId: 'authward',
+            callbackURL: `${window.location.origin}/`,
+            additionalData: { upstreamProvider: 'google' }
+          })
+        : await authClient.signIn.social({
+            provider: 'google',
+            callbackURL: `${window.location.origin}/`
+          });
       if (result?.error) {
         setAuthError(result.error.message ?? 'Google sign-in failed');
         setGoogleBusy(false);
@@ -781,26 +768,7 @@ function AuthScreen({
                   ? 'Continue to your workspace.'
                   : 'Create a Trevra workspace.'}
             </p>
-            {authwardEnabled && (
-              <button
-                className="google-auth-button"
-                disabled={busy || authwardBusy || googleBusy}
-                onClick={() => void signInWithAuthward()}
-              >
-                {authwardBusy ? (
-                  <LoaderCircle className="spin" size={17} />
-                ) : (
-                  <ShieldCheck size={17} />
-                )}
-                Continue
-              </button>
-            )}
-            {authwardEnabled && (googleEnabled || magicLinkEnabled || emailPasswordEnabled) && (
-              <div className="auth-divider">
-                <span>or</span>
-              </div>
-            )}
-            {googleEnabled && (
+            {(authwardEnabled || googleEnabled) && (
               <button
                 className="google-auth-button"
                 disabled={busy || googleBusy}
@@ -810,7 +778,7 @@ function AuthScreen({
                 with Google
               </button>
             )}
-            {googleEnabled && (magicLinkEnabled || emailPasswordEnabled) && (
+            {(authwardEnabled || googleEnabled) && (magicLinkEnabled || emailPasswordEnabled) && (
               <div className="auth-divider">
                 <span>or</span>
               </div>
