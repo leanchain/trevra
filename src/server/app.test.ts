@@ -289,7 +289,7 @@ describe('Trevra API on PostgreSQL', () => {
     expect(
       (await request(app).get('/api/public-config').expect(200)).body.authwardAuthEnabled
     ).toBe(false);
-    process.env.AUTHWARD_ISSUER = 'https://auth.beseam.com';
+    process.env.AUTHWARD_ISSUER = 'https://auth.olaryn.com';
     process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
     expect(
       (await request(app).get('/api/public-config').expect(200)).body.authwardAuthEnabled
