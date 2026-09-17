@@ -19,6 +19,7 @@ import { DEMO_USER_ID, DEMO_WORKSPACE_ID, id, resetDemoData } from './db.js';
 import { listConnections } from './serializers.js';
 import {
   auth as betterAuth,
+  buildAuthwardEndSessionUrl,
   configureAuthProvisioning,
   emailPasswordAuthEnabled,
   resolveBetterAuthIdentity
@@ -810,6 +811,16 @@ export function createApp(db: Db) {
   app.post('/api/auth/demo/logout', (_req, res) => {
     res.clearCookie(SESSION_COOKIE, { path: '/' });
     res.json({ ok: true });
+  });
+
+  app.post('/api/auth/authward-logout-url', authLimiter, async (req, res) => {
+    try {
+      const url = await buildAuthwardEndSessionUrl(req.headers);
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ url });
+    } catch {
+      res.status(503).json({ error: 'Could not prepare central logout' });
+    }
   });
 
   app.get('/api/auth/session', async (req: AuthedRequest, res) => {

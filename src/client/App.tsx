@@ -287,9 +287,27 @@ export function App() {
   });
 
   const signOut = async () => {
+    let authwardLogoutUrl: string | null = null;
+    try {
+      const response = await fetch('/api/auth/authward-logout-url', {
+        method: 'POST',
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const body = (await response.json()) as { url?: string | null };
+        authwardLogoutUrl = body.url ?? null;
+      }
+    } catch {
+      // Local logout must still succeed if the identity provider is unavailable.
+    }
+
     await Promise.allSettled([authClient.signOut(), endDemoSession()]);
     setData(null);
     setNeedsAuth(true);
+    if (authwardLogoutUrl) {
+      window.location.assign(authwardLogoutUrl);
+      return;
+    }
     navigate('/');
   };
 

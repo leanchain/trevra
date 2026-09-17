@@ -460,6 +460,30 @@ export const auth = betterAuth({
   ]
 });
 
+export async function buildAuthwardEndSessionUrl(
+  headers: IncomingHttpHeaders
+): Promise<string | null> {
+  if (!authwardIssuer || !authwardClientId) return null;
+  const session = await auth.api.getSession({ headers: fromNodeHeaders(headers) });
+  if (!session?.user.id) return null;
+
+  const result = await authPool.query<{ idToken: string | null }>(
+    `SELECT "idToken" FROM account
+     WHERE "userId"=$1 AND "providerId"='authward' AND "idToken" IS NOT NULL
+     ORDER BY "updatedAt" DESC
+     LIMIT 1`,
+    [session.user.id]
+  );
+  const idToken = result.rows[0]?.idToken;
+  if (!idToken) return null;
+
+  const url = new URL(`${authwardIssuer}/api/auth/oauth2/end-session`);
+  url.searchParams.set('id_token_hint', idToken);
+  url.searchParams.set('client_id', authwardClientId);
+  url.searchParams.set('post_logout_redirect_uri', `${baseURL}/`);
+  return url.toString();
+}
+
 export async function migrateAuthDatabase(): Promise<void> {
   const lockClient = await authPool.connect();
   try {
