@@ -3576,6 +3576,47 @@ button:disabled {
   font-weight: 700;
   cursor: pointer;
 }
+.auth-email-sent {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 20px 0 2px;
+  text-align: center;
+}
+.auth-email-sent-icon {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--green-3);
+  color: var(--green);
+}
+.auth-email-sent p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-text-sm);
+  line-height: 1.55;
+}
+.auth-email-sent strong {
+  color: var(--ink);
+}
+.auth-email-sent .auth-consent {
+  margin-top: 7px;
+}
+.auth-text-button {
+  min-height: var(--t-tap);
+  border: 0;
+  background: transparent;
+  color: var(--green);
+  font-size: var(--t-text-xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+.auth-text-button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
 .auth-consent {
   max-width: var(--t-measure);
   margin: 16px 0 0;
