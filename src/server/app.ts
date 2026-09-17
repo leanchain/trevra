@@ -21,7 +21,6 @@ import {
   auth as betterAuth,
   configureAuthProvisioning,
   emailPasswordAuthEnabled,
-  magicLinkAuthEnabled,
   resolveBetterAuthIdentity
 } from './auth-service.js';
 import {
@@ -751,15 +750,17 @@ export function createApp(db: Db) {
     }
   });
 
-  app.get('/api/public-config', (_req, res) =>
+  app.get('/api/public-config', (_req, res) => {
+    const authwardAuthEnabled = Boolean(
+      process.env.AUTHWARD_ISSUER && process.env.AUTHWARD_CLIENT_ID
+    );
     res.json({
-      authwardAuthEnabled: Boolean(process.env.AUTHWARD_ISSUER && process.env.AUTHWARD_CLIENT_ID),
-      googleAuthEnabled: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
-      // Hosted always has SMTP by configuration, so it gets passwordless email
-      // sign-in. Self-hosted prefers the same flow when SMTP exists and exposes
-      // password auth as the fallback when it does not.
-      magicLinkAuthEnabled,
-      emailPasswordAuthEnabled: emailPasswordAuthEnabled && !magicLinkAuthEnabled,
+      authwardAuthEnabled,
+      // Compatibility field for older clients. Google is an Authward upstream
+      // provider now; Trevra no longer owns a Google OAuth client.
+      googleAuthEnabled: authwardAuthEnabled,
+      magicLinkAuthEnabled: authwardAuthEnabled,
+      emailPasswordAuthEnabled: emailPasswordAuthEnabled && !authwardAuthEnabled,
       modelExtractionEnabled: Boolean(process.env.OPENAI_API_KEY),
       supportEmail: getSiteConfig().supportEmail,
       catalogApiUrl: process.env.PUBLIC_REGISTRY_API_URL?.trim() || '',
@@ -780,8 +781,8 @@ export function createApp(db: Db) {
           : '') ||
         `http://localhost:${process.env.PORT ?? 43887}`
       ).replace(/\/$/, '')
-    })
-  );
+    });
+  });
 
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,

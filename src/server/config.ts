@@ -200,8 +200,8 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       ALLOW_SIMULATED_EXECUTION: booleanString.optional(),
       BETTER_AUTH_SECRET: z.string().optional(),
       BETTER_AUTH_URL: optionalUrl,
-      GOOGLE_CLIENT_ID: z.string().optional(),
-      GOOGLE_CLIENT_SECRET: z.string().optional(),
+      AUTHWARD_ISSUER: optionalUrl,
+      AUTHWARD_CLIENT_ID: z.string().optional(),
       PUBLIC_SITE_URL: optionalUrl,
       PUBLIC_SUPPORT_EMAIL: z.string().email().optional(),
       SECURITY_CONTACT_EMAIL: z.string().email().optional(),
@@ -264,8 +264,8 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
 
   if (!/^postgres(?:ql)?:\/\//i.test(base.DATABASE_URL))
     throw new Error('DATABASE_URL must be a PostgreSQL connection string');
-  if (Boolean(base.GOOGLE_CLIENT_ID?.trim()) !== Boolean(base.GOOGLE_CLIENT_SECRET?.trim())) {
-    throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured together');
+  if (Boolean(base.AUTHWARD_ISSUER?.trim()) !== Boolean(base.AUTHWARD_CLIENT_ID?.trim())) {
+    throw new Error('AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID must be configured together');
   }
   if (base.INDEXNOW_KEY && !/^[A-Za-z0-9._-]{8,128}$/.test(base.INDEXNOW_KEY))
     throw new Error('INDEXNOW_KEY must contain 8-128 URL-safe characters');
@@ -307,10 +307,10 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     if (!base.BETTER_AUTH_URL) problems.push('BETTER_AUTH_URL is required');
     if (
       base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
-      !(base.GOOGLE_CLIENT_ID && base.GOOGLE_CLIENT_SECRET)
+      !(base.AUTHWARD_ISSUER && base.AUTHWARD_CLIENT_ID)
     ) {
       problems.push(
-        'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted so hosted sign-in offers Google alongside the required email magic-link flow'
+        'AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID are required when TREVRA_DEPLOYMENT_MODE=hosted'
       );
     }
     // Hosted operational alerts are a product dependency, not an optional

@@ -296,17 +296,18 @@ describe('Trevra API on PostgreSQL', () => {
     ).toBe(true);
   });
 
-  it('exposes Google OAuth only when both credentials are configured', async () => {
+  it('exposes Google and magic-link sign-in through Authward only', async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const app = createApp(db);
-    expect((await request(app).get('/api/public-config').expect(200)).body.googleAuthEnabled).toBe(
-      false
-    );
-    process.env.GOOGLE_CLIENT_ID = 'google-client-id.apps.googleusercontent.com';
-    process.env.GOOGLE_CLIENT_SECRET = 'google-client-secret';
-    expect((await request(app).get('/api/public-config').expect(200)).body.googleAuthEnabled).toBe(
-      true
-    );
+    const before = (await request(app).get('/api/public-config').expect(200)).body;
+    expect(before.googleAuthEnabled).toBe(false);
+    expect(before.magicLinkAuthEnabled).toBe(false);
+
+    process.env.AUTHWARD_ISSUER = 'https://auth.olaryn.com';
+    process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
+    const after = (await request(app).get('/api/public-config').expect(200)).body;
+    expect(after.googleAuthEnabled).toBe(true);
+    expect(after.magicLinkAuthEnabled).toBe(true);
   });
 
   it('rejects state-changing requests from untrusted browser origins', async () => {

@@ -602,7 +602,6 @@ function AuthScreen({
   const [googleBusy, setGoogleBusy] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authwardEnabled, setAuthwardEnabled] = useState(false);
-  const [googleEnabled, setGoogleEnabled] = useState(false);
   const [magicLinkEnabled, setMagicLinkEnabled] = useState(false);
   const [magicLinkSent, setMagicLinkSent] = useState(false);
   const [emailPasswordEnabled, setEmailPasswordEnabled] = useState(false);
@@ -611,13 +610,18 @@ function AuthScreen({
     void getPublicConfig()
       .then((config) => {
         setAuthwardEnabled(config.authwardAuthEnabled);
-        setGoogleEnabled(config.googleAuthEnabled);
         setMagicLinkEnabled(config.magicLinkAuthEnabled);
         setEmailPasswordEnabled(config.emailPasswordAuthEnabled);
       })
       .catch(() => undefined);
 
     const params = new URLSearchParams(window.location.search);
+    let cleanAuthQuery = false;
+    if (params.get('auth_email_sent') === '1') {
+      setMagicLinkSent(true);
+      params.delete('auth_email_sent');
+      cleanAuthQuery = true;
+    }
     const magicError = params.get('error');
     if (magicError) {
       setAuthError(
@@ -626,6 +630,9 @@ function AuthScreen({
           : 'That sign-in link could not be used. Request a new one.'
       );
       params.delete('error');
+      cleanAuthQuery = true;
+    }
+    if (cleanAuthQuery) {
       const query = params.toString();
       window.history.replaceState(
         null,
@@ -640,16 +647,11 @@ function AuthScreen({
     setAuthError('');
     trackEvent('google_auth_started');
     try {
-      const result = authwardEnabled
-        ? await authClient.signIn.oauth2({
-            providerId: 'authward',
-            callbackURL: `${window.location.origin}/`,
-            additionalData: { upstreamProvider: 'google' }
-          })
-        : await authClient.signIn.social({
-            provider: 'google',
-            callbackURL: `${window.location.origin}/`
-          });
+      const result = await authClient.signIn.oauth2({
+        providerId: 'authward',
+        callbackURL: `${window.location.origin}/`,
+        additionalData: { upstreamProvider: 'google' }
+      });
       if (result?.error) {
         setAuthError(result.error.message ?? 'Google sign-in failed');
         setGoogleBusy(false);
@@ -666,18 +668,22 @@ function AuthScreen({
     setMagicLinkSent(false);
     try {
       const normalizedEmail = email.trim();
-      const result = await authClient.signIn.magicLink({
-        email: normalizedEmail,
-        name: normalizedEmail.split('@')[0] || 'Trevra user',
-        callbackURL: '/',
-        newUserCallbackURL: '/',
-        errorCallbackURL: '/'
-      });
-      if (result.error) {
-        setAuthError(result.error.message ?? 'Unable to send the sign-in link');
+      if (!authwardEnabled) {
+        setAuthError('Email sign-in requires Authward on this deployment.');
         return;
       }
-      setMagicLinkSent(true);
+      const result = await authClient.signIn.oauth2({
+        providerId: 'authward',
+        callbackURL: `${window.location.origin}/`,
+        additionalData: {
+          authMethod: 'magic_link',
+          loginHint: normalizedEmail,
+          returnTo: `${window.location.origin}/?auth_email_sent=1`
+        }
+      });
+      if (result?.error) {
+        setAuthError(result.error.message ?? 'Unable to send the sign-in link');
+      }
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : 'Unable to send the sign-in link');
     } finally {
@@ -768,7 +774,7 @@ function AuthScreen({
                   ? 'Continue to your workspace.'
                   : 'Create a Trevra workspace.'}
             </p>
-            {(authwardEnabled || googleEnabled) && (
+            {authwardEnabled && (
               <button
                 className="google-auth-button"
                 disabled={busy || googleBusy}
@@ -778,7 +784,7 @@ function AuthScreen({
                 with Google
               </button>
             )}
-            {(authwardEnabled || googleEnabled) && (magicLinkEnabled || emailPasswordEnabled) && (
+            {authwardEnabled && (magicLinkEnabled || emailPasswordEnabled) && (
               <div className="auth-divider">
                 <span>or</span>
               </div>

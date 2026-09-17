@@ -4,12 +4,11 @@ import pg from 'pg';
 import { APIError, betterAuth } from 'better-auth';
 import { fromNodeHeaders } from 'better-auth/node';
 import { getMigrations } from 'better-auth/db/migration';
-import { genericOAuth, magicLink, organization } from 'better-auth/plugins';
+import { genericOAuth, organization } from 'better-auth/plugins';
 import type { Db } from './db.js';
 import { DEMO_WORKSPACE_ID, id } from './db.js';
 import {
   sendInvitationAcceptedEmail,
-  sendMagicLinkEmail,
   sendOrganizationInvitationEmail,
   sendWorkspaceAccessRemovedEmail,
   smtpConfigured
@@ -18,11 +17,8 @@ import { recordMarketingEvent } from './public-site.js';
 
 const { Pool } = pg;
 const production = process.env.NODE_ENV === 'production';
-// Hosted has transactional SMTP as a boot requirement, so email ownership can
-// be proved with a short-lived, single-use magic link instead of a password.
-// Local/self-hosted installs keep password auth available as the no-SMTP escape
-// hatch; when SMTP exists the UI prefers the same magic-link flow as hosted.
-export const magicLinkAuthEnabled = smtpConfigured();
+// Hosted identity is delegated to Authward. Local/self-hosted installs keep
+// password auth as the escape hatch when no Authward issuer is configured.
 export const emailPasswordAuthEnabled = process.env.TREVRA_DEPLOYMENT_MODE !== 'hosted';
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString)
@@ -44,17 +40,12 @@ const trustedOrigins = (process.env.APP_ORIGIN ?? 'http://localhost:43173,http:/
   .map((item) => item.trim())
   .filter(Boolean);
 
-const googleClientId = process.env.GOOGLE_CLIENT_ID?.trim();
-const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET?.trim();
-if (Boolean(googleClientId) !== Boolean(googleClientSecret)) {
-  throw new Error('GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured together');
-}
-
 const authwardIssuer = process.env.AUTHWARD_ISSUER?.trim().replace(/\/$/, '');
 const authwardClientId = process.env.AUTHWARD_CLIENT_ID?.trim();
 if (Boolean(authwardIssuer) !== Boolean(authwardClientId)) {
   throw new Error('AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID must be configured together');
 }
+export const authwardAuthEnabled = Boolean(authwardIssuer && authwardClientId);
 const authwardProvider = genericOAuth({
   config:
     authwardIssuer && authwardClientId
@@ -68,10 +59,19 @@ const authwardProvider = genericOAuth({
             scopes: ['openid', 'profile', 'email', 'offline_access', 'trevra:access'],
             pkce: true,
             authorizationUrlParams: (ctx) => {
-              const upstreamProvider = ctx.body.additionalData?.upstreamProvider;
+              const data = ctx.body.additionalData;
+              const upstreamProvider = data?.upstreamProvider;
+              const authMethod = data?.authMethod;
+              const loginHint = data?.loginHint;
+              const returnTo = data?.returnTo;
               return {
                 resource: 'https://api.usetrevra.com',
-                ...(upstreamProvider === 'google' ? { upstream_provider: 'google' } : {})
+                ...(upstreamProvider === 'google' ? { upstream_provider: 'google' } : {}),
+                ...(authMethod === 'magic_link' &&
+                typeof loginHint === 'string' &&
+                typeof returnTo === 'string'
+                  ? { auth_method: 'magic_link', login_hint: loginHint, return_to: returnTo }
+                  : {})
               };
             },
             tokenUrlParams: { resource: 'https://api.usetrevra.com' },
@@ -80,20 +80,6 @@ const authwardProvider = genericOAuth({
         ]
       : []
 });
-
-const socialProviders =
-  googleClientId && googleClientSecret
-    ? {
-        google: {
-          clientId: googleClientId,
-          clientSecret: googleClientSecret,
-          disableDefaultScope: true,
-          scope: ['openid', 'email', 'profile'],
-          prompt: 'select_account' as const,
-          redirectURI: `${baseURL}/api/auth/callback/google`
-        }
-      }
-    : undefined;
 
 const authPool = new Pool({
   connectionString,
@@ -278,7 +264,6 @@ export const auth = betterAuth({
     maxPasswordLength: 128,
     autoSignIn: true
   },
-  socialProviders,
   session: {
     expiresIn: 60 * 60 * 24 * 7,
     updateAge: 60 * 60 * 24
@@ -292,13 +277,6 @@ export const auth = betterAuth({
   },
   plugins: [
     authwardProvider,
-    magicLink({
-      expiresIn: 15 * 60,
-      storeToken: 'hashed',
-      rateLimit: { window: 60, max: 5 },
-      sendMagicLink: async ({ email, url }) =>
-        sendMagicLinkEmail({ to: email, signInUrl: url, expiresMinutes: 15 })
-    }),
     // Default roles only (owner / admin / member), no custom access-control
     // statements and no teams -- spec Non-goals. This workspace uses exactly
     // two of the three: 'owner' (the credential-management carve-out) and

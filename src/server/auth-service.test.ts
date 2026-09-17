@@ -2,16 +2,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 
 const emailMock = vi.hoisted(() => ({
   sendOrganizationInvitationEmail: vi.fn(async () => undefined),
-  sendMagicLinkEmail: vi.fn(
-    async (_input: { to: string; signInUrl: string; expiresMinutes?: number }) => undefined
-  ),
   sendInvitationAcceptedEmail: vi.fn(async () => undefined),
   sendWorkspaceAccessRemovedEmail: vi.fn(async () => undefined)
 }));
 vi.mock('./email.js', () => ({
   smtpConfigured: () => true,
   sendOrganizationInvitationEmail: emailMock.sendOrganizationInvitationEmail,
-  sendMagicLinkEmail: emailMock.sendMagicLinkEmail,
   sendInvitationAcceptedEmail: emailMock.sendInvitationAcceptedEmail,
   sendWorkspaceAccessRemovedEmail: emailMock.sendWorkspaceAccessRemovedEmail
 }));
@@ -45,7 +41,6 @@ beforeAll(async () => migrateAuthDatabase());
 afterAll(async () => closeAuthDatabase());
 afterEach(async () => {
   emailMock.sendOrganizationInvitationEmail.mockClear();
-  emailMock.sendMagicLinkEmail.mockClear();
   emailMock.sendInvitationAcceptedEmail.mockClear();
   emailMock.sendWorkspaceAccessRemovedEmail.mockClear();
   await db?.close();
@@ -91,37 +86,6 @@ async function currentAuth(agent: ReturnType<typeof request.agent>): Promise<Ses
   const res = await agent.get('/api/auth/session').expect(200);
   return (res.body as { auth: SessionAuth }).auth;
 }
-
-describe('magic-link sign-in', () => {
-  it('emails a one-time sign-in URL and provisions a new workspace when it is followed', async () => {
-    const database = await freshDb();
-    const app = createApp(database);
-    const email = uniqueEmail('magic');
-    const agent = request.agent(app);
-
-    await agent
-      .post('/api/auth/sign-in/magic-link')
-      .send({ email, callbackURL: '/', newUserCallbackURL: '/', errorCallbackURL: '/' })
-      .expect(200);
-
-    expect(emailMock.sendMagicLinkEmail).toHaveBeenCalledTimes(1);
-    const sent = emailMock.sendMagicLinkEmail.mock.calls[0]![0];
-    expect(sent.to).toBe(email);
-    expect(sent.expiresMinutes).toBe(15);
-    const signInUrl = new URL(sent.signInUrl);
-    expect(signInUrl.pathname).toBe('/api/auth/magic-link/verify');
-
-    await agent.get(`${signInUrl.pathname}${signInUrl.search}`).expect(302);
-    const auth = await currentAuth(agent);
-    expect(auth.email).toBe(email);
-    expect(auth.role).toBe('owner');
-
-    // Better Auth consumes the verification value atomically: the same link is
-    // never a second login/session mint.
-    const reused = await request(app).get(`${signInUrl.pathname}${signInUrl.search}`).expect(302);
-    expect(String(reused.headers.location)).toContain('error=INVALID_TOKEN');
-  });
-});
 
 describe('first sign-in (organization plugin routed, single-user flow unchanged)', () => {
   it('gives a brand-new email its own workspace, settings, default automation rules, audit event and marketing event', async () => {

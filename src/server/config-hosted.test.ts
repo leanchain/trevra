@@ -42,8 +42,8 @@ const production = {
   NODE_ENV: 'production',
   BETTER_AUTH_SECRET: 'a'.repeat(48),
   BETTER_AUTH_URL: 'https://app.example.com',
-  GOOGLE_CLIENT_ID: 'hosted-test.apps.googleusercontent.com',
-  GOOGLE_CLIENT_SECRET: 'hosted-test-secret',
+  AUTHWARD_ISSUER: 'https://auth.olaryn.com',
+  AUTHWARD_CLIENT_ID: 'trevra-web',
   SMTP_SERVER: 'smtp.example.com',
   SMTP_PORT: '587',
   SMTP_USERNAME: 'trevra',
@@ -214,10 +214,10 @@ describe('booting a production deployment', () => {
     );
   });
 
-  it('requires a verified OAuth identity path on hosted production', () => {
-    const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ...noGoogle } = production;
-    expect(() => validateEnvironment({ ...noGoogle, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
-      /GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required/
+  it('requires Authward identity on hosted production', () => {
+    const { AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID, ...noAuthward } = production;
+    expect(() => validateEnvironment({ ...noAuthward, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
+      /AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID are required/
     );
   });
 
