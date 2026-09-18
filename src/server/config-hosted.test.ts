@@ -44,6 +44,10 @@ const production = {
   BETTER_AUTH_URL: 'https://app.example.com',
   AUTHWARD_ISSUER: 'https://auth.olaryn.com',
   AUTHWARD_CLIENT_ID: 'trevra-web',
+  BILLING_BASE_URL: 'https://billing.olaryn.com',
+  BILLING_CLIENT_ID: 'trevra-billing',
+  BILLING_CLIENT_SECRET: 'billing-secret',
+  BILLING_AUDIENCE: 'https://billing.olaryn.com',
   SMTP_SERVER: 'smtp.example.com',
   SMTP_PORT: '587',
   SMTP_USERNAME: 'trevra',
@@ -215,9 +219,24 @@ describe('booting a production deployment', () => {
   });
 
   it('requires Authward identity on hosted production', () => {
-    const { AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID, ...noAuthward } = production;
+    const {
+      AUTHWARD_ISSUER,
+      AUTHWARD_CLIENT_ID,
+      BILLING_BASE_URL,
+      BILLING_CLIENT_ID,
+      BILLING_CLIENT_SECRET,
+      BILLING_AUDIENCE,
+      ...noAuthward
+    } = production;
     expect(() => validateEnvironment({ ...noAuthward, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
       /AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID are required/
+    );
+  });
+
+  it('requires the shared Billing service on hosted production', () => {
+    const { BILLING_BASE_URL, BILLING_CLIENT_SECRET, ...noBilling } = production;
+    expect(() => validateEnvironment({ ...noBilling, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
+      /BILLING_BASE_URL and BILLING_CLIENT_SECRET are required/
     );
   });
 

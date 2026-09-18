@@ -43,7 +43,7 @@ const SUB_ROUTES: Record<Section, readonly string[]> = {
   ledger: ['', 'run'],
   research: [''],
   // `team` only exists with an invitation id: `/setup/team/:invitationId`.
-  setup: ['', 'workspace', 'capture', 'team']
+  setup: ['', 'workspace', 'capture', 'billing', 'team']
 };
 
 export interface Route {

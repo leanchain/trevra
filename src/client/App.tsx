@@ -80,6 +80,7 @@ import { CompanionPanel } from './LinkedInCompanion';
 import { LinkedInExclusions, relativeTime } from './LinkedInScreen';
 import { TeamSettingsView } from './TeamScreen';
 import { LeadCaptureSetup } from './LeadCaptureSetup';
+import { BillingSettings } from './BillingSettings';
 import { ResearchView } from './views/ResearchView';
 import { trackEvent, trackPageView } from './analytics';
 import { ConfirmDrawer, useDialog } from './ui/dialog';
@@ -526,11 +527,12 @@ const HIDDEN_LIVE_REGION: React.CSSProperties = {
   pointerEvents: 'none'
 };
 
-/** Setup has three live screens: Access, Workspace, and Lead capture. */
+/** Setup has four live screens: Access, Workspace, Lead capture, and Billing. */
 const SETUP_TABS = [
   { sub: '', label: 'Access', path: '/setup' },
   { sub: 'workspace', label: 'Workspace', path: '/setup/workspace' },
-  { sub: 'capture', label: 'Lead capture', path: '/setup/capture' }
+  { sub: 'capture', label: 'Lead capture', path: '/setup/capture' },
+  { sub: 'billing', label: 'Billing', path: '/setup/billing' }
 ] as const;
 
 function SetupView({
@@ -564,6 +566,7 @@ function SetupView({
 
   const onWorkspace = sub === 'workspace';
   const onCapture = sub === 'capture';
+  const onBilling = sub === 'billing';
 
   return (
     <div className="page-stack">
@@ -582,6 +585,8 @@ function SetupView({
 
       {onCapture ? (
         <LeadCaptureSetup setToast={setToast} />
+      ) : onBilling ? (
+        <BillingSettings />
       ) : onWorkspace ? (
         <PageGrid columns={2} className="workspace-reference-grid">
           <ConnectionsView

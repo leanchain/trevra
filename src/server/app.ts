@@ -36,6 +36,7 @@ import {
   triggerConnectionSync
 } from './integration-service.js';
 import { getSiteConfig, recordMarketingEvent, registerPublicSiteRoutes } from './public-site.js';
+import { BillingServiceError, getBillingClient } from './billing-client.js';
 import {
   listResearchRuns,
   listResearchSources,
@@ -1181,6 +1182,34 @@ export function createApp(db: Db) {
   // workspace spending its own minute; nothing below it can spend anyone
   // else's.
   app.use('/api', workspaceLimiter);
+
+  app.get('/api/billing', async (req: AuthedRequest, res, next) => {
+    try {
+      const billing = getBillingClient();
+      if (!billing) {
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({ enabled: false });
+        return;
+      }
+      const workspace = await db
+        .prepare('SELECT id,name FROM workspaces WHERE id=?')
+        .get<{ id: string; name: string }>(req.auth!.workspaceId);
+      if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
+      const snapshot = await billing.workspaceSnapshot({
+        workspaceId: workspace.id,
+        name: workspace.name,
+        currency: 'USD'
+      });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(snapshot);
+    } catch (error) {
+      if (error instanceof BillingServiceError) {
+        res.status(503).json({ error: 'Billing service unavailable' });
+        return;
+      }
+      next(error);
+    }
+  });
 
   app.get('/api/skills', async (req: AuthedRequest, res, next) => {
     try {

@@ -100,7 +100,7 @@ describe('parseRoute', () => {
     expect(parseRoute('/outreach/inbox/').path).toBe('/outreach/inbox');
   });
 
-  it('parses the three setup tabs', () => {
+  it('parses the four setup tabs', () => {
     expect(parseRoute('/setup').sub).toBe('');
     expect(parseRoute('/setup/workspace')).toEqual({
       section: 'setup',
@@ -113,6 +113,12 @@ describe('parseRoute', () => {
       sub: 'capture',
       id: null,
       path: '/setup/capture'
+    });
+    expect(parseRoute('/setup/billing')).toEqual({
+      section: 'setup',
+      sub: 'billing',
+      id: null,
+      path: '/setup/billing'
     });
   });
 });
@@ -139,6 +145,7 @@ describe('isAppPath', () => {
       '/setup',
       '/setup/workspace',
       '/setup/capture',
+      '/setup/billing',
       '/setup/team/inv_1'
     ]) {
       expect(isAppPath(path), path).toBe(true);

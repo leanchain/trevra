@@ -61,6 +61,7 @@ services:
       SMTP_FROM: Authward <authward@local.test>
       AUTHWARD_TREVRA_REDIRECT_URIS: http://localhost:${TREVRA_WEB_PORT:-43173}/api/auth/oauth2/callback/authward
       AUTHWARD_TREVRA_POST_LOGOUT_REDIRECT_URIS: http://localhost:${TREVRA_WEB_PORT:-43173}/
+      AUTHWARD_TREVRA_BILLING_CLIENT_SECRET: ${AUTHWARD_TREVRA_BILLING_CLIENT_SECRET:-development-trevra-billing-secret-change-me}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
@@ -112,6 +113,8 @@ services:
     # and llvmpipe needs nothing.
     devices:
       - /dev/dri:/dev/dri
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     environment:
       NODE_ENV: development
       PORT: 8787
@@ -142,6 +145,10 @@ services:
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-development-only-trevra-secret-change-before-production}
       AUTHWARD_ISSUER: http://authward.localhost:${AUTHWARD_PORT:-43100}
       AUTHWARD_CLIENT_ID: trevra-web
+      BILLING_BASE_URL: ${BILLING_BASE_URL:-http://host.docker.internal:43200}
+      BILLING_CLIENT_ID: ${BILLING_CLIENT_ID:-trevra-billing}
+      BILLING_CLIENT_SECRET: ${BILLING_CLIENT_SECRET:-development-trevra-billing-secret-change-me}
+      BILLING_AUDIENCE: ${BILLING_AUDIENCE:-https://billing.olaryn.com}
       SMTP_SERVER: ${SMTP_SERVER:-}
       SMTP_PORT: ${SMTP_PORT:-}
       SMTP_USERNAME: ${SMTP_USERNAME:-}

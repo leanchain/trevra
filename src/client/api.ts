@@ -173,6 +173,45 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export type BillingSnapshot =
+  | { enabled: false }
+  | {
+      enabled: true;
+      customer: {
+        id: string;
+        product: 'trevra';
+        external_customer_id: string;
+        name: string;
+        billing_email: string | null;
+        currency: string;
+        stripe_customer_id: string | null;
+        plan_code: string | null;
+      };
+      subscription: {
+        status: string;
+        plan_code: string | null;
+        scheduled_plan_code?: string | null;
+        stripe_subscription_id?: string | null;
+        current_period_start?: string | null;
+        current_period_end?: string | null;
+        cancel_at_period_end?: boolean;
+      };
+      credits: {
+        balance: string | number;
+        usage: string | number;
+        available: string | number;
+        period_start: string | null;
+        period_end: string | null;
+      };
+      entitlements: {
+        features: Record<string, Record<string, unknown>>;
+      };
+    };
+
+export async function getBillingSnapshot(): Promise<BillingSnapshot> {
+  return request('/api/billing');
+}
+
 export async function getPublicConfig(): Promise<PublicConfig> {
   return request('/api/public-config');
 }

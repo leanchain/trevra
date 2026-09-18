@@ -202,6 +202,10 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       BETTER_AUTH_URL: optionalUrl,
       AUTHWARD_ISSUER: optionalUrl,
       AUTHWARD_CLIENT_ID: z.string().optional(),
+      BILLING_BASE_URL: optionalUrl,
+      BILLING_CLIENT_ID: z.string().optional(),
+      BILLING_CLIENT_SECRET: z.string().optional(),
+      BILLING_AUDIENCE: optionalUrl,
       PUBLIC_SITE_URL: optionalUrl,
       PUBLIC_SUPPORT_EMAIL: z.string().email().optional(),
       SECURITY_CONTACT_EMAIL: z.string().email().optional(),
@@ -267,6 +271,15 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
   if (Boolean(base.AUTHWARD_ISSUER?.trim()) !== Boolean(base.AUTHWARD_CLIENT_ID?.trim())) {
     throw new Error('AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID must be configured together');
   }
+  const billingConfigured = Boolean(base.BILLING_BASE_URL || base.BILLING_CLIENT_SECRET);
+  if (
+    billingConfigured &&
+    !(base.BILLING_BASE_URL && base.BILLING_CLIENT_SECRET && base.AUTHWARD_ISSUER)
+  ) {
+    throw new Error(
+      'BILLING_BASE_URL and BILLING_CLIENT_SECRET require AUTHWARD_ISSUER and must be configured together'
+    );
+  }
   if (base.INDEXNOW_KEY && !/^[A-Za-z0-9._-]{8,128}$/.test(base.INDEXNOW_KEY))
     throw new Error('INDEXNOW_KEY must contain 8-128 URL-safe characters');
   // Unconditional, and checked in every mode rather than only in production:
@@ -311,6 +324,14 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     ) {
       problems.push(
         'AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID are required when TREVRA_DEPLOYMENT_MODE=hosted'
+      );
+    }
+    if (
+      base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
+      !(base.BILLING_BASE_URL && base.BILLING_CLIENT_SECRET)
+    ) {
+      problems.push(
+        'BILLING_BASE_URL and BILLING_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted'
       );
     }
     // Hosted operational alerts are a product dependency, not an optional
