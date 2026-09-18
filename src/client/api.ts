@@ -181,6 +181,13 @@ export async function ensureSession(): Promise<void> {
   await request('/api/auth/session');
 }
 
+export async function startAuthwardMagicLink(email: string): Promise<void> {
+  await request('/api/auth/magic-link/start', {
+    method: 'POST',
+    body: JSON.stringify({ email })
+  });
+}
+
 export async function startDemoSession(): Promise<void> {
   await request('/api/auth/demo', { method: 'POST' });
 }
@@ -1143,6 +1150,7 @@ export async function updatePolicy(
 // Not exported: nothing outside this file names the type, only the function.
 interface PublicConfig {
   authwardAuthEnabled: boolean;
+  socialAuthProviders: string[];
   googleAuthEnabled: boolean;
   magicLinkAuthEnabled: boolean;
   emailPasswordAuthEnabled: boolean;

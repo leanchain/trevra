@@ -105,9 +105,9 @@ Run the one-time development setup. It creates `.env.dev` when needed, generates
 npm run dev:setup
 ```
 
-Current defaults are `43173`, `43887`, `45432`, `45433`, `46379`, `43003`, and `43009`. Change any value in `.env.dev` before startup if one is already occupied.
+Current defaults include Trevra `43173`/`43887`, Authward `43100` (override with `AUTHWARD_PORT`), the local Authward inbox `48025`, Trevra/Authward/Nango PostgreSQL `45432`/`45434`/`45433`, Redis `46379`, and Nango `43003`/`43009`.
 
-Start Trevra, PostgreSQL, Redis, and self-hosted Nango:
+Start Trevra, Authward, their PostgreSQL databases, Mailpit, Redis, and self-hosted Nango:
 
 ```bash
 docker compose --env-file .env.dev -f compose.dev.yml up --build
@@ -117,32 +117,26 @@ Open:
 
 - Trevra: `http://localhost:43173` (`/` is the landing page; app paths open the work console)
 - Trevra API: `http://localhost:43887`
+- Authward: `http://authward.localhost:43100`
+- Authward local inbox (Mailpit): `http://localhost:48025`
 - Nango API/dashboard: `http://localhost:43003`
 - Nango Connect UI: `http://localhost:43009`
 - Trevra PostgreSQL: `localhost:45432`
+- Authward PostgreSQL: `localhost:45434`
 - Nango PostgreSQL: `localhost:45433`
 
-### Google sign-in
+### Local sign-in
 
-Create a Google OAuth **Web application** client and configure:
+Email magic-link sign-in works without any external credentials. Enter an email on Trevra, then open the message in Mailpit at `http://localhost:48025`. Sending the link stays on Trevra; Authward is used server-to-server and only becomes a browser hop when the one-time link is opened.
 
-- Authorized JavaScript origin: `http://localhost:43173`
-- Authorized redirect URI: `http://localhost:43173/api/auth/callback/google`
-
-Put the credentials in `.env.dev`:
+Social login is optional. Authward enables a provider automatically when both its client ID and secret are present in `.env.dev`; Trevra discovers Authward's capabilities and renders only configured providers. For example:
 
 ```env
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your-client-secret
 ```
 
-Then restart Trevra:
-
-```bash
-docker compose --env-file .env.dev -f compose.dev.yml up -d --force-recreate trevra
-```
-
-The sign-in flow requests only `openid`, `email`, and `profile`. Gmail and Calendar permissions are requested separately through Nango when the founder explicitly connects those tools.
+The corresponding OAuth application must allow Authward's callback for the environment. Trevra never owns or receives those provider secrets. Gmail and Calendar delegated permissions remain separate Nango connections.
 
 The Trevra frontend and API hot-reload through the bind-mounted source tree.
 

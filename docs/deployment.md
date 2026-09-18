@@ -18,9 +18,10 @@ The job uses a dedicated connection with no statement timeout — a data-rewriti
 
 ## Local development stack
 
-`compose.dev.yml` deliberately uses uncommon, independently configurable host ports from `.env.dev` and two PostgreSQL databases:
+`compose.dev.yml` deliberately uses uncommon, independently configurable host ports from `.env.dev` and three PostgreSQL databases:
 
-- `postgres`: Trevra and Better Auth data;
+- `postgres`: Trevra application and local relying-party session data;
+- `authward-postgres`: Authward identity/OIDC data;
 - `nango-db`: Nango provider configuration, encrypted credentials, sync records, and internal state.
 
 This keeps Nango infrastructure failures and schema changes outside Trevra's commercial ledger. Redis is also isolated to Nango.
@@ -30,11 +31,14 @@ Run `npm run dev:setup` once before the first local stack start. It creates `.en
 Persistent Docker volumes:
 
 - `trevra-postgres-data`;
+- `authward-postgres-data`;
 - `nango-postgres-data`;
 - `nango-redis-data`;
 - `trevra-node-modules`.
 
-Internal container ports remain standard, while host ports use the `TREVRA_*_PORT` and `NANGO_*_PORT` variables. This allows several Trevra-like stacks to coexist without changing service-to-service URLs.
+Internal container ports remain standard, while host ports use the `TREVRA_*_PORT`, `AUTHWARD_*_PORT`, and `NANGO_*_PORT` variables. Authward itself uses the stable local issuer `http://authward.localhost:43100`; Docker resolves that name to the Authward service while browsers resolve the `.localhost` name to the host.
+
+Local authentication is email-first. Authward delivers magic links to Mailpit, so no external SMTP credentials are needed. Social providers are optional: adding a provider client-ID/secret pair to `.env.dev` makes Authward advertise it and Trevra render it automatically.
 
 Do not run `docker compose down -v` unless you intend to destroy all local data.
 

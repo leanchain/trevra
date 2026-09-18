@@ -296,18 +296,18 @@ describe('Trevra API on PostgreSQL', () => {
     ).toBe(true);
   });
 
-  it('exposes Google and magic-link sign-in through Authward only', async () => {
+  it('does not infer social providers merely because Authward is configured', async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const app = createApp(db);
     const before = (await request(app).get('/api/public-config').expect(200)).body;
     expect(before.googleAuthEnabled).toBe(false);
-    expect(before.magicLinkAuthEnabled).toBe(false);
 
     process.env.AUTHWARD_ISSUER = 'https://auth.olaryn.com';
     process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
     const after = (await request(app).get('/api/public-config').expect(200)).body;
-    expect(after.googleAuthEnabled).toBe(true);
-    expect(after.magicLinkAuthEnabled).toBe(true);
+    expect(after.authwardAuthEnabled).toBe(true);
+    expect(after.googleAuthEnabled).toBe(false);
+    expect(after.socialAuthProviders).toEqual([]);
   });
 
   it('rejects state-changing requests from untrusted browser origins', async () => {

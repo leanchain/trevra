@@ -19,9 +19,12 @@ import { DEMO_USER_ID, DEMO_WORKSPACE_ID, id, resetDemoData } from './db.js';
 import { listConnections } from './serializers.js';
 import {
   auth as betterAuth,
+  beginAuthwardMagicLink,
   buildAuthwardEndSessionUrl,
   configureAuthProvisioning,
+  dispatchAuthwardMagicLink,
   emailPasswordAuthEnabled,
+  getAuthwardCapabilities,
   resolveBetterAuthIdentity
 } from './auth-service.js';
 import {
@@ -751,17 +754,19 @@ export function createApp(db: Db) {
     }
   });
 
-  app.get('/api/public-config', (_req, res) => {
+  app.get('/api/public-config', async (_req, res) => {
     const authwardAuthEnabled = Boolean(
       process.env.AUTHWARD_ISSUER && process.env.AUTHWARD_CLIENT_ID
     );
+    const authwardCapabilities = await getAuthwardCapabilities();
     res.json({
       authwardAuthEnabled,
-      // Compatibility field for older clients. Google is an Authward upstream
-      // provider now; Trevra no longer owns a Google OAuth client.
-      googleAuthEnabled: authwardAuthEnabled,
-      magicLinkAuthEnabled: authwardAuthEnabled,
-      emailPasswordAuthEnabled: emailPasswordAuthEnabled && !authwardAuthEnabled,
+      socialAuthProviders: authwardCapabilities.socialProviders,
+      // Compatibility field for older clients.
+      googleAuthEnabled: authwardCapabilities.socialProviders.includes('google'),
+      magicLinkAuthEnabled: authwardCapabilities.magicLink,
+      emailPasswordAuthEnabled:
+        emailPasswordAuthEnabled && !authwardCapabilities.magicLink && !authwardAuthEnabled,
       modelExtractionEnabled: Boolean(process.env.OPENAI_API_KEY),
       supportEmail: getSiteConfig().supportEmail,
       catalogApiUrl: process.env.PUBLIC_REGISTRY_API_URL?.trim() || '',
@@ -813,6 +818,16 @@ export function createApp(db: Db) {
     res.json({ ok: true });
   });
 
+  app.get('/api/auth/account', (_req, res) => {
+    const issuer = process.env.AUTHWARD_ISSUER?.trim().replace(/\/$/, '');
+    const clientId = process.env.AUTHWARD_CLIENT_ID?.trim();
+    if (!issuer || !clientId) {
+      res.status(404).json({ error: 'Authward is not configured' });
+      return;
+    }
+    res.redirect(302, `${issuer}/account?client_id=${encodeURIComponent(clientId)}`);
+  });
+
   app.post('/api/auth/authward-logout-url', authLimiter, async (req, res) => {
     try {
       const url = await buildAuthwardEndSessionUrl(req.headers);
@@ -822,6 +837,37 @@ export function createApp(db: Db) {
       res.status(503).json({ error: 'Could not prepare central logout' });
     }
   });
+
+  app.post(
+    '/api/auth/magic-link/start',
+    authLimiter,
+    express.json({ limit: '16kb' }),
+    async (req, res) => {
+      const parsed = z.object({ email: z.string().email().max(320) }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: 'Enter a valid email address' });
+
+      try {
+        const oauthResponse = await beginAuthwardMagicLink(req.headers, parsed.data.email);
+        for (const cookie of oauthResponse.headers.getSetCookie()) {
+          res.append('Set-Cookie', cookie);
+        }
+        if (!oauthResponse.ok) {
+          return res.status(502).json({ error: 'Could not start email sign-in' });
+        }
+        const payload = (await oauthResponse.json()) as { url?: string };
+        if (!payload.url) {
+          return res.status(502).json({ error: 'Could not start email sign-in' });
+        }
+
+        await dispatchAuthwardMagicLink(payload.url);
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({ ok: true });
+      } catch (error) {
+        req.log?.warn({ err: error }, 'Authward magic-link start failed');
+        res.status(503).json({ error: 'Could not send the sign-in link' });
+      }
+    }
+  );
 
   app.get('/api/auth/session', async (req: AuthedRequest, res) => {
     const identity = await readSession(db, req);

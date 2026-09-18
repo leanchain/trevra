@@ -50,12 +50,9 @@ if (!existsSync(DEV_ENV)) {
 
 ensureEnvValue(DEV_ENV, 'TREVRA_SECRETS_KEY', () => randomBytes(32).toString('base64'));
 ensureEnvValue(DEV_ENV, 'TREVRA_COMPANION_RELAY_URL', () => 'ws://127.0.0.1:8787');
-ensureEnvValue(
-  DEV_ENV,
-  'NANGO_ENCRYPTION_KEY',
-  () => randomBytes(32).toString('base64'),
-  { replaceIf: (value) => value === 'uB4uY6dI5Zp2iYVg5m5V+M0r1fP9cS8yP0mT8wH9WkE=' }
-);
+ensureEnvValue(DEV_ENV, 'NANGO_ENCRYPTION_KEY', () => randomBytes(32).toString('base64'), {
+  replaceIf: (value) => value === 'uB4uY6dI5Zp2iYVg5m5V+M0r1fP9cS8yP0mT8wH9WkE='
+});
 
 // The direct `npm run dev` path uses .env instead of .env.dev. If the operator
 // has opted into that path already, make Companion usable there too without
@@ -76,5 +73,6 @@ if ((envValue(DEV_ENV, 'TREVRA_LINKEDIN_LOCAL') ?? 'true').toLowerCase() !== 'fa
 }
 
 process.stdout.write(
-  'Development setup is ready. Start the stack with: docker compose --env-file .env.dev -f compose.dev.yml up --build\n'
+  'Development setup is ready. Start the stack with: docker compose --env-file .env.dev -f compose.dev.yml up --build\n' +
+    'Local sign-in email inbox: http://localhost:48025\n'
 );

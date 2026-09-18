@@ -46,6 +46,100 @@ if (Boolean(authwardIssuer) !== Boolean(authwardClientId)) {
   throw new Error('AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID must be configured together');
 }
 export const authwardAuthEnabled = Boolean(authwardIssuer && authwardClientId);
+
+export interface AuthwardCapabilities {
+  magicLink: boolean;
+  emailPassword: boolean;
+  socialProviders: string[];
+}
+
+const fallbackAuthwardCapabilities: AuthwardCapabilities = {
+  magicLink: authwardAuthEnabled,
+  emailPassword: false,
+  socialProviders: []
+};
+
+export async function getAuthwardCapabilities(): Promise<AuthwardCapabilities> {
+  if (!authwardIssuer || !authwardClientId) {
+    return { magicLink: false, emailPassword: false, socialProviders: [] };
+  }
+  try {
+    const response = await fetch(
+      authwardIssuer + '/capabilities?client_id=' + encodeURIComponent(authwardClientId),
+      {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(1500)
+      }
+    );
+    if (!response.ok) return fallbackAuthwardCapabilities;
+    const body = (await response.json()) as Partial<AuthwardCapabilities>;
+    return {
+      magicLink: body.magicLink === true,
+      emailPassword: body.emailPassword === true,
+      socialProviders: Array.isArray(body.socialProviders)
+        ? body.socialProviders.filter(
+            (provider): provider is string => typeof provider === 'string'
+          )
+        : []
+    };
+  } catch {
+    return fallbackAuthwardCapabilities;
+  }
+}
+
+export async function beginAuthwardMagicLink(
+  headers: IncomingHttpHeaders,
+  email: string
+): Promise<Response> {
+  if (!authwardIssuer || !authwardClientId) {
+    throw new Error('Authward is not configured');
+  }
+  return auth.api.signInWithOAuth2({
+    body: {
+      providerId: 'authward',
+      callbackURL: baseURL + '/loop',
+      additionalData: {
+        authMethod: 'magic_link',
+        loginHint: email,
+        returnTo: baseURL + '/login'
+      }
+    },
+    headers: fromNodeHeaders(headers),
+    asResponse: true
+  });
+}
+
+export async function dispatchAuthwardMagicLink(authorizationUrl: string): Promise<void> {
+  const trevraOrigin = new URL(baseURL).origin;
+  let current = new URL(authorizationUrl);
+
+  for (let hop = 0; hop < 4; hop += 1) {
+    const response = await fetch(current, {
+      redirect: 'manual',
+      headers: { accept: 'text/html,application/json' },
+      signal: AbortSignal.timeout(5_000)
+    });
+    if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
+      const payload = (await response.json()) as { redirect?: boolean; url?: string };
+      if (payload.redirect && payload.url) {
+        current = new URL(payload.url, current);
+        continue;
+      }
+    }
+    if (response.status < 300 || response.status >= 400) {
+      throw new Error('Authward magic-link flow rendered instead of redirecting');
+    }
+    const location = response.headers.get('location');
+    if (!location) throw new Error('Authward magic-link flow returned no redirect');
+    const next = new URL(location, current);
+    if (next.origin === trevraOrigin && next.pathname === '/login') return;
+    current = next;
+  }
+
+  throw new Error('Authward magic-link flow exceeded redirect limit');
+}
+
+const authwardUpstreamProviders = new Set(['google', 'github', 'microsoft', 'apple']);
 const authwardProvider = genericOAuth({
   config:
     authwardIssuer && authwardClientId
@@ -66,7 +160,10 @@ const authwardProvider = genericOAuth({
               const returnTo = data?.returnTo;
               return {
                 resource: 'https://api.usetrevra.com',
-                ...(upstreamProvider === 'google' ? { upstream_provider: 'google' } : {}),
+                ...(typeof upstreamProvider === 'string' &&
+                authwardUpstreamProviders.has(upstreamProvider)
+                  ? { upstream_provider: upstreamProvider }
+                  : {}),
                 ...(authMethod === 'magic_link' &&
                 typeof loginHint === 'string' &&
                 typeof returnTo === 'string'

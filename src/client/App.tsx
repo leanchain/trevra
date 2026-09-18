@@ -66,6 +66,7 @@ import {
   saveAgentModelConfig,
   setAgentCliRiskAccepted,
   startAgentRun,
+  startAuthwardMagicLink,
   startDemoSession,
   updatePolicy,
   workspaceExportDownloadPath,
@@ -183,6 +184,16 @@ function ShellTop({
             <CircleHelp size={18} />
           </button>
           <ThemeToggle />
+          <a
+            className="icon-button"
+            aria-label="Identity settings"
+            title="Identity settings"
+            href="/api/auth/account"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <KeyRound size={18} />
+          </a>
           <button
             className="icon-button"
             aria-label="Sign out"
@@ -618,9 +629,10 @@ function AuthScreen({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
-  const [googleBusy, setGoogleBusy] = useState(false);
+  const [socialBusy, setSocialBusy] = useState<string | null>(null);
   const [authError, setAuthError] = useState('');
   const [authwardEnabled, setAuthwardEnabled] = useState(false);
+  const [socialProviders, setSocialProviders] = useState<string[]>([]);
   const [magicLinkEnabled, setMagicLinkEnabled] = useState(false);
   const [magicLinkSentTo, setMagicLinkSentTo] = useState<string | null>(null);
   const [emailPasswordEnabled, setEmailPasswordEnabled] = useState(false);
@@ -629,6 +641,7 @@ function AuthScreen({
     void getPublicConfig()
       .then((config) => {
         setAuthwardEnabled(config.authwardAuthEnabled);
+        setSocialProviders(config.socialAuthProviders);
         setMagicLinkEnabled(config.magicLinkAuthEnabled);
         setEmailPasswordEnabled(config.emailPasswordAuthEnabled);
       })
@@ -658,6 +671,16 @@ function AuthScreen({
       params.delete('error');
       cleanAuthQuery = true;
     }
+    const providerError = params.get('auth_error');
+    if (providerError) {
+      setAuthError(
+        providerError === 'google_not_configured'
+          ? 'Google sign-in is not configured for this Authward environment.'
+          : 'That sign-in provider is not available in this environment.'
+      );
+      params.delete('auth_error');
+      cleanAuthQuery = true;
+    }
     if (cleanAuthQuery) {
       const query = params.toString();
       window.history.replaceState(
@@ -668,23 +691,23 @@ function AuthScreen({
     }
   }, []);
 
-  const signInWithGoogle = async () => {
-    setGoogleBusy(true);
+  const signInWithSocialProvider = async (provider: string) => {
+    setSocialBusy(provider);
     setAuthError('');
-    trackEvent('google_auth_started');
+    if (provider === 'google') trackEvent('google_auth_started');
     try {
       const result = await authClient.signIn.oauth2({
         providerId: 'authward',
         callbackURL: `${window.location.origin}/loop`,
-        additionalData: { upstreamProvider: 'google' }
+        additionalData: { upstreamProvider: provider }
       });
       if (result?.error) {
-        setAuthError(result.error.message ?? 'Google sign-in failed');
-        setGoogleBusy(false);
+        setAuthError(result.error.message ?? `${provider} sign-in failed`);
+        setSocialBusy(null);
       }
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : 'Google sign-in failed');
-      setGoogleBusy(false);
+      setAuthError(error instanceof Error ? error.message : `${provider} sign-in failed`);
+      setSocialBusy(null);
     }
   };
 
@@ -698,22 +721,8 @@ function AuthScreen({
         setAuthError('Email sign-in requires Authward on this deployment.');
         return;
       }
-      window.sessionStorage.setItem('trevra.pendingAuthEmail', normalizedEmail);
-      const returnTo = new URL('/login', window.location.origin);
-      returnTo.searchParams.set('auth_email_sent', '1');
-      returnTo.searchParams.set('auth_email', normalizedEmail);
-      const result = await authClient.signIn.oauth2({
-        providerId: 'authward',
-        callbackURL: `${window.location.origin}/loop`,
-        additionalData: {
-          authMethod: 'magic_link',
-          loginHint: normalizedEmail,
-          returnTo: returnTo.toString()
-        }
-      });
-      if (result?.error) {
-        setAuthError(result.error.message ?? 'Unable to send the sign-in link');
-      }
+      await startAuthwardMagicLink(normalizedEmail);
+      setMagicLinkSentTo(normalizedEmail);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : 'Unable to send the sign-in link');
     } finally {
@@ -808,21 +817,44 @@ function AuthScreen({
                     ? 'Continue to your workspace.'
                     : 'Create a Trevra workspace.'}
             </p>
-            {authwardEnabled && !magicLinkSentTo && (
-              <button
-                className="google-auth-button"
-                disabled={busy || googleBusy}
-                onClick={() => void signInWithGoogle()}
-              >
-                {googleBusy ? <LoaderCircle className="spin" size={17} /> : <GoogleMark />}Continue
-                with Google
-              </button>
-            )}
-            {authwardEnabled && !magicLinkSentTo && (magicLinkEnabled || emailPasswordEnabled) && (
-              <div className="auth-divider">
-                <span>or</span>
-              </div>
-            )}
+            {socialProviders.length > 0 &&
+              !magicLinkSentTo &&
+              socialProviders.map((provider) => {
+                const label =
+                  provider === 'google'
+                    ? 'Google'
+                    : provider === 'github'
+                      ? 'GitHub'
+                      : provider === 'microsoft'
+                        ? 'Microsoft'
+                        : provider === 'apple'
+                          ? 'Apple'
+                          : provider.charAt(0).toUpperCase() + provider.slice(1);
+                return (
+                  <button
+                    key={provider}
+                    className="google-auth-button"
+                    disabled={busy || socialBusy !== null}
+                    onClick={() => void signInWithSocialProvider(provider)}
+                  >
+                    {socialBusy === provider ? (
+                      <LoaderCircle className="spin" size={17} />
+                    ) : provider === 'google' ? (
+                      <GoogleMark />
+                    ) : (
+                      <ShieldCheck size={17} />
+                    )}
+                    Continue with {label}
+                  </button>
+                );
+              })}
+            {socialProviders.length > 0 &&
+              !magicLinkSentTo &&
+              (magicLinkEnabled || emailPasswordEnabled) && (
+                <div className="auth-divider">
+                  <span>or</span>
+                </div>
+              )}
             {magicLinkEnabled &&
               (magicLinkSentTo ? (
                 <div className="auth-email-sent" role="status" aria-live="polite">
@@ -839,7 +871,7 @@ function AuthScreen({
                   </div>
                   <button
                     className="primary-button auth-submit"
-                    disabled={busy || googleBusy}
+                    disabled={busy || socialBusy !== null}
                     onClick={() => void sendMagicLink()}
                   >
                     {busy ? <LoaderCircle className="spin" size={16} /> : <Mail size={16} />}
@@ -847,7 +879,7 @@ function AuthScreen({
                   </button>
                   <button
                     className="auth-text-button"
-                    disabled={busy || googleBusy}
+                    disabled={busy || socialBusy !== null}
                     onClick={() => {
                       setMagicLinkSentTo(null);
                       window.sessionStorage.removeItem('trevra.pendingAuthEmail');
@@ -876,7 +908,7 @@ function AuthScreen({
                   </label>
                   <button
                     className="primary-button auth-submit"
-                    disabled={busy || googleBusy || !email.trim()}
+                    disabled={busy || socialBusy !== null || !email.trim()}
                     onClick={() => void sendMagicLink()}
                   >
                     {busy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
@@ -928,7 +960,7 @@ function AuthScreen({
                 className="primary-button auth-submit"
                 disabled={
                   busy ||
-                  googleBusy ||
+                  socialBusy !== null ||
                   !email ||
                   password.length < 10 ||
                   (mode === 'signup' && !name.trim())
@@ -942,7 +974,7 @@ function AuthScreen({
             {import.meta.env.DEV && (
               <button
                 className="ghost-button auth-submit"
-                disabled={busy || googleBusy}
+                disabled={busy || socialBusy !== null}
                 onClick={() => void startDemoSession().then(onAuthenticated)}
               >
                 Open demo
