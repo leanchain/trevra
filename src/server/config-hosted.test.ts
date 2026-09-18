@@ -233,11 +233,27 @@ describe('booting a production deployment', () => {
     );
   });
 
-  it('requires the shared Billing service on hosted production', () => {
-    const { BILLING_BASE_URL, BILLING_CLIENT_SECRET, ...noBilling } = production;
-    expect(() => validateEnvironment({ ...noBilling, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
-      /BILLING_BASE_URL and BILLING_CLIENT_SECRET are required/
-    );
+  it('allows hosted production to run before the shared Billing service is enabled', () => {
+    const {
+      BILLING_BASE_URL,
+      BILLING_CLIENT_ID,
+      BILLING_CLIENT_SECRET,
+      BILLING_AUDIENCE,
+      ...noBilling
+    } = production;
+    expect(() =>
+      validateEnvironment({ ...noBilling, TREVRA_DEPLOYMENT_MODE: 'hosted' })
+    ).not.toThrow();
+  });
+
+  it('still rejects a partially configured Billing service', () => {
+    expect(() =>
+      validateEnvironment({
+        ...production,
+        BILLING_CLIENT_SECRET: undefined,
+        TREVRA_DEPLOYMENT_MODE: 'hosted'
+      })
+    ).toThrow(/BILLING_BASE_URL and BILLING_CLIENT_SECRET require AUTHWARD_ISSUER/);
   });
 
   it('requires transactional SMTP on hosted production so operational alerts cannot disappear', () => {

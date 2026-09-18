@@ -326,14 +326,6 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
         'AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID are required when TREVRA_DEPLOYMENT_MODE=hosted'
       );
     }
-    if (
-      base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
-      !(base.BILLING_BASE_URL && base.BILLING_CLIENT_SECRET)
-    ) {
-      problems.push(
-        'BILLING_BASE_URL and BILLING_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted'
-      );
-    }
     // Hosted operational alerts are a product dependency, not an optional
     // decoration. Companion disconnects, provider re-auth and action failures
     // all route through SMTP. Previously an absent SMTP config made those

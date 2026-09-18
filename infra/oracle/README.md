@@ -62,7 +62,7 @@ terraform init
 terraform apply
 ```
 
-Create the environment file **on the instance** — secrets never leave it. Hosted Trevra now also requires the shared Billing contract: `BILLING_BASE_URL=https://billing.olaryn.com`, `BILLING_CLIENT_ID=trevra-billing`, `BILLING_AUDIENCE=https://billing.olaryn.com`, and the Authward-issued `BILLING_CLIENT_SECRET`:
+Create the environment file **on the instance** — secrets never leave it. The shared Billing contract is optional until Billing/OpenMeter production is deployed; when enabled, set `BILLING_BASE_URL=https://billing.olaryn.com`, `BILLING_CLIENT_ID=trevra-billing`, `BILLING_AUDIENCE=https://billing.olaryn.com`, and the Authward-issued `BILLING_CLIENT_SECRET` together:
 
 ```sh
 IP=$(terraform output -raw public_ip)
