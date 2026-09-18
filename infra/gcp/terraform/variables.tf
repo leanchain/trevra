@@ -46,6 +46,57 @@ variable "better_auth_url" {
   }
 }
 
+variable "authward_issuer" {
+  description = "Hosted Authward OIDC issuer trusted by Trevra."
+  type        = string
+  default     = "https://auth.olaryn.com"
+
+  validation {
+    condition     = startswith(var.authward_issuer, "https://")
+    error_message = "authward_issuer must use HTTPS."
+  }
+}
+
+variable "authward_client_id" {
+  description = "Authward browser client registered for hosted Trevra."
+  type        = string
+  default     = "trevra-web"
+}
+
+variable "billing_base_url" {
+  description = "Shared Olaryn Billing service origin."
+  type        = string
+  default     = "https://billing.olaryn.com"
+
+  validation {
+    condition     = startswith(var.billing_base_url, "https://")
+    error_message = "billing_base_url must use HTTPS."
+  }
+}
+
+variable "billing_client_id" {
+  description = "Authward confidential client used by Trevra to call Billing."
+  type        = string
+  default     = "trevra-billing"
+}
+
+variable "billing_client_secret" {
+  description = "Authward client secret for the Trevra Billing machine client."
+  type        = string
+  sensitive   = true
+}
+
+variable "billing_audience" {
+  description = "OAuth resource/audience expected by the shared Billing service."
+  type        = string
+  default     = "https://billing.olaryn.com"
+
+  validation {
+    condition     = startswith(var.billing_audience, "https://")
+    error_message = "billing_audience must use HTTPS."
+  }
+}
+
 variable "legal_name" {
   description = "Public legal or operating name shown in policy pages."
   type        = string

@@ -28,6 +28,7 @@ locals {
     "nango-webhook-signing-key" = var.nango_webhook_signing_key
     "ingest-api-key"            = random_password.ingest.result
     "trevra-agent-token-pepper" = random_password.agent_token_pepper.result
+    "billing-client-secret"     = var.billing_client_secret
     }, var.temporal_api_key != "" ? {
     "temporal-api-key" = var.temporal_api_key
     } : {}, var.sandbox_gateway_token != "" ? {
@@ -296,6 +297,26 @@ resource "google_cloud_run_v2_service" "trevra" {
         value = var.better_auth_url
       }
       env {
+        name  = "AUTHWARD_ISSUER"
+        value = var.authward_issuer
+      }
+      env {
+        name  = "AUTHWARD_CLIENT_ID"
+        value = var.authward_client_id
+      }
+      env {
+        name  = "BILLING_BASE_URL"
+        value = var.billing_base_url
+      }
+      env {
+        name  = "BILLING_CLIENT_ID"
+        value = var.billing_client_id
+      }
+      env {
+        name  = "BILLING_AUDIENCE"
+        value = var.billing_audience
+      }
+      env {
         name  = "PUBLIC_SITE_URL"
         value = var.app_origin
       }
@@ -483,6 +504,11 @@ resource "google_cloud_run_v2_service" "trevra_worker" {
           PORT                               = "8080"
           APP_ORIGIN                         = var.app_origin
           BETTER_AUTH_URL                    = var.better_auth_url
+          AUTHWARD_ISSUER                    = var.authward_issuer
+          AUTHWARD_CLIENT_ID                 = var.authward_client_id
+          BILLING_BASE_URL                   = var.billing_base_url
+          BILLING_CLIENT_ID                  = var.billing_client_id
+          BILLING_AUDIENCE                   = var.billing_audience
           PUBLIC_SITE_URL                    = var.app_origin
           PUBLIC_LEGAL_NAME                  = var.legal_name
           PUBLIC_SUPPORT_EMAIL               = var.support_email

@@ -46,6 +46,14 @@ Do not run `docker compose down -v` unless you intend to destroy all local data.
 
 The Terraform configuration mounts Cloud SQL at `/cloudsql` and injects a PostgreSQL Unix-socket URL from Secret Manager. The runtime service account receives only Cloud SQL Client and access to Trevra's named secrets.
 
+Hosted Trevra also depends on the shared identity and commercial services:
+
+- `AUTHWARD_ISSUER=https://auth.olaryn.com` and `AUTHWARD_CLIENT_ID=trevra-web` establish the hosted browser identity boundary.
+- `BILLING_BASE_URL=https://billing.olaryn.com`, `BILLING_CLIENT_ID=trevra-billing`, and `BILLING_AUDIENCE=https://billing.olaryn.com` establish the shared commercial-service boundary.
+- `BILLING_CLIENT_SECRET` is the confidential Authward credential for `trevra-billing`. Terraform stores it in Secret Manager and injects it into both the API and worker revisions without placing it in an image or plain environment file.
+
+The Billing secret must be the same credential configured for the `trevra-billing` client in hosted Authward. Rotating that client therefore requires updating the Terraform input and rolling Trevra after Authward accepts the new credential.
+
 Cloud Monitoring performs an external HTTPS check of `/api/health` every five minutes and sends an email alert after sustained failures. The same policy warns when the public TLS certificate has fewer than 15 days remaining. Confirm the monitoring notification email after deployment.
 
 Cloud SQL is configured with:
