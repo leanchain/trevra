@@ -81,9 +81,10 @@ variable "billing_client_id" {
 }
 
 variable "billing_client_secret" {
-  description = "Authward client secret for the Trevra Billing machine client."
+  description = "Authward client secret for the Trevra Billing machine client. Leave empty until Billing is enabled."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "billing_audience" {

@@ -10,7 +10,7 @@ set -euo pipefail
 : "${AUTHWARD_CLIENT_ID:=trevra-web}"
 : "${BILLING_BASE_URL:=https://billing.olaryn.com}"
 : "${BILLING_CLIENT_ID:=trevra-billing}"
-: "${BILLING_CLIENT_SECRET:?Set BILLING_CLIENT_SECRET to the Authward trevra-billing client secret}"
+: "${BILLING_CLIENT_SECRET:=}"
 : "${BILLING_AUDIENCE:=https://billing.olaryn.com}"
 : "${GOOGLE_CLIENT_ID:?Set GOOGLE_CLIENT_ID from the Google OAuth web client}"
 : "${GOOGLE_CLIENT_SECRET:?Set GOOGLE_CLIENT_SECRET from the Google OAuth web client}"

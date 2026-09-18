@@ -49,8 +49,8 @@ The Terraform configuration mounts Cloud SQL at `/cloudsql` and injects a Postgr
 Hosted Trevra also depends on the shared identity and commercial services:
 
 - `AUTHWARD_ISSUER=https://auth.olaryn.com` and `AUTHWARD_CLIENT_ID=trevra-web` establish the hosted browser identity boundary.
-- `BILLING_BASE_URL=https://billing.olaryn.com`, `BILLING_CLIENT_ID=trevra-billing`, and `BILLING_AUDIENCE=https://billing.olaryn.com` establish the shared commercial-service boundary.
-- `BILLING_CLIENT_SECRET` is the confidential Authward credential for `trevra-billing`. Terraform stores it in Secret Manager and injects it into both the API and worker revisions without placing it in an image or plain environment file.
+- Billing is opt-in until the shared Billing/OpenMeter production service is deployed. When enabled, `BILLING_BASE_URL=https://billing.olaryn.com`, `BILLING_CLIENT_ID=trevra-billing`, and `BILLING_AUDIENCE=https://billing.olaryn.com` establish the shared commercial-service boundary.
+- `BILLING_CLIENT_SECRET` is the confidential Authward credential for `trevra-billing`. When non-empty, Terraform stores it in Secret Manager and injects the complete Billing configuration into both API and worker revisions. When empty, Terraform injects no Billing variables at all.
 
 The Billing secret must be the same credential configured for the `trevra-billing` client in hosted Authward. Rotating that client therefore requires updating the Terraform input and rolling Trevra after Authward accepts the new credential.
 

@@ -11,6 +11,12 @@ locals {
     "sqladmin.googleapis.com"
   ])
 
+  billing_environment = var.billing_client_secret != "" ? {
+    BILLING_BASE_URL  = var.billing_base_url
+    BILLING_CLIENT_ID = var.billing_client_id
+    BILLING_AUDIENCE  = var.billing_audience
+  } : {}
+
   secret_values = merge({
     "database-url"              = "postgresql://${var.database_user}:${urlencode(random_password.database.result)}@/${var.database_name}?host=/cloudsql/${google_sql_database_instance.trevra.connection_name}"
     "better-auth-secret"        = random_password.better_auth.result
@@ -28,8 +34,9 @@ locals {
     "nango-webhook-signing-key" = var.nango_webhook_signing_key
     "ingest-api-key"            = random_password.ingest.result
     "trevra-agent-token-pepper" = random_password.agent_token_pepper.result
-    "billing-client-secret"     = var.billing_client_secret
-    }, var.temporal_api_key != "" ? {
+    }, var.billing_client_secret != "" ? {
+    "billing-client-secret" = var.billing_client_secret
+    } : {}, var.temporal_api_key != "" ? {
     "temporal-api-key" = var.temporal_api_key
     } : {}, var.sandbox_gateway_token != "" ? {
     "trevra-sandbox-gateway-token" = var.sandbox_gateway_token
@@ -304,17 +311,12 @@ resource "google_cloud_run_v2_service" "trevra" {
         name  = "AUTHWARD_CLIENT_ID"
         value = var.authward_client_id
       }
-      env {
-        name  = "BILLING_BASE_URL"
-        value = var.billing_base_url
-      }
-      env {
-        name  = "BILLING_CLIENT_ID"
-        value = var.billing_client_id
-      }
-      env {
-        name  = "BILLING_AUDIENCE"
-        value = var.billing_audience
+      dynamic "env" {
+        for_each = local.billing_environment
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
       env {
         name  = "PUBLIC_SITE_URL"
@@ -506,9 +508,6 @@ resource "google_cloud_run_v2_service" "trevra_worker" {
           BETTER_AUTH_URL                    = var.better_auth_url
           AUTHWARD_ISSUER                    = var.authward_issuer
           AUTHWARD_CLIENT_ID                 = var.authward_client_id
-          BILLING_BASE_URL                   = var.billing_base_url
-          BILLING_CLIENT_ID                  = var.billing_client_id
-          BILLING_AUDIENCE                   = var.billing_audience
           PUBLIC_SITE_URL                    = var.app_origin
           PUBLIC_LEGAL_NAME                  = var.legal_name
           PUBLIC_SUPPORT_EMAIL               = var.support_email
@@ -529,6 +528,14 @@ resource "google_cloud_run_v2_service" "trevra_worker" {
           TREVRA_SANDBOX_GATEWAY_URL         = var.sandbox_gateway_url
           TREVRA_REMOTE_ACTION_ADAPTERS_JSON = var.remote_action_adapters_json
         }
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.billing_environment
         content {
           name  = env.key
           value = env.value

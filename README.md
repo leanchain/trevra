@@ -234,8 +234,8 @@ Terraform under [`infra/gcp/terraform`](infra/gcp/terraform) provisions:
 - Cloud Run with startup and liveness probes;
 - Cloud SQL PostgreSQL 16 with regional high availability;
 - SSD autoscaling, automated backups, 14 retained backups, and seven days of point-in-time recovery logs;
-- Secret Manager values for the PostgreSQL URL, Better Auth, the Authward `trevra-billing` machine credential, Nango, and internal ingestion;
-- hosted Authward + shared Billing endpoints injected explicitly into both web and worker revisions;
+- Secret Manager values for the PostgreSQL URL, Better Auth, Nango, internal ingestion, and the Authward `trevra-billing` machine credential when Billing is enabled;
+- hosted Authward endpoints are always injected; shared Billing endpoints are injected into web and worker revisions only when the Billing machine credential is configured;
 - Cloud SQL Client and Secret Manager least-privilege access;
 - migration-safe multi-instance startup.
 
@@ -261,10 +261,11 @@ export APP_ORIGIN=https://app.example.com
 export BETTER_AUTH_URL=https://app.example.com
 export AUTHWARD_ISSUER=https://auth.olaryn.com
 export AUTHWARD_CLIENT_ID=trevra-web
-export BILLING_BASE_URL=https://billing.olaryn.com
-export BILLING_CLIENT_ID=trevra-billing
-export BILLING_CLIENT_SECRET='the Authward trevra-billing client secret'
-export BILLING_AUDIENCE=https://billing.olaryn.com
+# Optional until Billing/OpenMeter production is enabled:
+# export BILLING_BASE_URL=https://billing.olaryn.com
+# export BILLING_CLIENT_ID=trevra-billing
+# export BILLING_CLIENT_SECRET='the Authward trevra-billing client secret'
+# export BILLING_AUDIENCE=https://billing.olaryn.com
 export GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
 export GOOGLE_CLIENT_SECRET='your-client-secret'
 export NANGO_HOST=https://nango-api.example.com
