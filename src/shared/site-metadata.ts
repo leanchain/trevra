@@ -17,7 +17,14 @@ export const SOCIAL_IMAGE = {
   alt: 'Trevra — Agent-Run GTM With Human Approval'
 } as const;
 
-export const PUBLIC_PATHS = ['/', '/how-it-works', '/security', '/privacy', '/terms'] as const;
+export const PUBLIC_PATHS = [
+  '/',
+  '/pricing',
+  '/how-it-works',
+  '/security',
+  '/privacy',
+  '/terms'
+] as const;
 
 export interface FaqItem {
   question: string;
@@ -176,7 +183,7 @@ export interface SiteRenderConfig {
  * since it's the document most likely to be quoted directly.
  */
 export function renderLlmsText(config: SiteRenderConfig, full: boolean): string {
-  const base = `# Trevra\n\n> ${config.description}\n\n## Primary pages\n- [Trevra](${config.origin}/): Product overview and workspace access.\n- [How Trevra works](${config.origin}/how-it-works): Product workflow, evidence model, integrations, and automation boundaries.\n- [Security](${config.origin}/security): Security architecture and responsible disclosure.\n- [Privacy](${config.origin}/privacy): Data categories, purposes, analytics, retention, and requests.\n- [Terms](${config.origin}/terms): Baseline service terms.\n\n## Machine-readable resources\n- [Sitemap](${config.origin}/sitemap.xml)\n- [Robots](${config.origin}/robots.txt)\n- [Full LLM context](${config.origin}/llms-full.txt)\n- [Agent guidance](${config.origin}/agents.md)\n- [Security contact](${config.origin}/.well-known/security.txt)\n\n## Contact\n- Product support: ${config.supportEmail}\n- Security reports: ${config.securityEmail}\n`;
+  const base = `# Trevra\n\n> ${config.description}\n\n## Primary pages\n- [Trevra](${config.origin}/): Product overview and workspace access.\n- [Pricing](${config.origin}/pricing): Preview hosted Trevra plans and credit allowances.\n- [How Trevra works](${config.origin}/how-it-works): Product workflow, evidence model, integrations, and automation boundaries.\n- [Security](${config.origin}/security): Security architecture and responsible disclosure.\n- [Privacy](${config.origin}/privacy): Data categories, purposes, analytics, retention, and requests.\n- [Terms](${config.origin}/terms): Baseline service terms.\n\n## Machine-readable resources\n- [Sitemap](${config.origin}/sitemap.xml)\n- [Robots](${config.origin}/robots.txt)\n- [Full LLM context](${config.origin}/llms-full.txt)\n- [Agent guidance](${config.origin}/agents.md)\n- [Security contact](${config.origin}/.well-known/security.txt)\n\n## Contact\n- Product support: ${config.supportEmail}\n- Security reports: ${config.securityEmail}\n`;
   if (!full) return base;
   const questions = FAQ_ITEMS.map(({ question, answer }) => `### ${question}\n${answer}`).join(
     '\n\n'

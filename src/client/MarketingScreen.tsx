@@ -8,6 +8,7 @@ const FOUNDER_EMAIL = 'pankaj@usetrevra.com';
 
 const NAV_LINKS = [
   { href: '#how', label: 'How it works' },
+  { href: '/pricing', label: 'Pricing' },
   { href: '#faq', label: 'FAQ' }
 ] as const;
 

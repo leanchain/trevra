@@ -80,6 +80,75 @@ describe('TrevraBillingClient', () => {
     ).toHaveLength(1);
   });
 
+  it('reads the Trevra catalog and starts checkout with Billing plan codes', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchSpy = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, init });
+      if (url.endsWith('/.well-known/openid-configuration')) {
+        return json({ token_endpoint: 'https://auth.example.test/api/auth/oauth2/token' });
+      }
+      if (url.endsWith('/api/auth/oauth2/token')) {
+        return json({ access_token: 'machine-token', expires_in: 900 });
+      }
+      if (url.endsWith('/v1/trevra/catalog/plans')) {
+        return json({
+          plans: [
+            {
+              plan_code: 'growth_monthly_usd',
+              tier: 'growth',
+              name: 'Growth',
+              interval: 'monthly',
+              currency: 'USD',
+              amount: '149',
+              amount_cents: 14900,
+              monthly_credits: '20000',
+              capabilities: {},
+              contact_required: false
+            }
+          ]
+        });
+      }
+      if (url.endsWith('/v1/trevra/customers/ws_123/subscription')) {
+        return json({ status: 'checkout_required', url: 'https://checkout.stripe.test/session' });
+      }
+      return json({ error: 'unexpected' }, 500);
+    });
+
+    const client = new TrevraBillingClient(
+      {
+        baseUrl: 'https://billing.example.test',
+        authwardIssuer: 'https://auth.example.test',
+        clientId: 'trevra-billing',
+        clientSecret: 'secret',
+        audience: 'https://billing.olaryn.com'
+      },
+      fetchSpy as unknown as typeof fetch
+    );
+
+    const plans = await client.plans();
+    expect(plans[0]?.plan_code).toBe('growth_monthly_usd');
+
+    const checkout = await client.startPlan({
+      workspaceId: 'ws_123',
+      planCode: 'growth_monthly_usd',
+      successUrl: 'https://app.example.test/setup/billing?checkout=success',
+      cancelUrl: 'https://app.example.test/setup/billing?checkout=cancelled'
+    });
+    expect(checkout.url).toBe('https://checkout.stripe.test/session');
+
+    const checkoutCall = calls.find((call) =>
+      call.url.endsWith('/v1/trevra/customers/ws_123/subscription')
+    );
+    expect(checkoutCall?.init?.method).toBe('POST');
+    expect(JSON.parse(String(checkoutCall?.init?.body))).toEqual({
+      plan_code: 'growth_monthly_usd',
+      success_url: 'https://app.example.test/setup/billing?checkout=success',
+      cancel_url: 'https://app.example.test/setup/billing?checkout=cancelled'
+    });
+    expect(calls.filter((call) => call.url.endsWith('/api/auth/oauth2/token'))).toHaveLength(1);
+  });
+
   it('stays disabled unless endpoint, secret, and Authward issuer are all present', () => {
     expect(billingEnabled({})).toBe(false);
     expect(

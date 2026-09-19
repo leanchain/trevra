@@ -31,6 +31,26 @@ export type BillingEntitlements = {
   features: Record<string, Record<string, unknown>>;
 };
 
+export type BillingPlan = {
+  plan_code: string;
+  tier: string;
+  name: string;
+  interval: 'monthly' | 'yearly';
+  currency: string;
+  amount: string | number;
+  amount_cents: number;
+  monthly_credits: string | number;
+  capabilities: Record<string, Record<string, unknown>>;
+  contact_required: boolean;
+};
+
+export type BillingCheckout = {
+  status: string;
+  url: string | null;
+  change_type?: string | null;
+  message?: string | null;
+};
+
 export type TrevraBillingSnapshot = {
   enabled: true;
   customer: BillingCustomer;
@@ -184,6 +204,26 @@ export class TrevraBillingClient {
     return `/v1/trevra/customers/${encodeURIComponent(workspaceId)}`;
   }
 
+  async plans(): Promise<BillingPlan[]> {
+    const payload = await this.request<{ plans: BillingPlan[] }>('/v1/trevra/catalog/plans');
+    return payload.plans;
+  }
+
+  async startPlan(input: {
+    workspaceId: string;
+    planCode: string;
+    successUrl: string;
+    cancelUrl: string;
+  }): Promise<BillingCheckout> {
+    return this.request<BillingCheckout>(`${this.customerPath(input.workspaceId)}/subscription`, {
+      method: 'POST',
+      body: JSON.stringify({
+        plan_code: input.planCode,
+        success_url: input.successUrl,
+        cancel_url: input.cancelUrl
+      })
+    });
+  }
   async ensureWorkspaceCustomer(input: {
     workspaceId: string;
     name: string;

@@ -208,8 +208,42 @@ export type BillingSnapshot =
       };
     };
 
+export type BillingPlan = {
+  plan_code: string;
+  tier: string;
+  name: string;
+  interval: 'monthly' | 'yearly';
+  currency: string;
+  amount: string | number;
+  amount_cents: number;
+  monthly_credits: string | number;
+  capabilities: Record<string, Record<string, unknown>>;
+  contact_required: boolean;
+};
+
+export type BillingPlans =
+  { enabled: false; plans: BillingPlan[] } | { enabled: true; plans: BillingPlan[] };
+
+export type BillingCheckout = {
+  status: string;
+  url: string | null;
+  change_type?: string | null;
+  message?: string | null;
+};
+
 export async function getBillingSnapshot(): Promise<BillingSnapshot> {
   return request('/api/billing');
+}
+
+export async function getBillingPlans(): Promise<BillingPlans> {
+  return request('/api/billing/plans');
+}
+
+export async function startBillingCheckout(planCode: string): Promise<BillingCheckout> {
+  return request('/api/billing/checkout', {
+    method: 'POST',
+    body: JSON.stringify({ planCode })
+  });
 }
 
 export async function getPublicConfig(): Promise<PublicConfig> {

@@ -1211,6 +1211,71 @@ export function createApp(db: Db) {
     }
   });
 
+  app.get('/api/billing/plans', async (_req: AuthedRequest, res, next) => {
+    try {
+      const billing = getBillingClient();
+      res.setHeader('Cache-Control', 'no-store');
+      if (!billing) return res.json({ enabled: false, plans: [] });
+      res.json({ enabled: true, plans: await billing.plans() });
+    } catch (error) {
+      if (error instanceof BillingServiceError) {
+        res.status(503).json({ error: 'Billing service unavailable' });
+        return;
+      }
+      next(error);
+    }
+  });
+
+  app.post(
+    '/api/billing/checkout',
+    ownerOnly('change the workspace billing plan'),
+    async (req: AuthedRequest, res, next) => {
+      try {
+        const parsed = z
+          .object({ planCode: z.string().trim().min(3).max(128) })
+          .strict()
+          .safeParse(req.body);
+        if (!parsed.success) return res.status(400).json({ error: 'A valid planCode is required' });
+
+        const billing = getBillingClient();
+        if (!billing) return res.status(503).json({ error: 'Billing is not configured' });
+
+        const workspace = await db
+          .prepare('SELECT id,name FROM workspaces WHERE id=?')
+          .get<{ id: string; name: string }>(req.auth!.workspaceId);
+        if (!workspace) return res.status(404).json({ error: 'Workspace not found' });
+
+        await billing.ensureWorkspaceCustomer({
+          workspaceId: workspace.id,
+          name: workspace.name,
+          currency: 'USD'
+        });
+        const origin =
+          process.env.BETTER_AUTH_URL?.trim().replace(/\/$/, '') ||
+          `${req.protocol}://${req.get('host')}`;
+        const checkout = await billing.startPlan({
+          workspaceId: workspace.id,
+          planCode: parsed.data.planCode,
+          successUrl: `${origin}/setup/billing?checkout=success`,
+          cancelUrl: `${origin}/setup/billing?checkout=cancelled`
+        });
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(checkout);
+      } catch (error) {
+        if (error instanceof BillingServiceError) {
+          res.status(error.status && error.status >= 400 && error.status < 500 ? 400 : 503).json({
+            error:
+              error.status && error.status >= 400 && error.status < 500
+                ? error.message
+                : 'Billing service unavailable'
+          });
+          return;
+        }
+        next(error);
+      }
+    }
+  );
+
   app.get('/api/skills', async (req: AuthedRequest, res, next) => {
     try {
       res.setHeader('Cache-Control', 'no-store');

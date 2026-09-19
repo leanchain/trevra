@@ -77,7 +77,7 @@ if (process.env.NODE_ENV === 'production') {
     /^\/ledger\/run\/[^/]+\/?$/,
     /^\/research\/?$/,
     /^\/setup\/?$/,
-    /^\/setup\/(?:workspace|capture)\/?$/,
+    /^\/setup\/(?:workspace|capture|billing)\/?$/,
     /^\/setup\/team\/[^/]+\/?$/,
     /^\/login\/?$/
   ];

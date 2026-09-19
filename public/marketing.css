@@ -2780,6 +2780,93 @@ details[open] > summary .disclosure-chevron {
   }
 }
 
+/* Preview pricing page. Compact by design: enough commercial context to
+   choose a tier without turning the page into a comparison spreadsheet. */
+.pricing-page {
+  padding-top: 80px;
+}
+.pricing-preview-note {
+  width: fit-content;
+  margin: 28px 0 18px;
+  padding: 7px 10px;
+  border: 1px solid var(--t-line);
+  border-radius: var(--t-r-pill);
+  color: var(--t-muted);
+  font-size: var(--t-text-sm);
+}
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.pricing-card {
+  display: grid;
+  align-content: space-between;
+  gap: 22px;
+  min-width: 0;
+  padding: 28px;
+  border: 1px solid var(--t-line);
+  border-radius: var(--t-r-md);
+  background: var(--t-surface);
+}
+.pricing-card-featured {
+  border-color: var(--t-green-500);
+}
+.pricing-tier {
+  margin: 0 0 10px;
+  color: var(--t-muted);
+  font-size: var(--t-text-sm);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.pricing-card h2 {
+  margin: 0 0 12px;
+  font-size: clamp(2rem, 4vw, 3rem);
+  letter-spacing: -0.04em;
+}
+.pricing-card h2 span {
+  margin-left: 4px;
+  color: var(--t-muted);
+  font-size: var(--t-text-md);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.pricing-card p {
+  color: var(--t-muted);
+}
+.pricing-card ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 18px;
+}
+.pricing-annual {
+  margin: 0;
+  font-size: var(--t-text-sm);
+}
+.pricing-card .launch-button,
+.pricing-card .launch-secondary {
+  width: 100%;
+  justify-content: center;
+}
+.pricing-footnote {
+  max-width: 760px;
+  margin: 22px auto 0;
+  color: var(--t-muted);
+  text-align: center;
+  font-size: var(--t-text-sm);
+}
+
+@media (max-width: 860px) {
+  .pricing-grid {
+    grid-template-columns: 1fr;
+  }
+  .pricing-card {
+    padding: 24px;
+  }
+}
+
 @media (max-width: 430px) {
   .launch-nav .launch-logo strong {
     display: none;
