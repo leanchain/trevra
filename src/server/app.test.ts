@@ -136,6 +136,7 @@ afterEach(async () => {
   delete process.env.GOOGLE_CLIENT_SECRET;
   delete process.env.AUTHWARD_ISSUER;
   delete process.env.AUTHWARD_CLIENT_ID;
+  delete process.env.AUTHWARD_CLIENT_SECRET;
   delete process.env.PUBLIC_SITE_URL;
   delete process.env.PUBLIC_REGISTRY_CORS_ORIGIN;
   delete process.env.TREVRA_SANDBOX_GATEWAY_URL;
@@ -291,6 +292,7 @@ describe('Trevra API on PostgreSQL', () => {
     ).toBe(false);
     process.env.AUTHWARD_ISSUER = 'https://auth.olaryn.com';
     process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
+    process.env.AUTHWARD_CLIENT_SECRET = 'test-trevra-authward-client-secret-0001';
     expect(
       (await request(app).get('/api/public-config').expect(200)).body.authwardAuthEnabled
     ).toBe(true);
@@ -304,6 +306,7 @@ describe('Trevra API on PostgreSQL', () => {
 
     process.env.AUTHWARD_ISSUER = 'https://auth.olaryn.com';
     process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
+    process.env.AUTHWARD_CLIENT_SECRET = 'test-trevra-authward-client-secret-0001';
     const after = (await request(app).get('/api/public-config').expect(200)).body;
     expect(after.authwardAuthEnabled).toBe(true);
     expect(after.googleAuthEnabled).toBe(false);

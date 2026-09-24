@@ -44,6 +44,7 @@ const production = {
   BETTER_AUTH_URL: 'https://app.example.com',
   AUTHWARD_ISSUER: 'https://auth.olaryn.com',
   AUTHWARD_CLIENT_ID: 'trevra-web',
+  AUTHWARD_CLIENT_SECRET: 'test-trevra-authward-client-secret-0001',
   BILLING_BASE_URL: 'https://billing.olaryn.com',
   BILLING_CLIENT_ID: 'trevra-billing',
   BILLING_CLIENT_SECRET: 'billing-secret',
@@ -222,6 +223,7 @@ describe('booting a production deployment', () => {
     const {
       AUTHWARD_ISSUER,
       AUTHWARD_CLIENT_ID,
+      AUTHWARD_CLIENT_SECRET,
       BILLING_BASE_URL,
       BILLING_CLIENT_ID,
       BILLING_CLIENT_SECRET,
@@ -229,7 +231,7 @@ describe('booting a production deployment', () => {
       ...noAuthward
     } = production;
     expect(() => validateEnvironment({ ...noAuthward, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
-      /AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID are required/
+      /AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET are required/
     );
   });
 

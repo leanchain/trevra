@@ -202,6 +202,7 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       BETTER_AUTH_URL: optionalUrl,
       AUTHWARD_ISSUER: optionalUrl,
       AUTHWARD_CLIENT_ID: z.string().optional(),
+      AUTHWARD_CLIENT_SECRET: z.string().min(32).optional(),
       BILLING_BASE_URL: optionalUrl,
       BILLING_CLIENT_ID: z.string().optional(),
       BILLING_CLIENT_SECRET: z.string().optional(),
@@ -268,8 +269,22 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
 
   if (!/^postgres(?:ql)?:\/\//i.test(base.DATABASE_URL))
     throw new Error('DATABASE_URL must be a PostgreSQL connection string');
-  if (Boolean(base.AUTHWARD_ISSUER?.trim()) !== Boolean(base.AUTHWARD_CLIENT_ID?.trim())) {
-    throw new Error('AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID must be configured together');
+  const authwardConfigured = Boolean(
+    base.AUTHWARD_ISSUER?.trim() ||
+    base.AUTHWARD_CLIENT_ID?.trim() ||
+    base.AUTHWARD_CLIENT_SECRET?.trim()
+  );
+  if (
+    authwardConfigured &&
+    !(
+      base.AUTHWARD_ISSUER?.trim() &&
+      base.AUTHWARD_CLIENT_ID?.trim() &&
+      base.AUTHWARD_CLIENT_SECRET?.trim()
+    )
+  ) {
+    throw new Error(
+      'AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET must be configured together'
+    );
   }
   const billingConfigured = Boolean(base.BILLING_BASE_URL || base.BILLING_CLIENT_SECRET);
   if (
@@ -320,10 +335,10 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     if (!base.BETTER_AUTH_URL) problems.push('BETTER_AUTH_URL is required');
     if (
       base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
-      !(base.AUTHWARD_ISSUER && base.AUTHWARD_CLIENT_ID)
+      !(base.AUTHWARD_ISSUER && base.AUTHWARD_CLIENT_ID && base.AUTHWARD_CLIENT_SECRET)
     ) {
       problems.push(
-        'AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID are required when TREVRA_DEPLOYMENT_MODE=hosted'
+        'AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted'
       );
     }
     // Hosted operational alerts are a product dependency, not an optional
