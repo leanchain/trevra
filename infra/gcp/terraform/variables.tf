@@ -58,9 +58,16 @@ variable "authward_issuer" {
 }
 
 variable "authward_client_id" {
-  description = "Authward browser client registered for hosted Trevra."
+  description = "Authward server-web client registered for hosted Trevra."
   type        = string
   default     = "trevra-web"
+}
+
+variable "authward_client_secret" {
+  description = "Authward confidential server-web client secret. When set, Cloud Run receives it from Secret Manager and token exchange uses it together with PKCE."
+  type        = string
+  sensitive   = true
+  default     = ""
 }
 
 variable "billing_base_url" {

@@ -34,7 +34,9 @@ locals {
     "nango-webhook-signing-key" = var.nango_webhook_signing_key
     "ingest-api-key"            = random_password.ingest.result
     "trevra-agent-token-pepper" = random_password.agent_token_pepper.result
-    }, var.billing_client_secret != "" ? {
+    }, var.authward_client_secret != "" ? {
+    "authward-client-secret" = var.authward_client_secret
+    } : {}, var.billing_client_secret != "" ? {
     "billing-client-secret" = var.billing_client_secret
     } : {}, var.temporal_api_key != "" ? {
     "temporal-api-key" = var.temporal_api_key
