@@ -269,22 +269,14 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
 
   if (!/^postgres(?:ql)?:\/\//i.test(base.DATABASE_URL))
     throw new Error('DATABASE_URL must be a PostgreSQL connection string');
-  const authwardConfigured = Boolean(
-    base.AUTHWARD_ISSUER?.trim() ||
-    base.AUTHWARD_CLIENT_ID?.trim() ||
-    base.AUTHWARD_CLIENT_SECRET?.trim()
-  );
+  if (Boolean(base.AUTHWARD_ISSUER?.trim()) !== Boolean(base.AUTHWARD_CLIENT_ID?.trim())) {
+    throw new Error('AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID must be configured together');
+  }
   if (
-    authwardConfigured &&
-    !(
-      base.AUTHWARD_ISSUER?.trim() &&
-      base.AUTHWARD_CLIENT_ID?.trim() &&
-      base.AUTHWARD_CLIENT_SECRET?.trim()
-    )
+    base.AUTHWARD_CLIENT_SECRET?.trim() &&
+    !(base.AUTHWARD_ISSUER?.trim() && base.AUTHWARD_CLIENT_ID?.trim())
   ) {
-    throw new Error(
-      'AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET must be configured together'
-    );
+    throw new Error('AUTHWARD_CLIENT_SECRET requires AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID');
   }
   const billingConfigured = Boolean(base.BILLING_BASE_URL || base.BILLING_CLIENT_SECRET);
   if (
@@ -335,10 +327,10 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     if (!base.BETTER_AUTH_URL) problems.push('BETTER_AUTH_URL is required');
     if (
       base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
-      !(base.AUTHWARD_ISSUER && base.AUTHWARD_CLIENT_ID && base.AUTHWARD_CLIENT_SECRET)
+      !(base.AUTHWARD_ISSUER && base.AUTHWARD_CLIENT_ID)
     ) {
       problems.push(
-        'AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted'
+        'AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID are required when TREVRA_DEPLOYMENT_MODE=hosted'
       );
     }
     // Hosted operational alerts are a product dependency, not an optional

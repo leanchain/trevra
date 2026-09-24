@@ -43,15 +43,13 @@ const trustedOrigins = (process.env.APP_ORIGIN ?? 'http://localhost:43173,http:/
 const authwardIssuer = process.env.AUTHWARD_ISSUER?.trim().replace(/\/$/, '');
 const authwardClientId = process.env.AUTHWARD_CLIENT_ID?.trim();
 const authwardClientSecret = process.env.AUTHWARD_CLIENT_SECRET?.trim();
-const authwardConfigured = Boolean(authwardIssuer || authwardClientId || authwardClientSecret);
-if (authwardConfigured && !(authwardIssuer && authwardClientId && authwardClientSecret)) {
-  throw new Error(
-    'AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET must be configured together'
-  );
+if (Boolean(authwardIssuer) !== Boolean(authwardClientId)) {
+  throw new Error('AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID must be configured together');
 }
-export const authwardAuthEnabled = Boolean(
-  authwardIssuer && authwardClientId && authwardClientSecret
-);
+if (authwardClientSecret && !(authwardIssuer && authwardClientId)) {
+  throw new Error('AUTHWARD_CLIENT_SECRET requires AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID');
+}
+export const authwardAuthEnabled = Boolean(authwardIssuer && authwardClientId);
 
 export interface AuthwardCapabilities {
   magicLink: boolean;
@@ -153,7 +151,7 @@ const authwardProvider = genericOAuth({
           {
             providerId: 'authward',
             clientId: authwardClientId,
-            clientSecret: authwardClientSecret,
+            ...(authwardClientSecret ? { clientSecret: authwardClientSecret } : {}),
             discoveryUrl: `${authwardIssuer}/.well-known/openid-configuration`,
             issuer: authwardIssuer,
             requireIssuerValidation: true,
