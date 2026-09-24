@@ -143,6 +143,10 @@ export async function dispatchAuthwardMagicLink(authorizationUrl: string): Promi
   throw new Error('Authward magic-link flow exceeded redirect limit');
 }
 
+export function authwardClientAuthentication(clientSecret: string | undefined) {
+  return clientSecret ? { clientSecret, authentication: 'basic' as const } : {};
+}
+
 const authwardUpstreamProviders = new Set(['google', 'github', 'microsoft', 'apple']);
 const authwardProvider = genericOAuth({
   config:
@@ -151,7 +155,7 @@ const authwardProvider = genericOAuth({
           {
             providerId: 'authward',
             clientId: authwardClientId,
-            ...(authwardClientSecret ? { clientSecret: authwardClientSecret } : {}),
+            ...authwardClientAuthentication(authwardClientSecret),
             discoveryUrl: `${authwardIssuer}/.well-known/openid-configuration`,
             issuer: authwardIssuer,
             requireIssuerValidation: true,

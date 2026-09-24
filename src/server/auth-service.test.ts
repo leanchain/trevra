@@ -19,6 +19,7 @@ import { createApp } from './app.js';
 import {
   assertOwnerChangeAllowed,
   auth as betterAuth,
+  authwardClientAuthentication,
   backfillWorkspaceOrganizations,
   closeAuthDatabase,
   migrateAuthDatabase
@@ -34,6 +35,16 @@ import {
  * the credential route's gate as they actually behave wired together --
  * exactly the seam a mocked auth layer would paper over.
  */
+
+describe('Authward confidential client authentication', () => {
+  it('uses HTTP Basic only when a server-side client secret exists', () => {
+    expect(authwardClientAuthentication(undefined)).toEqual({});
+    expect(authwardClientAuthentication('server-secret')).toEqual({
+      clientSecret: 'server-secret',
+      authentication: 'basic'
+    });
+  });
+});
 
 let db: Db | undefined;
 
