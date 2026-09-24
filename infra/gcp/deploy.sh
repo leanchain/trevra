@@ -8,7 +8,7 @@ set -euo pipefail
 : "${BETTER_AUTH_URL:=${APP_ORIGIN}}"
 : "${AUTHWARD_ISSUER:=https://auth.olaryn.com}"
 : "${AUTHWARD_CLIENT_ID:=trevra-web}"
-: "${AUTHWARD_CLIENT_SECRET:=}"
+: "${AUTHWARD_CLIENT_SECRET:?Set AUTHWARD_CLIENT_SECRET from the Authward trevra-web server-web client}"
 : "${BILLING_BASE_URL:=https://billing.olaryn.com}"
 : "${BILLING_CLIENT_ID:=trevra-billing}"
 : "${BILLING_CLIENT_SECRET:=}"

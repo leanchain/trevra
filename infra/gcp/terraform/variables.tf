@@ -64,10 +64,14 @@ variable "authward_client_id" {
 }
 
 variable "authward_client_secret" {
-  description = "Authward confidential server-web client secret. When set, Cloud Run receives it from Secret Manager and token exchange uses it together with PKCE."
+  description = "Authward confidential server-web client secret. Cloud Run receives it from Secret Manager and token exchange uses it together with PKCE."
   type        = string
   sensitive   = true
-  default     = ""
+
+  validation {
+    condition     = length(trimspace(var.authward_client_secret)) >= 32
+    error_message = "authward_client_secret must contain at least 32 characters."
+  }
 }
 
 variable "billing_base_url" {

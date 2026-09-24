@@ -231,7 +231,14 @@ describe('booting a production deployment', () => {
       ...noAuthward
     } = production;
     expect(() => validateEnvironment({ ...noAuthward, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
-      /AUTHWARD_ISSUER and AUTHWARD_CLIENT_ID are required/
+      /AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET are required/
+    );
+
+    const { AUTHWARD_CLIENT_SECRET: _secret, ...noClientSecret } = production;
+    expect(() =>
+      validateEnvironment({ ...noClientSecret, TREVRA_DEPLOYMENT_MODE: 'hosted' })
+    ).toThrow(
+      /AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET must be configured together/
     );
   });
 

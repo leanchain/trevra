@@ -261,6 +261,7 @@ export APP_ORIGIN=https://app.example.com
 export BETTER_AUTH_URL=https://app.example.com
 export AUTHWARD_ISSUER=https://auth.olaryn.com
 export AUTHWARD_CLIENT_ID=trevra-web
+export AUTHWARD_CLIENT_SECRET='the Authward trevra-web server-web client secret'
 # Optional until Billing/OpenMeter production is enabled:
 # export BILLING_BASE_URL=https://billing.olaryn.com
 # export BILLING_CLIENT_ID=trevra-billing

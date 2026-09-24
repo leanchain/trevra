@@ -37,8 +37,10 @@ import {
  */
 
 describe('Authward confidential client authentication', () => {
-  it('uses HTTP Basic only when a server-side client secret exists', () => {
-    expect(authwardClientAuthentication(undefined)).toEqual({});
+  it('requires a server-side secret and always uses HTTP Basic', () => {
+    expect(() => authwardClientAuthentication('')).toThrow(
+      /Authward confidential client secret is required/
+    );
     expect(authwardClientAuthentication('server-secret')).toEqual({
       clientSecret: 'server-secret',
       authentication: 'basic'
