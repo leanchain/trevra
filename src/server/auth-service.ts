@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import type { IncomingHttpHeaders } from 'node:http';
 import pg from 'pg';
+import { createRemoteJWKSet, customFetch, jwtVerify } from 'jose';
 import { APIError, betterAuth } from 'better-auth';
 import { fromNodeHeaders } from 'better-auth/node';
 import { getMigrations } from 'better-auth/db/migration';
@@ -152,6 +153,88 @@ export function authwardClientAuthentication(clientSecret: string) {
 }
 
 const authwardUpstreamProviders = new Set(['google', 'github', 'microsoft', 'apple']);
+const AUTHWARD_LOGOUT_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
+let authwardLogoutJwks: ReturnType<typeof createRemoteJWKSet> | undefined;
+
+function authwardLogoutJwksResolver() {
+  if (!authwardIssuer) throw new Error('Authward is not configured');
+  if (!authwardLogoutJwks) {
+    authwardLogoutJwks = createRemoteJWKSet(
+      new URL(`${authwardIssuer}/api/auth/.well-known/jwks.json`),
+      {
+        [customFetch]: async (url, options) => {
+          const headers = new Headers(options.headers);
+          headers.set('accept', 'application/json');
+          headers.set('user-agent', 'Trevra-Auth/1.0');
+          return fetch(url, { ...options, headers });
+        }
+      }
+    );
+  }
+  return authwardLogoutJwks;
+}
+
+export async function verifyAuthwardLogoutToken(
+  logoutToken: string
+): Promise<{ sub: string; sid: string }> {
+  if (!authwardIssuer || !authwardClientId) throw new Error('Authward is not configured');
+  if (!logoutToken || logoutToken.length > 64 * 1024)
+    throw new Error('Invalid Authward logout token');
+  const { payload, protectedHeader } = await jwtVerify(logoutToken, authwardLogoutJwksResolver(), {
+    issuer: authwardIssuer,
+    audience: authwardClientId,
+    algorithms: ['EdDSA'],
+    typ: 'logout+jwt'
+  });
+  if (
+    typeof payload.sub !== 'string' ||
+    !payload.sub ||
+    typeof payload.sid !== 'string' ||
+    !payload.sid ||
+    typeof payload.jti !== 'string' ||
+    !payload.jti ||
+    !payload.events ||
+    typeof payload.events !== 'object' ||
+    !(AUTHWARD_LOGOUT_EVENT in payload.events) ||
+    payload.nonce !== undefined ||
+    protectedHeader.typ !== 'logout+jwt'
+  ) {
+    throw new Error('Invalid Authward logout token claims');
+  }
+  return { sub: payload.sub, sid: payload.sid };
+}
+
+export async function invalidateAuthwardSubjectSessions(
+  sub: string,
+  db: Pick<typeof authPool, 'query'> = authPool
+): Promise<number> {
+  const result = await db.query<{ userId: string }>(
+    `SELECT "userId" FROM account WHERE "providerId"='authward' AND "accountId"=$1`,
+    [sub]
+  );
+  const userIds = [...new Set(result.rows.map((row) => row.userId).filter(Boolean))];
+  if (!userIds.length) return 0;
+
+  let removed = 0;
+  for (const userId of userIds) {
+    const deleted = await db.query(`DELETE FROM session WHERE "userId"=$1`, [userId]);
+    removed += deleted.rowCount ?? 0;
+    await db.query(
+      `UPDATE account
+       SET "accessToken"=NULL,"refreshToken"=NULL,"idToken"=NULL,
+           "accessTokenExpiresAt"=NULL,"refreshTokenExpiresAt"=NULL,"updatedAt"=now()
+       WHERE "userId"=$1 AND "providerId"='authward'`,
+      [userId]
+    );
+  }
+  return removed;
+}
+
+export async function handleAuthwardBackchannelLogout(logoutToken: string): Promise<number> {
+  const { sub } = await verifyAuthwardLogoutToken(logoutToken);
+  return invalidateAuthwardSubjectSessions(sub);
+}
+
 const authwardProvider = genericOAuth({
   config:
     authwardAuthEnabled && authwardIssuer && authwardClientId && authwardClientSecret

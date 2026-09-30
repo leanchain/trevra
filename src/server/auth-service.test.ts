@@ -21,6 +21,7 @@ import {
   auth as betterAuth,
   authwardClientAuthentication,
   backfillWorkspaceOrganizations,
+  invalidateAuthwardSubjectSessions,
   closeAuthDatabase,
   migrateAuthDatabase
 } from './auth-service.js';
@@ -45,6 +46,27 @@ describe('Authward confidential client authentication', () => {
       clientSecret: 'server-secret',
       authentication: 'basic'
     });
+  });
+
+  it('invalidates Trevra sessions and cached Authward credentials for a centrally logged-out subject', async () => {
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [{ userId: 'user-1' }, { userId: 'user-1' }], rowCount: 2 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 2 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+
+    const removed = await invalidateAuthwardSubjectSessions('authward-subject', { query } as never);
+
+    expect(removed).toBe(2);
+    expect(query).toHaveBeenNthCalledWith(1, expect.stringContaining('"providerId"=\'authward\''), [
+      'authward-subject'
+    ]);
+    expect(query).toHaveBeenNthCalledWith(2, expect.stringContaining('DELETE FROM session'), [
+      'user-1'
+    ]);
+    expect(query).toHaveBeenNthCalledWith(3, expect.stringContaining('"refreshToken"=NULL'), [
+      'user-1'
+    ]);
   });
 });
 

@@ -61,6 +61,7 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.6.0",
     "helmet": "^8.3.0",
+    "jose": "^6.2.4",
     "lucide-react": "^0.468.0",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.5",

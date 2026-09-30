@@ -26,6 +26,7 @@ import {
   dispatchAuthwardMagicLink,
   emailPasswordAuthEnabled,
   getAuthwardCapabilities,
+  handleAuthwardBackchannelLogout,
   resolveBetterAuthIdentity
 } from './auth-service.js';
 import {
@@ -836,6 +837,25 @@ export function createApp(db: Db) {
       res.status(503).json({ error: 'Could not prepare central logout' });
     }
   });
+
+  app.post(
+    '/api/auth/authward/backchannel-logout',
+    express.urlencoded({ extended: false, limit: '64kb' }),
+    async (req, res) => {
+      const logoutToken = typeof req.body?.logout_token === 'string' ? req.body.logout_token : '';
+      if (!logoutToken) {
+        res.status(400).json({ error: 'Missing logout token' });
+        return;
+      }
+      try {
+        await handleAuthwardBackchannelLogout(logoutToken);
+        res.status(204).end();
+      } catch (error) {
+        req.log?.warn({ err: error }, 'Authward back-channel logout rejected');
+        res.status(400).json({ error: 'Invalid logout token' });
+      }
+    }
+  );
 
   app.post(
     '/api/auth/magic-link/start',
