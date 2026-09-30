@@ -39,6 +39,11 @@ describe('the LinkedIn browser worker gate', () => {
     TREVRA_COMPANION_RELAY_URL: 'ws://trevra:8080',
     TREVRA_SECRETS_KEY: 'development-companion-secret'
   };
+  const hostedAuth = {
+    AUTHWARD_ISSUER: 'https://auth.olaryn.com',
+    AUTHWARD_CLIENT_ID: 'trevra-web',
+    AUTHWARD_CLIENT_SECRET: 'test-trevra-authward-client-secret-0001'
+  };
 
   it('stays off when a self-hoster configured no external browser', () => {
     const runtime = validateEnvironment({ ...base });
@@ -72,6 +77,7 @@ describe('the LinkedIn browser worker gate', () => {
     const runtime = validateEnvironment({
       ...base,
       ...companion,
+      ...hostedAuth,
       TREVRA_DEPLOYMENT_MODE: 'hosted'
     });
     expect(runtime.linkedinLocalWorker).toMatchObject({

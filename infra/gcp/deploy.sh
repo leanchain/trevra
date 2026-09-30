@@ -13,8 +13,6 @@ set -euo pipefail
 : "${BILLING_CLIENT_ID:=trevra-billing}"
 : "${BILLING_CLIENT_SECRET:=}"
 : "${BILLING_AUDIENCE:=https://billing.olaryn.com}"
-: "${GOOGLE_CLIENT_ID:?Set GOOGLE_CLIENT_ID from the Google OAuth web client}"
-: "${GOOGLE_CLIENT_SECRET:?Set GOOGLE_CLIENT_SECRET from the Google OAuth web client}"
 : "${PUBLIC_LEGAL_NAME:=Trevra}"
 : "${PUBLIC_SUPPORT_EMAIL:?Set PUBLIC_SUPPORT_EMAIL to a monitored inbox}"
 : "${ALERT_EMAIL:=${PUBLIC_SUPPORT_EMAIL}}"
@@ -52,8 +50,6 @@ export TF_VAR_billing_base_url="${BILLING_BASE_URL}"
 export TF_VAR_billing_client_id="${BILLING_CLIENT_ID}"
 export TF_VAR_billing_client_secret="${BILLING_CLIENT_SECRET}"
 export TF_VAR_billing_audience="${BILLING_AUDIENCE}"
-export TF_VAR_google_client_id="${GOOGLE_CLIENT_ID}"
-export TF_VAR_google_client_secret="${GOOGLE_CLIENT_SECRET}"
 export TF_VAR_smtp_server="${SMTP_SERVER}"
 export TF_VAR_smtp_port="${SMTP_PORT}"
 export TF_VAR_smtp_username="${SMTP_USERNAME}"
@@ -97,5 +93,5 @@ INDEXNOW_KEY="$(terraform -chdir="${TF_DIR}" output -raw indexnow_key)"
 PUBLIC_SITE_URL="${APP_ORIGIN}" INDEXNOW_KEY="${INDEXNOW_KEY}" npm --prefix "${ROOT_DIR}" run seo:submit || \
   printf 'Warning: IndexNow submission failed; run npm run seo:submit after DNS is live.\n' >&2
 
-printf '\nTrevra deployed.\nURL: %s\nImage: %s\nGoogle callback: %s/api/auth/callback/google\nSitemap: %s/sitemap.xml\nTraction token: terraform -chdir=%s output -raw traction_admin_token\n' \
+printf '\nTrevra deployed.\nURL: %s\nImage: %s\nAuthward callback: %s/api/auth/oauth2/callback/authward\nSitemap: %s/sitemap.xml\nTraction token: terraform -chdir=%s output -raw traction_admin_token\n' \
   "$(terraform -chdir="${TF_DIR}" output -raw cloud_run_url)" "${IMAGE}" "${BETTER_AUTH_URL%/}" "${APP_ORIGIN%/}" "${TF_DIR}"

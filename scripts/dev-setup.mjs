@@ -74,5 +74,5 @@ if ((envValue(DEV_ENV, 'TREVRA_LINKEDIN_LOCAL') ?? 'true').toLowerCase() !== 'fa
 
 process.stdout.write(
   'Development setup is ready. Start the stack with: docker compose --env-file .env.dev -f compose.dev.yml up --build\n' +
-    'Local sign-in email inbox: http://localhost:48025\n'
+    "Local sign-in uses Trevra's built-in Better Auth email/password flow; Authward is not required.\n"
 );

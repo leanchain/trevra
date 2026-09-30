@@ -286,6 +286,14 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
       'AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET must be configured together'
     );
   }
+  const hostedAuthMissing =
+    base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
+    !(base.AUTHWARD_ISSUER && base.AUTHWARD_CLIENT_ID && base.AUTHWARD_CLIENT_SECRET);
+  if (!production && hostedAuthMissing) {
+    throw new Error(
+      'AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted'
+    );
+  }
   const billingConfigured = Boolean(base.BILLING_BASE_URL || base.BILLING_CLIENT_SECRET);
   if (
     billingConfigured &&
@@ -333,10 +341,7 @@ export function validateEnvironment(env: NodeJS.ProcessEnv = process.env): Runti
     if (!base.BETTER_AUTH_SECRET || base.BETTER_AUTH_SECRET.length < 32)
       problems.push('BETTER_AUTH_SECRET must contain at least 32 characters');
     if (!base.BETTER_AUTH_URL) problems.push('BETTER_AUTH_URL is required');
-    if (
-      base.TREVRA_DEPLOYMENT_MODE === 'hosted' &&
-      !(base.AUTHWARD_ISSUER && base.AUTHWARD_CLIENT_ID && base.AUTHWARD_CLIENT_SECRET)
-    ) {
+    if (hostedAuthMissing) {
       problems.push(
         'AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET are required when TREVRA_DEPLOYMENT_MODE=hosted'
       );

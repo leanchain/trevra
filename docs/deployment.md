@@ -18,10 +18,9 @@ The job uses a dedicated connection with no statement timeout — a data-rewriti
 
 ## Local development stack
 
-`compose.dev.yml` deliberately uses uncommon, independently configurable host ports from `.env.dev` and three PostgreSQL databases:
+`compose.dev.yml` deliberately uses uncommon, independently configurable host ports from `.env.dev` and two PostgreSQL databases:
 
-- `postgres`: Trevra application and local relying-party session data;
-- `authward-postgres`: Authward identity/OIDC data;
+- `postgres`: Trevra application data plus Better Auth users, sessions, and organizations;
 - `nango-db`: Nango provider configuration, encrypted credentials, sync records, and internal state.
 
 This keeps Nango infrastructure failures and schema changes outside Trevra's commercial ledger. Redis is also isolated to Nango.
@@ -31,14 +30,13 @@ Run `npm run dev:setup` once before the first local stack start. It creates `.en
 Persistent Docker volumes:
 
 - `trevra-postgres-data`;
-- `authward-postgres-data`;
 - `nango-postgres-data`;
 - `nango-redis-data`;
 - `trevra-node-modules`.
 
-Internal container ports remain standard, while host ports use the `TREVRA_*_PORT`, `AUTHWARD_*_PORT`, and `NANGO_*_PORT` variables. Authward itself uses the stable local issuer `http://authward.localhost:43100`; Docker resolves that name to the Authward service while browsers resolve the `.localhost` name to the host.
+Internal container ports remain standard, while host ports use the `TREVRA_*_PORT` and `NANGO_*_PORT` variables.
 
-Local authentication is email-first. Authward delivers magic links to Mailpit, so no external SMTP credentials are needed. Social providers are optional: adding a provider client-ID/secret pair to `.env.dev` makes Authward advertise it and Trevra render it automatically.
+FOSS/local authentication is provided directly by Better Auth using email/password credentials stored in Trevra's PostgreSQL database. Authward is intentionally absent from the local dependency graph. In managed hosted mode, Trevra disables its password login and delegates identity to Authward instead.
 
 Do not run `docker compose down -v` unless you intend to destroy all local data.
 
@@ -83,16 +81,11 @@ Generated database and application secrets are represented in Terraform state. `
 
 Restrict access to the state bucket. Do not copy state files into source control or developer chat systems.
 
-## Custom domains and Google OAuth
+## Custom domains and hosted identity
 
 `APP_ORIGIN` and `BETTER_AUTH_URL` must be final HTTPS origins. Configure the Cloud Run custom domain or external HTTPS load balancer before enabling production sign-in callbacks.
 
-Create a Google OAuth Web application client with:
-
-- Authorized JavaScript origin: the exact `APP_ORIGIN`, such as `https://app.example.com`;
-- Authorized redirect URI: `${BETTER_AUTH_URL}/api/auth/callback/google`, such as `https://app.example.com/api/auth/callback/google`.
-
-The scheme, host, port, path, and trailing slash behavior must match exactly. The GCP deploy script requires `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`; Terraform stores both in Secret Manager and injects them into Cloud Run. Google login uses only identity scopes (`openid`, `email`, `profile`). Workspace Gmail and Calendar access remains a separate Nango authorization.
+Hosted Trevra does not own Google, GitHub, Microsoft, or Apple OAuth credentials. Configure those upstream providers on Authward and register Trevra's Authward callback (`${BETTER_AUTH_URL}/api/auth/oauth2/callback/authward`) with the `trevra-web` client there. Trevra receives only the Authward issuer/client credentials. Workspace Gmail and Calendar access remains a separate Nango authorization.
 
 Nango needs browser-reachable HTTPS endpoints for its API/dashboard and Connect UI. `NANGO_HOST` and `NANGO_PUBLIC_SERVER_URL` should point to the public Nango API origin from Trevra's production environment.
 

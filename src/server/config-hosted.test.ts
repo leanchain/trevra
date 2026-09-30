@@ -36,15 +36,19 @@ const REMOTE = {
   TREVRA_BROWSER_API_KEY: 'sk-test'
 };
 
+const HOSTED_AUTH = {
+  AUTHWARD_ISSUER: 'https://auth.olaryn.com',
+  AUTHWARD_CLIENT_ID: 'trevra-web',
+  AUTHWARD_CLIENT_SECRET: 'test-trevra-authward-client-secret-0001'
+};
+
 /** Everything production insists on, so a test can vary one thing at a time. */
 const production = {
   ...base,
   NODE_ENV: 'production',
   BETTER_AUTH_SECRET: 'a'.repeat(48),
   BETTER_AUTH_URL: 'https://app.example.com',
-  AUTHWARD_ISSUER: 'https://auth.olaryn.com',
-  AUTHWARD_CLIENT_ID: 'trevra-web',
-  AUTHWARD_CLIENT_SECRET: 'test-trevra-authward-client-secret-0001',
+  ...HOSTED_AUTH,
   BILLING_BASE_URL: 'https://billing.olaryn.com',
   BILLING_CLIENT_ID: 'trevra-billing',
   BILLING_CLIENT_SECRET: 'billing-secret',
@@ -122,8 +126,19 @@ describe('the hosted LinkedIn worker gate', () => {
     });
   });
 
+  it('requires Authward for hosted mode even outside production', () => {
+    expect(() => validateEnvironment({ ...base, TREVRA_DEPLOYMENT_MODE: 'hosted' })).toThrow(
+      /AUTHWARD_ISSUER, AUTHWARD_CLIENT_ID and AUTHWARD_CLIENT_SECRET are required/
+    );
+  });
+
   it('reports which provider a deployment uses, by label and never by endpoint', () => {
-    const runtime = validateEnvironment({ ...base, ...REMOTE, TREVRA_DEPLOYMENT_MODE: 'hosted' });
+    const runtime = validateEnvironment({
+      ...base,
+      ...HOSTED_AUTH,
+      ...REMOTE,
+      TREVRA_DEPLOYMENT_MODE: 'hosted'
+    });
     expect(runtime.browserProvider.kind).toBe('remote');
     expect(runtime.browserProvider.provider).toBe('connect.example.com');
     // The endpoint carries the API key. It is never part of a reported value.

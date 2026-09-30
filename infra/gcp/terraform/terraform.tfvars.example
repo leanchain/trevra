@@ -16,9 +16,7 @@ security_contact_email = "security@example.com"
 google_site_verification = ""
 bing_site_verification   = ""
 
-# Prefer TF_VAR_* environment variables instead of storing OAuth and provider secrets here.
-google_client_id          = "your-client-id.apps.googleusercontent.com"
-google_client_secret      = "replace-me"
+# Prefer TF_VAR_* environment variables instead of storing sensitive provider secrets here.
 smtp_server               = "smtp.example.com"
 smtp_port                 = 587
 smtp_username              = "replace-me"

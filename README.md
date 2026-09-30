@@ -105,9 +105,9 @@ Run the one-time development setup. It creates `.env.dev` when needed, generates
 npm run dev:setup
 ```
 
-Current defaults include Trevra `43173`/`43887`, Authward `43100` (override with `AUTHWARD_PORT`), the local Authward inbox `48025`, Trevra/Authward/Nango PostgreSQL `45432`/`45434`/`45433`, Redis `46379`, and Nango `43003`/`43009`.
+Current defaults include Trevra `43173`/`43887`, Trevra/Nango PostgreSQL `45432`/`45433`, Redis `46379`, and Nango `43003`/`43009`.
 
-Start Trevra, Authward, their PostgreSQL databases, Mailpit, Redis, and self-hosted Nango:
+Start Trevra, PostgreSQL, Redis, and self-hosted Nango:
 
 ```bash
 docker compose --env-file .env.dev -f compose.dev.yml up --build
@@ -117,26 +117,16 @@ Open:
 
 - Trevra: `http://localhost:43173` (`/` is the landing page; app paths open the work console)
 - Trevra API: `http://localhost:43887`
-- Authward: `http://authward.localhost:43100`
-- Authward local inbox (Mailpit): `http://localhost:48025`
 - Nango API/dashboard: `http://localhost:43003`
 - Nango Connect UI: `http://localhost:43009`
 - Trevra PostgreSQL: `localhost:45432`
-- Authward PostgreSQL: `localhost:45434`
 - Nango PostgreSQL: `localhost:45433`
 
 ### Local sign-in
 
-Email magic-link sign-in works without any external credentials. Enter an email on Trevra, then open the message in Mailpit at `http://localhost:48025`. Sending the link stays on Trevra; Authward is used server-to-server and only becomes a browser hop when the one-time link is opened.
+FOSS/local Trevra signs users in directly with its built-in Better Auth email/password flow. No Authward service, Authward database, Mailpit instance, or external identity credentials are required. Self-hosted production uses the same boundary.
 
-Social login is optional. Authward enables a provider automatically when both its client ID and secret are present in `.env.dev`; Trevra discovers Authward's capabilities and renders only configured providers. For example:
-
-```env
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your-client-secret
-```
-
-The corresponding OAuth application must allow Authward's callback for the environment. Trevra never owns or receives those provider secrets. Gmail and Calendar delegated permissions remain separate Nango connections.
+Managed hosted Trevra is different by design: `TREVRA_DEPLOYMENT_MODE=hosted` disables Trevra password auth and requires Authward as the upstream identity authority. Social providers and passwordless login are configured on Authward, not in Trevra. Gmail and Calendar delegated permissions remain separate Nango connections.
 
 The Trevra frontend and API hot-reload through the bind-mounted source tree.
 
@@ -234,8 +224,8 @@ Terraform under [`infra/gcp/terraform`](infra/gcp/terraform) provisions:
 - Cloud Run with startup and liveness probes;
 - Cloud SQL PostgreSQL 16 with regional high availability;
 - SSD autoscaling, automated backups, 14 retained backups, and seven days of point-in-time recovery logs;
-- Secret Manager values for the PostgreSQL URL, Better Auth, Nango, internal ingestion, and the Authward `trevra-billing` machine credential when Billing is enabled;
-- hosted Authward endpoints are always injected; shared Billing endpoints are injected into web and worker revisions only when the Billing machine credential is configured;
+- Secret Manager values for the PostgreSQL URL, Better Auth session secret, Nango, internal ingestion, and Authward client credentials;
+- hosted Authward identity is always injected; shared Billing endpoints are injected into web and worker revisions only when the Billing machine credential is configured;
 - Cloud SQL Client and Secret Manager least-privilege access;
 - migration-safe multi-instance startup.
 
@@ -262,13 +252,12 @@ export BETTER_AUTH_URL=https://app.example.com
 export AUTHWARD_ISSUER=https://auth.olaryn.com
 export AUTHWARD_CLIENT_ID=trevra-web
 export AUTHWARD_CLIENT_SECRET='the Authward trevra-web server-web client secret'
+# Configure Google/GitHub/Microsoft/Apple and passwordless login on Authward itself.
 # Optional until Billing/OpenMeter production is enabled:
 # export BILLING_BASE_URL=https://billing.olaryn.com
 # export BILLING_CLIENT_ID=trevra-billing
 # export BILLING_CLIENT_SECRET='the Authward trevra-billing client secret'
 # export BILLING_AUDIENCE=https://billing.olaryn.com
-export GOOGLE_CLIENT_ID='your-client-id.apps.googleusercontent.com'
-export GOOGLE_CLIENT_SECRET='your-client-secret'
 export NANGO_HOST=https://nango-api.example.com
 export NANGO_API_KEY='...'
 export NANGO_WEBHOOK_SIGNING_KEY='...'

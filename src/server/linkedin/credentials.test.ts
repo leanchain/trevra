@@ -502,9 +502,19 @@ describe('POST /api/linkedin/seat/login', () => {
 
   it('uses the same external-browser refusal in hosted mode when Companion is not configured', async () => {
     process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
-    const refusal = (await as(session).post('/api/linkedin/seat/login').send({}).expect(409))
-      .body as { error: string };
-    expect(refusal.error).toBe('LinkedIn automation is switched off on this server.');
+    process.env.AUTHWARD_ISSUER = 'https://auth.olaryn.com';
+    process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
+    process.env.AUTHWARD_CLIENT_SECRET = 'test-trevra-authward-client-secret-0001';
+    try {
+      const refusal = (await as(session).post('/api/linkedin/seat/login').send({}).expect(409))
+        .body as { error: string };
+      expect(refusal.error).toBe('LinkedIn automation is switched off on this server.');
+    } finally {
+      delete process.env.TREVRA_DEPLOYMENT_MODE;
+      delete process.env.AUTHWARD_ISSUER;
+      delete process.env.AUTHWARD_CLIENT_ID;
+      delete process.env.AUTHWARD_CLIENT_SECRET;
+    }
   });
 });
 

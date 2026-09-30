@@ -18,83 +18,6 @@ services:
       retries: 20
     restart: unless-stopped
 
-  authward-postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: authward
-      POSTGRES_USER: authward
-      POSTGRES_PASSWORD: ${AUTHWARD_DB_PASSWORD:-authward-local-password}
-    ports:
-      - '${AUTHWARD_DB_PORT:-45434}:5432'
-    volumes:
-      - authward-postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U authward -d authward']
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    restart: unless-stopped
-
-  authward-mailpit:
-    image: axllent/mailpit:latest
-    ports:
-      - '${AUTHWARD_MAILPIT_SMTP_PORT:-41025}:1025'
-      - '${AUTHWARD_MAILPIT_UI_PORT:-48025}:8025'
-    restart: unless-stopped
-
-  authward:
-    image: ${AUTHWARD_IMAGE:-ghcr.io/leanchain/authward:latest}
-    pull_policy: always
-    environment:
-      NODE_ENV: development
-      PORT: ${AUTHWARD_PORT:-43100}
-      DATABASE_URL: postgresql://authward:${AUTHWARD_DB_PASSWORD:-authward-local-password}@authward-postgres:5432/authward
-      AUTHWARD_SECRET: ${AUTHWARD_SECRET:-development-only-authward-secret-change-me-1234567890}
-      AUTHWARD_PUBLIC_URL: http://authward.localhost:${AUTHWARD_PORT:-43100}
-      AUTHWARD_ISSUER: http://authward.localhost:${AUTHWARD_PORT:-43100}
-      AUTHWARD_ADMIN_EMAIL: pankaj@olaryn.com
-      AUTHWARD_TRUSTED_ORIGINS: http://localhost:${TREVRA_WEB_PORT:-43173},http://localhost:${TREVRA_API_PORT:-43887}
-      AUTHWARD_MAIL_MODE: smtp
-      SMTP_HOST: authward-mailpit
-      SMTP_PORT: 1025
-      SMTP_SECURE: 'false'
-      SMTP_FROM: Authward <authward@local.test>
-      AUTHWARD_TREVRA_REDIRECT_URIS: http://localhost:${TREVRA_WEB_PORT:-43173}/api/auth/oauth2/callback/authward
-      AUTHWARD_TREVRA_POST_LOGOUT_REDIRECT_URIS: http://localhost:${TREVRA_WEB_PORT:-43173}/
-      AUTHWARD_TREVRA_BILLING_CLIENT_SECRET: ${AUTHWARD_TREVRA_BILLING_CLIENT_SECRET:-development-trevra-billing-secret-change-me}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
-      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
-      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
-      APPLE_CLIENT_ID: ${APPLE_CLIENT_ID:-}
-      APPLE_CLIENT_SECRET: ${APPLE_CLIENT_SECRET:-}
-    ports:
-      - '${AUTHWARD_PORT:-43100}:${AUTHWARD_PORT:-43100}'
-    networks:
-      default:
-        aliases:
-          - authward.localhost
-    depends_on:
-      authward-postgres:
-        condition: service_healthy
-      authward-mailpit:
-        condition: service_started
-    healthcheck:
-      test:
-        [
-          'CMD',
-          'node',
-          '-e',
-          "fetch('http://127.0.0.1:${AUTHWARD_PORT:-43100}/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-        ]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-      start_period: 10s
-    restart: unless-stopped
-
   trevra:
     build:
       context: .
@@ -143,12 +66,6 @@ services:
       APP_ORIGIN: http://localhost:${TREVRA_WEB_PORT:-43173},http://localhost:${TREVRA_API_PORT:-43887}
       BETTER_AUTH_URL: http://localhost:${TREVRA_WEB_PORT:-43173}
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-development-only-trevra-secret-change-before-production}
-      AUTHWARD_ISSUER: http://authward.localhost:${AUTHWARD_PORT:-43100}
-      AUTHWARD_CLIENT_ID: trevra-web
-      BILLING_BASE_URL: ${BILLING_BASE_URL:-http://host.docker.internal:43200}
-      BILLING_CLIENT_ID: ${BILLING_CLIENT_ID:-trevra-billing}
-      BILLING_CLIENT_SECRET: ${BILLING_CLIENT_SECRET:-development-trevra-billing-secret-change-me}
-      BILLING_AUDIENCE: ${BILLING_AUDIENCE:-https://billing.olaryn.com}
       SMTP_SERVER: ${SMTP_SERVER:-}
       SMTP_PORT: ${SMTP_PORT:-}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
@@ -239,8 +156,6 @@ services:
       - trevra-browser-profiles:/root/.trevra
     depends_on:
       postgres:
-        condition: service_healthy
-      authward:
         condition: service_healthy
       nango-server:
         condition: service_healthy
@@ -337,7 +252,6 @@ services:
 
 volumes:
   trevra-postgres-data:
-  authward-postgres-data:
   trevra-node-modules:
   trevra-browser-profiles:
   nango-postgres-data:

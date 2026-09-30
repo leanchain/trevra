@@ -1447,6 +1447,9 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
 
   it('refuses detection when hosted has no external browser configured', async () => {
     process.env.TREVRA_DEPLOYMENT_MODE = 'hosted';
+    process.env.AUTHWARD_ISSUER = 'https://auth.olaryn.com';
+    process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
+    process.env.AUTHWARD_CLIENT_SECRET = 'test-trevra-authward-client-secret-0001';
     try {
       const refusal = (
         await as(sessionA)
@@ -1458,6 +1461,9 @@ describe('GET /api/linkedin/seat and /api/linkedin/analytics', () => {
       expect(refusal.error).not.toMatch(/chromium|playwright install|TREVRA_LINKEDIN_LOCAL/i);
     } finally {
       delete process.env.TREVRA_DEPLOYMENT_MODE;
+      delete process.env.AUTHWARD_ISSUER;
+      delete process.env.AUTHWARD_CLIENT_ID;
+      delete process.env.AUTHWARD_CLIENT_SECRET;
     }
 
     const seatBody = (await as(sessionA).get('/api/linkedin/seat').expect(200)).body as {

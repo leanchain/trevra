@@ -284,33 +284,20 @@ describe('Trevra API on PostgreSQL', () => {
     expect(config.magicLinkAuthEnabled && config.emailPasswordAuthEnabled).toBe(false);
   });
 
-  it('exposes Authward only when issuer and client id are configured', async () => {
+  it('keeps Authward out of the default local/FOSS auth surface', async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const app = createApp(db);
-    expect(
-      (await request(app).get('/api/public-config').expect(200)).body.authwardAuthEnabled
-    ).toBe(false);
-    process.env.AUTHWARD_ISSUER = 'https://auth.olaryn.com';
-    process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
-    process.env.AUTHWARD_CLIENT_SECRET = 'test-trevra-authward-client-secret-0001';
-    expect(
-      (await request(app).get('/api/public-config').expect(200)).body.authwardAuthEnabled
-    ).toBe(true);
+    const config = (await request(app).get('/api/public-config').expect(200)).body;
+    expect(config.authwardAuthEnabled).toBe(false);
+    expect(config.emailPasswordAuthEnabled).toBe(true);
   });
 
-  it('does not infer social providers merely because Authward is configured', async () => {
+  it('does not infer social providers in local/FOSS mode', async () => {
     db = await openDatabase({ connectionString: process.env.TEST_DATABASE_URL, seedDemo: false });
     const app = createApp(db);
-    const before = (await request(app).get('/api/public-config').expect(200)).body;
-    expect(before.googleAuthEnabled).toBe(false);
-
-    process.env.AUTHWARD_ISSUER = 'https://auth.olaryn.com';
-    process.env.AUTHWARD_CLIENT_ID = 'trevra-web';
-    process.env.AUTHWARD_CLIENT_SECRET = 'test-trevra-authward-client-secret-0001';
-    const after = (await request(app).get('/api/public-config').expect(200)).body;
-    expect(after.authwardAuthEnabled).toBe(true);
-    expect(after.googleAuthEnabled).toBe(false);
-    expect(after.socialAuthProviders).toEqual([]);
+    const config = (await request(app).get('/api/public-config').expect(200)).body;
+    expect(config.googleAuthEnabled).toBe(false);
+    expect(config.socialAuthProviders).toEqual([]);
   });
 
   it('rejects state-changing requests from untrusted browser origins', async () => {

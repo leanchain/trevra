@@ -23,8 +23,6 @@ locals {
     "marketing-hash-salt"       = random_password.marketing_hash.result
     "traction-admin-token"      = random_password.traction_admin.result
     "indexnow-key"              = random_id.indexnow.hex
-    "google-client-id"          = var.google_client_id
-    "google-client-secret"      = var.google_client_secret
     "smtp-server"               = var.smtp_server
     "smtp-username"             = var.smtp_username
     "smtp-password"             = var.smtp_password

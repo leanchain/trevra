@@ -17,9 +17,10 @@ import { recordMarketingEvent } from './public-site.js';
 
 const { Pool } = pg;
 const production = process.env.NODE_ENV === 'production';
-// Hosted identity is delegated to Authward. Local/self-hosted installs keep
-// password auth as the escape hatch when no Authward issuer is configured.
-export const emailPasswordAuthEnabled = process.env.TREVRA_DEPLOYMENT_MODE !== 'hosted';
+const hostedAuth = process.env.TREVRA_DEPLOYMENT_MODE === 'hosted';
+// FOSS/local/self-hosted Trevra owns its login with Better Auth. Managed hosted
+// Trevra delegates identity to Authward instead of keeping a second password store.
+export const emailPasswordAuthEnabled = !hostedAuth;
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString)
   throw new Error('DATABASE_URL is required; Better Auth uses PostgreSQL only');
@@ -50,7 +51,7 @@ if (authwardConfigured && !(authwardIssuer && authwardClientId && authwardClient
   );
 }
 export const authwardAuthEnabled = Boolean(
-  authwardIssuer && authwardClientId && authwardClientSecret
+  hostedAuth && authwardIssuer && authwardClientId && authwardClientSecret
 );
 
 export interface AuthwardCapabilities {
@@ -66,7 +67,7 @@ const fallbackAuthwardCapabilities: AuthwardCapabilities = {
 };
 
 export async function getAuthwardCapabilities(): Promise<AuthwardCapabilities> {
-  if (!authwardIssuer || !authwardClientId) {
+  if (!authwardAuthEnabled || !authwardIssuer || !authwardClientId) {
     return { magicLink: false, emailPassword: false, socialProviders: [] };
   }
   try {
@@ -97,8 +98,8 @@ export async function beginAuthwardMagicLink(
   headers: IncomingHttpHeaders,
   email: string
 ): Promise<Response> {
-  if (!authwardIssuer || !authwardClientId) {
-    throw new Error('Authward is not configured');
+  if (!authwardAuthEnabled || !authwardIssuer || !authwardClientId) {
+    throw new Error('Authward is available only for hosted Trevra');
   }
   return auth.api.signInWithOAuth2({
     body: {
@@ -153,7 +154,7 @@ export function authwardClientAuthentication(clientSecret: string) {
 const authwardUpstreamProviders = new Set(['google', 'github', 'microsoft', 'apple']);
 const authwardProvider = genericOAuth({
   config:
-    authwardIssuer && authwardClientId && authwardClientSecret
+    authwardAuthEnabled && authwardIssuer && authwardClientId && authwardClientSecret
       ? [
           {
             providerId: 'authward',

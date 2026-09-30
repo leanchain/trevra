@@ -19,6 +19,7 @@ import { DEMO_USER_ID, DEMO_WORKSPACE_ID, id, resetDemoData } from './db.js';
 import { listConnections } from './serializers.js';
 import {
   auth as betterAuth,
+  authwardAuthEnabled,
   beginAuthwardMagicLink,
   buildAuthwardEndSessionUrl,
   configureAuthProvisioning,
@@ -756,9 +757,6 @@ export function createApp(db: Db) {
   });
 
   app.get('/api/public-config', async (_req, res) => {
-    const authwardAuthEnabled = Boolean(
-      process.env.AUTHWARD_ISSUER && process.env.AUTHWARD_CLIENT_ID
-    );
     const authwardCapabilities = await getAuthwardCapabilities();
     res.json({
       authwardAuthEnabled,
