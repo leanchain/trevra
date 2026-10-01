@@ -1223,6 +1223,7 @@ export async function updatePolicy(
 // Not exported: nothing outside this file names the type, only the function.
 interface PublicConfig {
   authwardAuthEnabled: boolean;
+  passkeyAuthEnabled: boolean;
   socialAuthProviders: string[];
   googleAuthEnabled: boolean;
   magicLinkAuthEnabled: boolean;
