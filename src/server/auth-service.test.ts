@@ -19,6 +19,7 @@ import { createApp } from './app.js';
 import {
   assertOwnerChangeAllowed,
   auth as betterAuth,
+  authwardAuthorizationParams,
   authwardClientAuthentication,
   backfillWorkspaceOrganizations,
   closeAuthDatabase,
@@ -44,6 +45,26 @@ describe('Authward confidential client authentication', () => {
     expect(authwardClientAuthentication('server-secret')).toEqual({
       clientSecret: 'server-secret',
       authentication: 'basic'
+    });
+  });
+
+  it('forwards passkey sign-in through the existing Authward OAuth transaction', () => {
+    expect(authwardAuthorizationParams({ authMethod: 'passkey' })).toEqual({
+      resource: 'https://api.usetrevra.com',
+      auth_method: 'passkey',
+      prompt: 'login'
+    });
+    expect(
+      authwardAuthorizationParams({
+        authMethod: 'magic_link',
+        loginHint: 'founder@example.test',
+        returnTo: 'https://usetrevra.com/login'
+      })
+    ).toEqual({
+      resource: 'https://api.usetrevra.com',
+      auth_method: 'magic_link',
+      login_hint: 'founder@example.test',
+      return_to: 'https://usetrevra.com/login'
     });
   });
 });
