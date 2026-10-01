@@ -289,6 +289,7 @@ describe('Trevra API on PostgreSQL', () => {
     const app = createApp(db);
     const config = (await request(app).get('/api/public-config').expect(200)).body;
     expect(config.authwardAuthEnabled).toBe(false);
+    expect(config.passkeyAuthEnabled).toBe(false);
     expect(config.emailPasswordAuthEnabled).toBe(true);
   });
 

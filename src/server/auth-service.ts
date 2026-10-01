@@ -55,12 +55,14 @@ export const authwardAuthEnabled = Boolean(
 );
 
 export interface AuthwardCapabilities {
+  passkey: boolean;
   magicLink: boolean;
   emailPassword: boolean;
   socialProviders: string[];
 }
 
 const fallbackAuthwardCapabilities: AuthwardCapabilities = {
+  passkey: false,
   magicLink: authwardAuthEnabled,
   emailPassword: false,
   socialProviders: []
@@ -68,7 +70,7 @@ const fallbackAuthwardCapabilities: AuthwardCapabilities = {
 
 export async function getAuthwardCapabilities(): Promise<AuthwardCapabilities> {
   if (!authwardAuthEnabled || !authwardIssuer || !authwardClientId) {
-    return { magicLink: false, emailPassword: false, socialProviders: [] };
+    return { passkey: false, magicLink: false, emailPassword: false, socialProviders: [] };
   }
   try {
     const response = await fetch(
@@ -81,6 +83,7 @@ export async function getAuthwardCapabilities(): Promise<AuthwardCapabilities> {
     if (!response.ok) return fallbackAuthwardCapabilities;
     const body = (await response.json()) as Partial<AuthwardCapabilities>;
     return {
+      passkey: body.passkey === true,
       magicLink: body.magicLink === true,
       emailPassword: body.emailPassword === true,
       socialProviders: Array.isArray(body.socialProviders)
@@ -152,6 +155,26 @@ export function authwardClientAuthentication(clientSecret: string) {
 }
 
 const authwardUpstreamProviders = new Set(['google', 'github', 'microsoft', 'apple']);
+
+export function authwardAuthorizationParams(
+  data: Record<string, unknown> | null | undefined
+): Record<string, string> {
+  const upstreamProvider = data?.upstreamProvider;
+  const authMethod = data?.authMethod;
+  const loginHint = data?.loginHint;
+  const returnTo = data?.returnTo;
+  return {
+    resource: 'https://api.usetrevra.com',
+    ...(typeof upstreamProvider === 'string' && authwardUpstreamProviders.has(upstreamProvider)
+      ? { upstream_provider: upstreamProvider }
+      : {}),
+    ...(authMethod === 'magic_link' && typeof loginHint === 'string' && typeof returnTo === 'string'
+      ? { auth_method: 'magic_link', login_hint: loginHint, return_to: returnTo }
+      : {}),
+    ...(authMethod === 'passkey' ? { auth_method: 'passkey', prompt: 'login' } : {})
+  };
+}
+
 const authwardProvider = genericOAuth({
   config:
     authwardAuthEnabled && authwardIssuer && authwardClientId && authwardClientSecret
@@ -165,25 +188,10 @@ const authwardProvider = genericOAuth({
             requireIssuerValidation: true,
             scopes: ['openid', 'profile', 'email', 'offline_access', 'trevra:access'],
             pkce: true,
-            authorizationUrlParams: (ctx) => {
-              const data = ctx.body.additionalData;
-              const upstreamProvider = data?.upstreamProvider;
-              const authMethod = data?.authMethod;
-              const loginHint = data?.loginHint;
-              const returnTo = data?.returnTo;
-              return {
-                resource: 'https://api.usetrevra.com',
-                ...(typeof upstreamProvider === 'string' &&
-                authwardUpstreamProviders.has(upstreamProvider)
-                  ? { upstream_provider: upstreamProvider }
-                  : {}),
-                ...(authMethod === 'magic_link' &&
-                typeof loginHint === 'string' &&
-                typeof returnTo === 'string'
-                  ? { auth_method: 'magic_link', login_hint: loginHint, return_to: returnTo }
-                  : {})
-              };
-            },
+            authorizationUrlParams: (ctx) =>
+              authwardAuthorizationParams(
+                ctx.body.additionalData as Record<string, unknown> | undefined
+              ),
             tokenUrlParams: { resource: 'https://api.usetrevra.com' },
             redirectURI: `${baseURL}/api/auth/oauth2/callback/authward`
           }

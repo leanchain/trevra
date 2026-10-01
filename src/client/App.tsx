@@ -637,6 +637,7 @@ function AuthScreen({
   const [socialBusy, setSocialBusy] = useState<string | null>(null);
   const [authError, setAuthError] = useState('');
   const [authwardEnabled, setAuthwardEnabled] = useState(false);
+  const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const [socialProviders, setSocialProviders] = useState<string[]>([]);
   const [magicLinkEnabled, setMagicLinkEnabled] = useState(false);
   const [magicLinkSentTo, setMagicLinkSentTo] = useState<string | null>(null);
@@ -646,6 +647,7 @@ function AuthScreen({
     void getPublicConfig()
       .then((config) => {
         setAuthwardEnabled(config.authwardAuthEnabled);
+        setPasskeyEnabled(config.passkeyAuthEnabled);
         setSocialProviders(config.socialAuthProviders);
         setMagicLinkEnabled(config.magicLinkAuthEnabled);
         setEmailPasswordEnabled(config.emailPasswordAuthEnabled);
@@ -679,9 +681,11 @@ function AuthScreen({
     const providerError = params.get('auth_error');
     if (providerError) {
       setAuthError(
-        providerError === 'google_not_configured'
-          ? 'Google sign-in is not configured for this Authward environment.'
-          : 'That sign-in provider is not available in this environment.'
+        providerError === 'passkey'
+          ? 'Passkey sign-in could not be completed. Try again or choose another sign-in method.'
+          : providerError === 'google_not_configured'
+            ? 'Google sign-in is not configured for this sign-in environment.'
+            : 'That sign-in provider is not available in this environment.'
       );
       params.delete('auth_error');
       cleanAuthQuery = true;
@@ -695,6 +699,25 @@ function AuthScreen({
       );
     }
   }, []);
+
+  const signInWithPasskey = async () => {
+    setSocialBusy('passkey');
+    setAuthError('');
+    try {
+      const result = await authClient.signIn.oauth2({
+        providerId: 'authward',
+        callbackURL: `${window.location.origin}/loop`,
+        additionalData: { authMethod: 'passkey' }
+      });
+      if (result?.error) {
+        setAuthError(result.error.message ?? 'Passkey sign-in failed');
+        setSocialBusy(null);
+      }
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Passkey sign-in failed');
+      setSocialBusy(null);
+    }
+  };
 
   const signInWithSocialProvider = async (provider: string) => {
     setSocialBusy(provider);
@@ -816,12 +839,28 @@ function AuthScreen({
             <p>
               {magicLinkSentTo
                 ? 'A secure sign-in link is on its way.'
-                : magicLinkEnabled
-                  ? 'Enter your email and we’ll send you a secure sign-in link.'
-                  : mode === 'signin'
+                : passkeyEnabled
+                  ? 'Use a passkey or choose another secure sign-in method.'
+                  : magicLinkEnabled
+                    ? 'Enter your email and we’ll send you a secure sign-in link.'
+                    : mode === 'signin'
                     ? 'Continue to your workspace.'
                     : 'Create a Trevra workspace.'}
             </p>
+            {passkeyEnabled && !magicLinkSentTo && (
+              <button
+                className="google-auth-button"
+                disabled={busy || socialBusy !== null}
+                onClick={() => void signInWithPasskey()}
+              >
+                {socialBusy === 'passkey' ? (
+                  <LoaderCircle className="spin" size={17} />
+                ) : (
+                  <KeyRound size={17} />
+                )}
+                Continue with passkey
+              </button>
+            )}
             {socialProviders.length > 0 &&
               !magicLinkSentTo &&
               socialProviders.map((provider) => {
@@ -853,7 +892,7 @@ function AuthScreen({
                   </button>
                 );
               })}
-            {socialProviders.length > 0 &&
+            {(passkeyEnabled || socialProviders.length > 0) &&
               !magicLinkSentTo &&
               (magicLinkEnabled || emailPasswordEnabled) && (
                 <div className="auth-divider">
