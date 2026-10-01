@@ -760,6 +760,7 @@ export function createApp(db: Db) {
     const authwardCapabilities = await getAuthwardCapabilities();
     res.json({
       authwardAuthEnabled,
+      passkeyAuthEnabled: authwardCapabilities.passkey,
       socialAuthProviders: authwardCapabilities.socialProviders,
       // Compatibility field for older clients.
       googleAuthEnabled: authwardCapabilities.socialProviders.includes('google'),
