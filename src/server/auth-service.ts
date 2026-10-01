@@ -55,12 +55,14 @@ export const authwardAuthEnabled = Boolean(
 );
 
 export interface AuthwardCapabilities {
+  passkey: boolean;
   magicLink: boolean;
   emailPassword: boolean;
   socialProviders: string[];
 }
 
 const fallbackAuthwardCapabilities: AuthwardCapabilities = {
+  passkey: false,
   magicLink: authwardAuthEnabled,
   emailPassword: false,
   socialProviders: []
@@ -68,7 +70,7 @@ const fallbackAuthwardCapabilities: AuthwardCapabilities = {
 
 export async function getAuthwardCapabilities(): Promise<AuthwardCapabilities> {
   if (!authwardAuthEnabled || !authwardIssuer || !authwardClientId) {
-    return { magicLink: false, emailPassword: false, socialProviders: [] };
+    return { passkey: false, magicLink: false, emailPassword: false, socialProviders: [] };
   }
   try {
     const response = await fetch(
@@ -81,6 +83,7 @@ export async function getAuthwardCapabilities(): Promise<AuthwardCapabilities> {
     if (!response.ok) return fallbackAuthwardCapabilities;
     const body = (await response.json()) as Partial<AuthwardCapabilities>;
     return {
+      passkey: body.passkey === true,
       magicLink: body.magicLink === true,
       emailPassword: body.emailPassword === true,
       socialProviders: Array.isArray(body.socialProviders)
@@ -181,6 +184,9 @@ const authwardProvider = genericOAuth({
                 typeof loginHint === 'string' &&
                 typeof returnTo === 'string'
                   ? { auth_method: 'magic_link', login_hint: loginHint, return_to: returnTo }
+                  : {}),
+                ...(authMethod === 'passkey'
+                  ? { auth_method: 'passkey', prompt: 'login' }
                   : {})
               };
             },
